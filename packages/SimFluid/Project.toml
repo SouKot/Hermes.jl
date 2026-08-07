@@ -1,0 +1,13 @@
+name = "SimFluid"
+uuid = "d11a3018-cc7d-4a1d-917b-a9cc3c219577"
+authors = ["Sourabh Kotnala <sauravkotnala@gmail.com>"]
+version = "1.0.0-DEV"
+
+[compat]
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

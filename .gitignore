@@ -1,0 +1,29 @@
+# Julia artefacts
+Manifest.toml
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+/deps/deps.jl
+
+# Build outputs
+/docs/build/
+/docs/site/
+
+# DrWatson data outputs (large — do not commit)
+/experiments/data/*
+!/experiments/data/.gitkeep
+/experiments/plots/*
+!/experiments/plots/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Benchmark results (large)
+/experiments/scripts/benchmarks/results/

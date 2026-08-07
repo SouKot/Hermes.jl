@@ -1,0 +1,11 @@
+name = "HermesWorkspace"
+
+[workspace]
+projects = [
+    "packages/SimCore",
+    "packages/SimDES",
+    "packages/SimCrowd",
+    "packages/SimFluid",
+    "packages/SimViz",
+    "experiments",
+]

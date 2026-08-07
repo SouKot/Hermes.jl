@@ -1,0 +1,15 @@
+name = "HermesExperiments"
+uuid = "00000000-0000-0000-0000-000000000002"
+version = "0.1.0"
+
+[deps]
+DataFrames = "a93c6f00-e57d-5684-b466-afe8fa294f15"
+DrWatson = "634d3b9d-ee7a-5ddf-bec9-22491ea816e1"
+CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+StatsBase = "2913bbd2-ae8a-5f71-8c99-4fb6c76f3a91"
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+
+[compat]
+julia = "1.10"
+DrWatson = "2"

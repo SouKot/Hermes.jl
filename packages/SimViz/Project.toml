@@ -1,0 +1,13 @@
+name = "SimViz"
+uuid = "1d3a18c2-5789-4809-a60e-48e89172195e"
+authors = ["Sourabh Kotnala <sauravkotnala@gmail.com>"]
+version = "1.0.0-DEV"
+
+[compat]
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
