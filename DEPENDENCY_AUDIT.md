@@ -16,7 +16,7 @@
 | `CUDA.jl` | ≥5.0 | MIT | [GitHub](https://github.com/JuliaGPU/CUDA.jl) | ✅ Approved | NVIDIA GPU backend |
 | `LinearAlgebra` | stdlib | MIT | Julia stdlib | ✅ Approved | norm, dot, etc. |
 | `Logging` | stdlib | MIT | Julia stdlib | ✅ Approved | Event logging |
-| **`Ark.jl`** | TBD | **⚠️ CHECK** | TBD | ❓ **PENDING AUDIT** | ECS engine — check license before use |
+| `Ark.jl` | latest | Apache-2.0 + MIT | [GitHub](https://github.com/ark-ecs/Ark.jl) | ✅ Approved | ECS engine — dual licensed, commercial use safe. Audited 2026-08-07. |
 
 ## Development-Only Dependencies (not shipped to customers)
 
@@ -49,6 +49,4 @@ When adding a new dependency:
 
 ## Pending Audits
 
-| Package | Reason for audit | Assigned to | Due date |
-|---|---|---|---|
-| `Ark.jl` | Not widely known; license may not be standard | TBD | Before first use |
+*No pending audits. All production dependencies cleared.* ✅
