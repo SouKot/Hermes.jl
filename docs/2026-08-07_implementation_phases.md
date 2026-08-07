@@ -51,10 +51,10 @@ LEVEL 3 (Micro)  — Physics particles (crowd, fluid) → SimCrowd / SimFluid
 - [ ] **P0-12** · Create private GitHub repo `Hermes.jl` and push
   - `git remote add origin git@github.com:sauravkotnala/Hermes.jl.git`
   - `git branch -M main && git push -u origin main`
-- [ ] **P0-13** · Add `Revise.jl` to `~/.julia/config/startup.jl`
-  - `echo 'try; using Revise; catch e; end' >> ~/.julia/config/startup.jl`
-- [ ] **P0-14** · Install dev tools in global environment
-  - `julia -e 'using Pkg; Pkg.add(["Revise","JET","Aqua","BenchmarkTools","JuliaFormatter","ProfileView","TestItemRunner"])'`
+- [x] **P0-13** · Add `Revise.jl` to `~/.julia/config/startup.jl` ✅ (already present — auto-activates Project.toml too)
+- [x] **P0-14** · Install dev tools in global environment ✅ (2026-08-07)
+  - Installed: Revise, JET, Aqua, BenchmarkTools, JuliaFormatter, ProfileView, TestItemRunner
+  - Note: use `julia --startup-file=no` when managing global env from workspace dir
 
 ---
 
@@ -824,7 +824,7 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
 
 | Phase | Name | Status | Sprint completion |
 |---|---|---|---|
-| **0** | Infrastructure | ✅ Complete (2026-08-07) | 11/14 tasks done |
+| **0** | Infrastructure | ✅ Complete (2026-08-07) | 13/14 tasks done (P0-12 GitHub push pending) |
 | **1** | SimCore | `[ ]` Not started | 0/12 |
 | **2** | SimDES Tier 1 | `[ ]` Not started | 0/24 |
 | **3** | SimCrowd + GPU | `[ ]` Not started | 0/21 |
