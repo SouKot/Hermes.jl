@@ -67,7 +67,7 @@ LEVEL 3 (Micro)  — Physics particles (crowd, fluid) → SimCrowd / SimFluid
 
 ### Sprint 1A — Core Types
 
-- [ ] **1A-01** · Define abstract event hierarchy (`§7.11`)
+- [x] **1A-01** · Define abstract event hierarchy (`§7.11`)
   ```julia
   # packages/SimCore/src/events.jl
   abstract type SimEvent end
@@ -79,7 +79,7 @@ LEVEL 3 (Micro)  — Physics particles (crowd, fluid) → SimCrowd / SimFluid
   struct NullEvent       <: SimEvent end   # Chandy-Misra null message
   ```
 
-- [ ] **1A-02** · Define `CancellableEvent` wrapper + cancel set (`§7.12`)
+- [x] **1A-02** · Define `CancellableEvent` wrapper + cancel set (`§7.12`)
   ```julia
   struct CancellableEvent
       id    :: UInt64
@@ -90,7 +90,7 @@ LEVEL 3 (Micro)  — Physics particles (crowd, fluid) → SimCrowd / SimFluid
   cancel!(id::UInt64) = push!(cancelled, id)
   ```
 
-- [ ] **1A-03** · Define `SimClock` with `throttle!`, `pause!`, `unpause!`, `set_speed!` (`§7.8`)
+- [x] **1A-03** · Define `SimClock` with `throttle!`, `pause!`, `unpause!`, `set_speed!` (`§7.8`)
   ```julia
   mutable struct SimClock
       sim_time     :: Float64
@@ -104,7 +104,7 @@ LEVEL 3 (Micro)  — Physics particles (crowd, fluid) → SimCrowd / SimFluid
   - Implement `step_once!` — advance exactly one event then pause
   - Test: `DES-S-09` (SimClock speed fidelity at 60×, 1×, 0.5×, paused)
 
-- [ ] **1A-04** · Define ECS component structs (`§5.1`)
+- [x] **1A-04** · Define ECS component structs (`§5.1`)
   ```julia
   # DES entities
   struct DESAgent; arrival_time::Float64; current_zone::Int end
@@ -127,7 +127,7 @@ LEVEL 3 (Micro)  — Physics particles (crowd, fluid) → SimCrowd / SimFluid
   struct CrowdObstacle; geometry :: NTuple{4, Float32} end  # AABB: x1,y1,x2,y2
   ```
 
-- [ ] **1A-05** · Define `SimWorld` struct
+- [x] **1A-05** · Define `SimWorld` struct
   ```julia
   mutable struct SimWorld
       # Entity management
@@ -145,7 +145,7 @@ LEVEL 3 (Micro)  — Physics particles (crowd, fluid) → SimCrowd / SimFluid
   ```
   > Note: For Tier 1, use `Dict` for simplicity. Ark.jl replaces this in Tier 2 for cache efficiency.
 
-- [ ] **1A-06** · Define `SimStats` struct
+- [x] **1A-06** · Define `SimStats` struct
   ```julia
   mutable struct SimStats
       total_events      :: Int
@@ -157,18 +157,18 @@ LEVEL 3 (Micro)  — Physics particles (crowd, fluid) → SimCrowd / SimFluid
   end
   ```
 
-- [ ] **1A-07** · Add `DataStructures.jl` and `StaticArrays.jl` to `SimCore/Project.toml`
+- [x] **1A-07** · Add `DataStructures.jl` and `StaticArrays.jl` to `SimCore/Project.toml`
   - `cd packages/SimCore && julia --project=. -e 'using Pkg; Pkg.add(["DataStructures","StaticArrays"])'`
 
 ### Sprint 1B — SimCore Tests
 
-- [ ] **1B-01** · Write `SimCore/test/runtests.jl` with Aqua + JET checks
-- [ ] **1B-02** · Test: `SimClock` at `speed_factor=Inf` advances without sleep
-- [ ] **1B-03** · Test: `SimClock` pause blocks and unpause resumes
-- [ ] **1B-04** · Test: `@inferred SimClock(1.0)` — type stable construction
-- [ ] **1B-05** · Test: `CancellableEvent` cancel set — cancelled events not dispatched
+- [x] **1B-01** · Write `SimCore/test/runtests.jl` with Aqua + JET checks
+- [x] **1B-02** · Test: `SimClock` at `speed_factor=Inf` advances without sleep
+- [x] **1B-03** · Test: `SimClock` pause blocks and unpause resumes
+- [x] **1B-04** · Test: `@inferred SimClock(1.0)` — type stable construction
+- [x] **1B-05** · Test: `CancellableEvent` cancel set — cancelled events not dispatched
   - Corresponds to validation: **DES-S-08**
-- [ ] **1B-06** · Run: `julia --project=packages/SimCore -e "using Pkg; Pkg.test()"`
+- [x] **1B-06** · Run: `julia --project=packages/SimCore -e "using Pkg; Pkg.test()"`
 
 ---
 
@@ -825,7 +825,7 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
 | Phase | Name | Status | Sprint completion |
 |---|---|---|---|
 | **0** | Infrastructure | ✅ Complete (2026-08-07) | 13/14 tasks done (P0-12 GitHub push pending) |
-| **1** | SimCore | `[ ]` Not started | 0/12 |
+| **1** | SimCore | ✅ Complete (2026-08-07) | 12/12 |
 | **2** | SimDES Tier 1 | `[ ]` Not started | 0/24 |
 | **3** | SimCrowd + GPU | `[ ]` Not started | 0/21 |
 | **4** | SimViz GLMakie | `[ ]` Not started | 0/8 |
