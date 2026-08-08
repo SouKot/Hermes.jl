@@ -33,7 +33,7 @@ abstract type SimEvent end
 # ── Generic events (industry-agnostic) ────────────────────────────────────────
 
 """
-    EntityArrival(entity_id, zone_id, time)
+    EntityArrival(entity_id, zone_id, time[, priority[, is_external]])
 
 An entity (customer, package, patient, vehicle) arrives at a zone.
 
@@ -41,12 +41,27 @@ An entity (customer, package, patient, vehicle) arrives at a zone.
 - `entity_id::UInt64`: unique entity identifier
 - `zone_id::Int`: destination zone (Logical Process ID)
 - `time::Float64`: scheduled simulated time of arrival
+- `priority::Int`: service priority; higher = served before lower-priority entities in queue.
+  Default `0` = normal FIFO. Used by non-preemptive Head-Of-Line (HOL) priority queuing.
+- `is_external::Bool`: `true` if this is a zone-owned Poisson arrival (triggers the next
+  arrival to be self-scheduled); `false` if routed from another zone or spawned as a
+  fork-join sub-entity. Default `true` for backward compatibility.
 """
 struct EntityArrival <: SimEvent
-    entity_id :: UInt64
-    zone_id   :: Int
-    time      :: Float64
+    entity_id   :: UInt64
+    zone_id     :: Int
+    time        :: Float64
+    priority    :: Int
+    is_external :: Bool
 end
+
+""" 3-arg constructor: FIFO priority, external arrival (backward compat). """
+EntityArrival(entity_id::UInt64, zone_id::Int, time::Float64) =
+    EntityArrival(entity_id, zone_id, time, 0, true)
+
+""" 4-arg constructor: custom priority, external arrival (backward compat). """
+EntityArrival(entity_id::UInt64, zone_id::Int, time::Float64, priority::Int) =
+    EntityArrival(entity_id, zone_id, time, priority, true)
 
 """
     ProcessComplete(entity_id, station_id, time)

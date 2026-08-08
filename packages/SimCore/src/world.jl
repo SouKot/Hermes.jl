@@ -59,6 +59,10 @@ keeping the same public API.
 - `obstacles`: walls and barriers
 - `zone_states`: per-zone mutable state (queue depth, server busy count, etc.)
 - `stats`: global statistics accumulator
+- `zone_stats`: per-zone statistics (keyed by zone_id); populated by multi-zone runners
+- `entry_times`: system-entry time for each entity; preserved across zone transfers
+- `join_barriers`: fork-join tracking: parent_id → (total_tasks, done_tasks, entry_time)
+- `sub_entity_map`: sub_entity_id → parent_entity_id for fork-join sub-tasks
 - `time`: current simulated time
 """
 mutable struct SimWorld
@@ -69,6 +73,10 @@ mutable struct SimWorld
     obstacles       :: Dict{UInt64, CrowdObstacle}
     zone_states     :: Dict{Int, ZoneState}
     stats           :: SimStats
+    zone_stats      :: Dict{Int, SimStats}                      # per-zone stats
+    entry_times     :: Dict{UInt64, Float64}                    # system entry time per entity
+    join_barriers   :: Dict{UInt64, Tuple{Int,Int,Float64}}     # parent → (total,done,t_entry)
+    sub_entity_map  :: Dict{UInt64, UInt64}                     # sub_id → parent_id
     time            :: Float64
 end
 
@@ -86,6 +94,10 @@ function SimWorld()
         Dict{UInt64, CrowdObstacle}(),
         Dict{Int, ZoneState}(),
         SimStats(),
+        Dict{Int, SimStats}(),
+        Dict{UInt64, Float64}(),
+        Dict{UInt64, Tuple{Int,Int,Float64}}(),
+        Dict{UInt64, UInt64}(),
         0.0,
     )
 end

@@ -31,6 +31,7 @@ All mutable fields — updated in the simulation hot path.
 - `sojourn_time_sum::Float64`: sum of individual sojourn times (for mean W)
 - `sojourn_time_samples::Int`: number of W samples
 - `busy_time::Float64`: total server busy time (for utilisation ρ)
+- `uptime::Float64`: total machine uptime (> 0 when servers available; for availability A)
 - `elapsed_sim_time::Float64`: total simulated time of this stats window
 - `warmup_complete::Bool`: flag — only record after warmup
 """
@@ -46,6 +47,7 @@ mutable struct SimStats
     sojourn_time_sum     :: Float64
     sojourn_time_samples :: Int
     busy_time            :: Float64
+    uptime               :: Float64   # machine uptime: Σ dt where num_servers > 0
     elapsed_sim_time     :: Float64
     warmup_complete      :: Bool
 end
@@ -57,7 +59,7 @@ Create a fresh statistics accumulator (all zeros, warmup incomplete).
 """
 SimStats() = SimStats(0, 0, 0, 0,
                       0.0, 0, 0.0, 0, 0.0, 0,
-                      0.0, 0.0, false)
+                      0.0, 0.0, 0.0, false)
 
 """
     reset_stats!(stats)
@@ -76,6 +78,7 @@ function reset_stats!(stats::SimStats)
     stats.sojourn_time_sum     = 0.0
     stats.sojourn_time_samples = 0
     stats.busy_time            = 0.0
+    stats.uptime               = 0.0
     stats.elapsed_sim_time     = 0.0
     stats.warmup_complete      = false
     return stats
@@ -134,6 +137,18 @@ Record a time interval `busy_dt` during which the server was busy.
 function record_utilization!(stats::SimStats, busy_dt::Float64)
     stats.warmup_complete || return stats
     stats.busy_time += busy_dt
+    return stats
+end
+
+"""
+    record_uptime!(stats, dt)
+
+Record time interval `dt` during which the resource was available (num_servers > 0).
+Used to compute machine availability: A = uptime / elapsed_sim_time.
+"""
+function record_uptime!(stats::SimStats, dt::Float64)
+    stats.warmup_complete || return stats
+    stats.uptime += dt
     return stats
 end
 

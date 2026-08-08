@@ -47,7 +47,7 @@ export SimWorld, ZoneState, new_entity_id!, add_des_agent!, add_crowd_agent!,
 
 # Stats
 export SimStats, record_arrival!, record_departure!, record_queue_length!,
-       record_utilization!, record_blocked!, reset_stats!, sim_summary,
+       record_utilization!, record_uptime!, record_blocked!, reset_stats!, sim_summary,
        mean_queue_length, mean_wait_time, mean_sojourn_time,
        utilization, blocking_probability
 
