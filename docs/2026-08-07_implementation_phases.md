@@ -182,10 +182,10 @@ LEVEL 3 (Micro)  — Physics particles (crowd, fluid) → SimCrowd / SimFluid
 
 ### Sprint 2A — Core DES Engine
 
-- [ ] **2A-01** · Create `SimDES/src/SimDES.jl` module skeleton, depend on SimCore
+- [x] **2A-01** · Create `SimDES/src/SimDES.jl` module skeleton, depend on SimCore
   - `cd packages/SimDES && julia --project=. -e 'using Pkg; Pkg.add(["DataStructures"]); Pkg.develop(path="../SimCore")'`
 
-- [ ] **2A-02** · Implement `FutureEventList` — typed wrapper around `PriorityQueue`
+- [x] **2A-02** · Implement `FutureEventList` — typed wrapper around `PriorityQueue`
   ```julia
   # packages/SimDES/src/fel.jl
   struct FutureEventList
@@ -196,7 +196,7 @@ LEVEL 3 (Micro)  — Physics particles (crowd, fluid) → SimCrowd / SimFluid
   peek_time(fel)     = isempty(fel.queue) ? Inf : minimum(fel.queue)
   ```
 
-- [ ] **2A-03** · Implement `sim_loop!` — main event loop with SimClock throttle
+- [x] **2A-03** · Implement `sim_loop!` — main event loop with SimClock throttle
   ```julia
   function sim_loop!(world::SimWorld, fel::FutureEventList, clock::SimClock, t_end::Float64) :: SimStats
       while !isempty(fel.queue)
@@ -210,13 +210,13 @@ LEVEL 3 (Micro)  — Physics particles (crowd, fluid) → SimCrowd / SimFluid
   end
   ```
 
-- [ ] **2A-04** · Implement M/M/1 primitive elements via Julia multiple dispatch
+- [x] **2A-04** · Implement M/M/1 primitive elements via Julia multiple dispatch
   - `dispatch!(world, fel, e::EntityArrival, t)` — entity joins queue, schedules service if server idle
   - `dispatch!(world, fel, e::ProcessComplete, t)` — entity departs, next in queue starts service if any
   - `dispatch!(world, fel, e::NullEvent, t)` — no-op (Chandy-Misra placeholder)
   - Use `schedule!(fel, event, t)` inside handlers to chain events
 
-- [ ] **2A-05** · Implement `run_mm1!` convenience function
+- [x] **2A-05** · Implement `run_mm1!` convenience function
   ```julia
   function run_mm1!(λ::Float64, μ::Float64; n_arrivals::Int=100_000, seed::Int=42) :: SimStats
       world = SimWorld()
@@ -229,25 +229,25 @@ LEVEL 3 (Micro)  — Physics particles (crowd, fluid) → SimCrowd / SimFluid
   end
   ```
 
-- [ ] **2A-06** · Implement M/M/c multi-server support
+- [x] **2A-06** · Implement M/M/c multi-server support
   - `dispatch!(world, fel, e::EntityArrival, t)` — check if any of `c` servers idle
   - Track server states in `SimWorld.station_state :: Dict{Int, Int}` (count of busy servers)
 
-- [ ] **2A-07** · Implement M/M/1/K finite buffer (blocking)
+- [x] **2A-07** · Implement M/M/1/K finite buffer (blocking)
   - Add `capacity::Int` to queue state
   - Lost entities tracked in `stats.blocked_count`
 
-- [ ] **2A-08** · Implement non-exponential service time distributions
+- [x] **2A-08** · Implement non-exponential service time distributions
   - `M/D/1`: `service_dist = Dirac(d)` — deterministic
   - `M/G/1`: `service_dist = Erlang(k, λ)` — Erlang-k
   - Store `service_dist` as a callable in zone config, not hardcoded
 
-- [ ] **2A-09** · Implement machine failure events
+- [x] **2A-09** · Implement machine failure events
   - `dispatch!(world, fel, e::ResourceFailure, t)` — marks machine as down, reschedules repair
   - Repair: `dispatch!(world, fel, e::ScheduledChange{:Repair}, t)` — machine back up
   - Track `machine_availability` in `SimStats`
 
-- [ ] **2A-10** · Implement `statistics_collector!` — welch warmup removal
+- [x] **2A-10** · Implement `statistics_collector!` — welch warmup removal
   - Detect steady-state using Welch's method (sliding window variance)
   - Record statistics only after warm-up detected
   - Compute: mean `L`, `Lq`, `W`, `Wq`, utilization `ρ`
@@ -826,7 +826,7 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
 |---|---|---|---|
 | **0** | Infrastructure | ✅ Complete (2026-08-07) | 13/14 tasks done (P0-12 GitHub push pending) |
 | **1** | SimCore | ✅ Complete (2026-08-07) | 12/12 |
-| **2** | SimDES Tier 1 | `[ ]` Not started | 0/24 |
+| **2** | SimDES Tier 1 | ✅ Phase 2A Complete (2026-08-08) | 10/24 (2A done) |
 | **3** | SimCrowd + GPU | `[ ]` Not started | 0/21 |
 | **4** | SimViz GLMakie | `[ ]` Not started | 0/8 |
 | **5** | Conservative PDES | `[ ]` Not started | 0/15 |
