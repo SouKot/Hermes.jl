@@ -1,5 +1,5 @@
 # Hermes.jl — Session State
-**Last updated**: 2026-08-08 (end of session)  
+**Last updated**: 2026-08-08 (Sprint 2D completed)  
 **Repo**: `/run/media/sourabh/SANDISK-2TB/antigravity/ABM/`  
 **Last conversation**: `78616c9e-3fd6-407c-bebd-abc1d7c4255f`
 
@@ -7,39 +7,82 @@
 
 ## ✅ Where We Left Off
 
-### Last commit: `1e5ee2e`
+### Last commit: `5ff94f2`
 ```
+5ff94f2  sprint(2D): architecture hardening — ArrivalProcess, FailureModel, FEL-local cancel, auto-warmup
+9648d0a  docs: add SESSION_STATE.md — live session continuity document
 1e5ee2e  docs: integrate code review findings into implementation_phases.md
-8a7ce85  Perf + safety: remove_des_agent!, QueueDiscipline enum, zone_stats guard
-11e7ecd  Phase 2C: Medium DES scenarios — tandem, Jackson, priority, failures, NHPP, fork-join
 ```
 
 ### Test status: ✅ ALL PASSING
 ```
 SimDES:        69/69  tests
-Sprint 2C:     63/63  tests
-Total:        132/132  tests in ~15s
+Sprint 2C:     70/70  tests  (+7 new typed-kwarg assertions from 2D)
+Total:        139/139  tests in ~14.3s
 ```
-
-### Current throughput baseline: **1.73M events/sec** (M/M/1, 50k arrivals)
 
 ---
 
-## 📍 Active Phase: Between 2C and 2D
+## 📍 Active Phase: After 2D — Ready for Phase 3
 
-Phase 2A, 2B, 2C are **complete**. The engine is fully functional for Tier 1 serial DES.
+Phases 2A, 2B, 2C, **2D** are complete. The Tier 1 serial DES engine is production-ready.
 
-**Sprint 2D is next** — SimDES Architecture Hardening (5 tasks, not started):
+**Next milestone: Phase 3 — SimCrowd (Social Force Model)**
 
-| Task | Description | Effort |
-|------|-------------|--------|
-| **2D-01** | FEL-local cancellation set — remove global `ReentrantLock` | 1h |
-| **2D-02** | `ArrivalProcess` abstraction (PoissonArrival, NHPPArrival types) | 2h |
-| **2D-03** | `FailureModel` abstraction (BernoulliFailure type) | 1h |
-| **2D-04** | Automated Welch warm-up detection wired into `sim_loop!` | 4h |
-| **2D-05** | Mark `TransferOut` as deprecated for direct Tier 1 use | 30min |
+Or if more DES hardening is needed, minor deferred items from Sprint 2D:
+| Task | Description |
+|------|-------------|
+| (minor) | Add `warmup_n` tests to SimDES test suite for explicit coverage |
+| (Phase 5) | `DESContext` struct — move fork-join state out of SimCore |
 
-**After 2D, the next major milestone is Phase 3 (SimCrowd).**
+---
+
+## 🏗️ What Changed in Sprint 2D
+
+### 2D-01 — FEL-local cancellation
+- `FutureEventList` gains `cancelled::Set{UInt64}` — no `ReentrantLock` in Tier 1
+- `cancel!(fel::FutureEventList, id)` is the new preferred API (O(1), no lock)
+- `safe_dequeue!` checks `cev.id in fel.cancelled` directly
+- `import SimCore: cancel!` in `SimDES.jl` prevents dual-binding ambiguity
+
+### 2D-02 — ArrivalProcess hierarchy
+```julia
+abstract type ArrivalProcess end
+struct NoArrival <: ArrivalProcess end          # default: no external arrivals
+struct PoissonArrival <: ArrivalProcess          # homogeneous Poisson
+    rate :: Float64
+end
+struct NHPPArrival <: ArrivalProcess             # non-homogeneous Poisson
+    schedule :: ArrivalRateSchedule
+end
+```
+- `ZoneConfig.arrival::ArrivalProcess` replaces flat `arrival_rate` + `arrival_schedule`
+- **Legacy kwargs still work**: `arrival_rate=λ` auto-converts to `PoissonArrival(λ)`
+- `_schedule_next_arrival!` dispatches on ArrivalProcess subtype (zero-overhead)
+
+### 2D-03 — FailureModel hierarchy
+```julia
+abstract type FailureModel end
+struct NoFailure <: FailureModel end             # default: no failures
+struct BernoulliFailure <: FailureModel          # exponential TTF + repair
+    α :: Float64   # failure rate
+    β :: Float64   # repair rate
+end
+```
+- `ZoneConfig.failures::FailureModel` replaces flat `failure_rate` + `repair_rate`
+- **Legacy kwargs still work**: `failure_rate=α, repair_rate=β` auto-converts
+- `ResourceFailure` and `Repair` handlers dispatch on FailureModel subtype
+
+### 2D-04 — Automated warmup in sim_loop!
+```julia
+stats = sim_loop!(world, fel, configs, clock, rng;
+                  t_end=100_000.0,
+                  warmup_n=5_000)   # ← NEW: auto-flip warmup after 5k departures
+```
+
+### 2D-05 — TransferOut marked Tier 2 only
+- Docstring updated with explicit note that `TransferOut` is reserved for Chandy-Misra PDES messages
+- Tier 1 code should use `FixedRoute`/`ProbRoute` in `ZoneConfig`
 
 ---
 
@@ -47,13 +90,12 @@ Phase 2A, 2B, 2C are **complete**. The engine is fully functional for Tier 1 ser
 
 | File | Purpose |
 |------|---------|
-| [`docs/2026-08-07_implementation_phases.md`](./2026-08-07_implementation_phases.md) | Phase tracker — THE source of truth |
-| [`packages/SimDES/src/zone.jl`](../packages/SimDES/src/zone.jl) | ZoneConfig, ArrivalProcess (2D-02 starts here) |
+| [`docs/2026-08-07_implementation_phases.md`](./2026-08-07_implementation_phases.md) | Phase tracker — source of truth |
+| [`packages/SimDES/src/zone.jl`](../packages/SimDES/src/zone.jl) | ZoneConfig, ArrivalProcess, FailureModel |
 | [`packages/SimDES/src/dispatch.jl`](../packages/SimDES/src/dispatch.jl) | Event dispatch hot path |
-| [`packages/SimDES/src/fel.jl`](../packages/SimDES/src/fel.jl) | FEL + CancellableEvent (2D-01 starts here) |
-| [`packages/SimCore/src/events.jl`](../packages/SimCore/src/events.jl) | CancellableEvent, global cancel set |
-| [`packages/SimCore/src/world.jl`](../packages/SimCore/src/world.jl) | SimWorld, ZoneState |
-| [`packages/SimDES/test/runtests.jl`](../packages/SimDES/test/runtests.jl) | Full test suite |
+| [`packages/SimDES/src/fel.jl`](../packages/SimDES/src/fel.jl) | FEL + FEL-local cancel |
+| [`packages/SimDES/src/loop.jl`](../packages/SimDES/src/loop.jl) | sim_loop! + warmup_n |
+| [`packages/SimDES/test/runtests.jl`](../packages/SimDES/test/runtests.jl) | Full test suite (139 tests) |
 
 ---
 
@@ -61,55 +103,48 @@ Phase 2A, 2B, 2C are **complete**. The engine is fully functional for Tier 1 ser
 
 **Paste this into the new conversation:**
 
-> "Continue Hermes.jl development. Read `SESSION_STATE.md` and `implementation_phases.md` to get context. 
-> Then start Sprint 2D — begin with task 2D-01 (FEL-local cancellation set)."
+> "Continue Hermes.jl development. Read SESSION_STATE.md. Sprint 2D is complete.
+> Start Phase 3 — SimCrowd Social Force Model."
 
-**Or if you want to pick a specific task:**
-> "Continue Hermes.jl. Read session state. Implement 2D-02: ArrivalProcess abstraction."
-
-**First thing to run in new session:**
+**First thing to run:**
 ```bash
 cd /run/media/sourabh/SANDISK-2TB/antigravity/ABM/packages/SimDES
 julia --startup-file=no --project=. test/runtests.jl
 ```
-Should output: `132/132 tests, ~15s`. If it doesn't, debug before starting new work.
+Should output: `139/139 tests, ~14s`.
+
+---
+
+## 🔬 Deferred Work (Captured in Phase Tracker)
+
+- **Phase 3**: SimCrowd — Social Force Model pedestrian simulation
+- **Phase 4**: SimViz — GLMakie desktop visualization  
+- **Phase 5**: Tier 2 PDES — Chandy-Misra Conservative PDES (per-LP FEL)
+  - 5A-06: `DESContext` struct — move fork-join state out of SimCore
+  - 5A-07: `configs::Vector` instead of `Dict` for >20 zones
+- **Sprint 8-07**: `_priority_enqueue!` O(log n) if needed for large scenarios
 
 ---
 
 ## 🏗️ Architecture Summary
 
 ```
-SimCore  ← shared types (SimWorld, SimEvent, SimClock, SimStats, ZoneState)
-SimDES   ← Tier 1 serial DES (FEL, dispatch!, zone configs, runners)
+SimCore  ← shared types: SimWorld, SimEvent, SimClock, SimStats, ZoneState
+SimDES   ← Tier 1 serial DES: FEL, dispatch!, ZoneConfig, ArrivalProcess, FailureModel
 SimCrowd ← Phase 3: Social Force Model (not started)
 SimFluid ← Phase 9: deferred
 SimViz   ← Phase 4: GLMakie desktop (not started)
 ```
 
-**Event flow**: `schedule!(fel, event, t)` → `sim_loop!` dequeues → `dispatch!(world, fel, configs, rng, event, t)` → schedules next events + updates stats.
-
----
-
-## 📋 Completed This Session (2026-08-08)
-
-1. **Implemented Phase 2C** (6 medium DES scenarios): tandem queue, Jackson network, 
-   priority queuing (HOL non-preemptive), machine failures, NHPP thinning, fork-join.
-2. **Fixed routing-loop bug**: `is_external` flag on `EntityArrival` gates external arrival scheduling.
-3. **Fixed machine failure bug**: `zone.num_servers` vs `cfg.num_servers` in EntityArrival dispatch.
-4. **Performance hardening** (commit `8a7ce85`):
-   - `remove_des_agent!` on hot path (−78ns/departure, +3% throughput)
-   - `isempty(world.zone_stats)` guard in `_update_time_averages!`
-   - `@enum QueueDiscipline { FIFO=1, PRIORITY_HOL=2 }` replacing `:symbol`
-5. **Code review** (`code_review.md`): full performance + modularity analysis with benchmarks.
-6. **Updated `implementation_phases.md`**: Sprint 2D added, Phase 5 augmented, 
-   Key Technical Decisions updated with benchmark-confirmed results.
-
----
-
-## 🔬 Deferred Work (Captured in Phase Tracker)
-
-All deferred items are in `implementation_phases.md`. Key ones:
-- **2D**: FEL cancellation, ArrivalProcess/FailureModel abstractions, Welch automation
-- **5A-06**: `DESContext` struct — move fork-join state out of SimCore
-- **5A-07**: `configs::Vector` instead of `Dict` for Tier 2 (>20 zones)
-- **8-07**: `_priority_enqueue!` O(log n) if needed in large scenarios
+**ZoneConfig shape (Sprint 2D):**
+```julia
+ZoneConfig(
+  id, num_servers, capacity, service_dist,
+  arrival  :: ArrivalProcess,   # NoArrival | PoissonArrival(λ) | NHPPArrival(sched)
+  failures :: FailureModel,     # NoFailure | BernoulliFailure(α, β)
+  routing  :: RoutingPolicy,    # ExitSystem | FixedRoute(to) | ProbRoute(choices)
+  queue_discipline :: QueueDiscipline,  # FIFO | PRIORITY_HOL
+  fork_join :: Union{Nothing, ForkJoinConfig},
+  ...
+)
+```
