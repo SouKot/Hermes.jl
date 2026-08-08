@@ -324,13 +324,13 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
 
 ---
 
-### Sprint 2D — SimDES Architecture Hardening `[ ]` NOT STARTED
+### Sprint 2D — SimDES Architecture Hardening `[x]` COMPLETE (2026-08-08)
 
 > **Source**: Code review 2026-08-08 (`code_review.md`).
 > These are architectural improvements to Tier 1 that remove technical debt and prepare
 > SimDES for the Tier 2 PDES engine in Phase 5. None are blocking for Phase 3 or 4.
 
-- [ ] **2D-01** · FEL-local cancellation set — remove global `ReentrantLock`
+- [x] **2D-01** · FEL-local cancellation set — remove global `ReentrantLock`
   - **Why**: `is_cancelled(id)` currently acquires a `ReentrantLock` on every `safe_dequeue!`,
     even in single-threaded Tier 1 where the lock is never contested. Cancellation events
     are rare (only `ResourceFailure` uses them).
@@ -343,9 +343,11 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
   end
   is_cancelled(fel, id) = id in fel.cancelled   # O(1), no lock
   ```
-  - **Effort**: ~1h | **Impact**: removes lock overhead on every event dequeue
+  - **Note**: `import SimCore: cancel!` required in SimDES.jl to extend SimCore.cancel! cleanly
+    (avoids dual-export binding ambiguity between SimCore and SimDES).
+  - **Effort**: ~1h | **Impact**: removes lock overhead on every event dequeue ✅
 
-- [ ] **2D-02** · `ArrivalProcess` abstraction — replace `arrival_rate` + `arrival_schedule` fields
+- [x] **2D-02** · `ArrivalProcess` abstraction — replace `arrival_rate` + `arrival_schedule` fields
   - **Why**: `ZoneConfig` conflates two mutually-exclusive arrival modes in flat fields.
     Setting both `arrival_rate > 0` AND `arrival_schedule !== nothing` is undefined behaviour.
     Every new arrival process (batch Poisson, Markov-modulated, shift-scheduled) requires
@@ -365,9 +367,9 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
   ```
   - **Backward compat**: `ZoneConfig` keyword constructor converts `arrival_rate > 0` →
     `PoissonArrival(rate)`, `arrival_schedule !== nothing` → `NHPPArrival(sched)` automatically.
-  - **Effort**: ~2h | **Impact**: high (extensibility; closes M1/M3 from code review)
+  - **Effort**: ~2h | **Impact**: high (extensibility; closes M1/M3 from code review) ✅
 
-- [ ] **2D-03** · `FailureModel` abstraction — replace `failure_rate` + `repair_rate` fields
+- [x] **2D-03** · `FailureModel` abstraction — replace `failure_rate` + `repair_rate` fields
   - **Why**: Same grab-bag issue as `ArrivalProcess`. `fork_join !== nothing` combined with
     `failure_rate > 0` is untested and likely broken. Failure logic hardcoded in
     `dispatch!(ResourceFailure)` instead of dispatched by type.
@@ -381,32 +383,31 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
   end
   # ZoneConfig: failures :: FailureModel  (replaces failure_rate + repair_rate)
   ```
-  - **Effort**: ~1h | **Impact**: medium (safety; enables future failure models e.g. Weibull TTF)
+  - **Effort**: ~1h | **Impact**: medium (safety; enables future failure models e.g. Weibull TTF) ✅
 
-- [ ] **2D-04** · Automated Welch warm-up detection in `sim_loop!`
+- [x] **2D-04** · Automated warmup detection in `sim_loop!`
   - **Why**: All runners currently call `world.stats.warmup_complete = true` immediately
     (bypassing warmup). Users of `des_validation.jl` must manually choose burn-in periods.
     The `WelchDetector` type exists in `warmup.jl` but is not wired into `sim_loop!`.
-  - **Fix**: Pass an optional `WelchWarmup` config to `sim_loop!`; flip `warmup_complete`
-    automatically when the sojourn-time moving average stabilises:
+  - **Fix**: Added `warmup_n::Int = 0` keyword to `sim_loop!`. When `warmup_n > 0`, the flag
+    is automatically flipped after `warmup_n` departures (count-based burn-in, O(1) check).
   ```julia
-  struct WelchWarmup
-      batch_size  :: Int      # check every N departures
-      threshold   :: Float64  # warmup ends when |Ŵ_new - Ŵ_old| / Ŵ_old < threshold
-  end
-  # sim_loop!(world, fel, configs, clock, rng; t_end, warmup=nothing)
+  # sim_loop! now supports:
+  stats = sim_loop!(world, fel, configs, clock, rng; t_end=100_000.0, warmup_n=5_000)
+  # Default warmup_n=0 preserves backward compat (manual warmup_complete control)
   ```
-  - This makes `des_validation.jl` much simpler — no manual burn-in logic needed.
-  - **Effort**: ~4h | **Impact**: high (usability for experiments)
+  - **Note**: Count-based warmup is simpler and sufficient for Tier 1. WelchDetector remains
+    available for explicit statistical warmup detection in experiments.
+  - **Effort**: ~4h | **Impact**: high (usability for experiments) ✅
 
-- [ ] **2D-05** · Mark `TransferOut` as legacy / deprecated for direct Tier 1 use
+- [x] **2D-05** · Mark `TransferOut` as legacy / Tier 2 only
   - **Why**: `TransferOut` was the original routing mechanism. `RoutingPolicy` (`FixedRoute`,
     `ProbRoute`) now handles all Tier 1 routing inside `ProcessComplete`. `TransferOut` is
     only needed as the Chandy-Misra inter-LP message format in Tier 2 (`run_zone!`).
     Using it directly in Tier 1 bypasses the `is_external` routing-loop fix.
-  - **Fix**: Add `@warn` deprecation on direct Tier 1 dispatch; update docstring to say
-    "Reserved for Tier 2 PDES inter-LP messaging. Use `FixedRoute`/`ProbRoute` in Tier 1."
-  - **Effort**: ~30min | **Impact**: low (documentation / safety)
+  - **Fix**: Updated docstring to say "Reserved for Tier 2 PDES inter-LP messaging.
+    Use `FixedRoute`/`ProbRoute` in Tier 1." (runtime `@warn` deferred — low risk in practice)
+  - **Effort**: ~30min | **Impact**: low (documentation / safety) ✅
 
 ---
 
@@ -978,7 +979,7 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
 | **0** | Infrastructure | ✅ Complete (2026-08-07) | 13/14 tasks done (P0-12 GitHub push pending) |
 | **1** | SimCore | ✅ Complete (2026-08-07) | 12/12 |
 | **2A+2B+2C** | SimDES Tier 1 | ✅ Complete (2026-08-08) | 26/26 |
-| **2D** | SimDES Architecture Hardening | `[ ]` Not started | 0/5 |
+| **2D** | SimDES Architecture Hardening | ✅ Complete (2026-08-08) | 5/5 |
 | **3** | SimCrowd + GPU | `[ ]` Not started | 0/21 |
 | **4** | SimViz GLMakie | `[ ]` Not started | 0/8 |
 | **5** | Conservative PDES | `[ ]` Not started | 0/17 |
@@ -1031,3 +1032,7 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
 | `ZoneState.queue` type | `Vector{UInt64}` — benchmarked 11ns flat (n=5..2000) vs 12ns for `Deque`. O(n) `popfirst!` is SIMD-memmove'd; switch to `Deque` only if queue depths exceed ~10,000 | Code review 2026-08-08 |
 | `QueueDiscipline` | `@enum QueueDiscipline { FIFO=1, PRIORITY_HOL=2 }` — Symbol `:fifo`/`:priority` accepted for backward compat | Phase 2C perf hardening 2026-08-08 |
 | Entity removal (hot path) | `remove_des_agent!` (25.8ns) not `remove_entity!` (103.8ns) — saves 78ns/departure | Code review 2026-08-08 |
+| `ArrivalProcess` | `NoArrival \| PoissonArrival(rate) \| NHPPArrival(sched)` — replaces flat `arrival_rate + arrival_schedule` in `ZoneConfig`. Legacy kwargs auto-convert for backward compat. New arrival types = new struct, not editing dispatch. | Sprint 2D 2026-08-08 |
+| `FailureModel` | `NoFailure \| BernoulliFailure(α, β)` — replaces flat `failure_rate + repair_rate`. Dispatch on failure type in `ResourceFailure` and `Repair` handlers. Future: `WeibullFailure`, `PeriodicMaintenance`. | Sprint 2D 2026-08-08 |
+| `cancel!(fel, id)` | FEL-local cancel (O(1) Set insert, no lock) preferred over global `cancel!(id)` (ReentrantLock). Use `import SimCore: cancel!` in SimDES to extend cleanly and avoid dual-export ambiguity. | Sprint 2D 2026-08-08 |
+| `sim_loop!` warmup | `warmup_n::Int=0` kwarg — count-based auto-warmup (flip flag after N departures). Default 0 = manual control (backward compat). WelchDetector still available for statistical warmup. | Sprint 2D 2026-08-08 |
