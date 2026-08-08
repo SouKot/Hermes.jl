@@ -256,15 +256,25 @@ LEVEL 3 (Micro)  — Physics particles (crowd, fluid) → SimCrowd / SimFluid
 
 Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
 
-- [x] **2B-01** · **DES-S-01**: M/M/1 ρ=0.50 — `L ≈ 1.0`, `Wq ≈ 0.5 min` (±2%)
-- [x] **2B-02** · **DES-S-02**: M/M/1 ρ=0.90 — `L ≈ 9.0`, `Wq ≈ 9.0 min` (±5%)
-- [x] **2B-03** · **DES-S-03**: M/M/1 sweep ρ∈{0.1,0.25,0.5,0.7,0.8,0.9,0.95} — full curve
-- [x] **2B-04** · **DES-S-04**: M/M/c (c=4, ρ=0.667) — Erlang-C formula comparison
-- [x] **2B-05** · **DES-S-05**: M/M/1/K (K=5, ρ=1.0) — blocking probability ≈ 1/6
-- [x] **2B-06** · **DES-S-06**: M/D/1 (ρ=0.8) — `Wq ≈ 2.0 min` (P-K formula)
-- [x] **2B-07** · **DES-S-07**: M/G/1 Erlang-2 service — P-K formula validation
-- [x] **2B-08** · **DES-S-08**: Event cancellation — exactly 500/1000 events execute
-- [x] **2B-09** · **DES-S-09**: SimClock fidelity — 60×, 1×, 0.5× speed accuracy
+- [x] **2B-01** · **DES-S-01**: M/M/1 ρ=0.50 — `L ≈ 1.0`, `Wq ≈ 0.25`, `W ≈ 0.5` (±15% CI; ±2% in full script)
+- [x] **2B-02** · **DES-S-02**: M/M/1 ρ=0.90 — `L ≈ 9.0`, `Wq ≈ 0.9`, `W ≈ 1.0` (±25% CI due to high variance; ±5% in full script)
+- [x] **2B-03** · **DES-S-03**: M/M/1 sweep ρ∈{0.3,0.5,0.7,0.9} — L strictly monotone + ±25% per point
+- [x] **2B-04** · **DES-S-04**: M/M/c (c=4, λ=8, μ=3, ρ/server≈0.667) — per-server util ±8%, Wq < M/M/1
+- [x] **2B-05** · **DES-S-05**: M/M/1/K (K=5, ρ=1.0) — blocking_prob ≈ 1/6 (±3% absolute)
+- [x] **2B-06** · **DES-S-06**: M/D/1 (ρ=0.8, d=1.0) — `Wq ≈ 2.0`, `W ≈ 3.0` (P-K formula, ±15% CI)
+- [x] **2B-07** · **DES-S-07**: M/G/1 Erlang-2 (λ=1, μ=2, k=2) — Wq≈0.375 vs P-K (±15% CI); Wq non-increasing in k
+- [x] **2B-08** · **DES-S-08**: Event cancellation — exactly 500/1000 events execute (lazy-deletion FEL)
+- [x] **2B-09** · **DES-S-09**: SimClock fidelity — Inf-speed (<50ms), 1× real-time (~0.1s wall)
+
+**Also resolved in 2B (Phase 2A TODO):**
+- [x] `DESAgent.service_start_time::Float64` — exact Wq = `service_start_time − arrival_time`
+- [x] `ZoneState.queue::Vector{UInt64}` — O(1) FIFO replaces O(n) scan → **35× speedup** (412s → 11.6s)
+- [x] `_update_time_averages!` — per-server utilisation = `busy_servers/num_servers × Δt`
+- [x] Little's Law consistency test: `Wq + 1/μ ≈ W` (within 5%)
+
+**Deliverables:**
+- `packages/SimDES/test/runtests.jl` — 69/69 tests, 11.6s total ✅
+- `experiments/scripts/des/des_validation.jl` — full ±2-5% accuracy (200k–500k arrivals/test; not CI)
 
 ### Sprint 2C — Medium DES Scenarios
 
