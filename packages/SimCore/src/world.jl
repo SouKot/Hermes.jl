@@ -18,9 +18,10 @@ Mutable runtime state for a single zone (DES logical process).
 # Fields
 - `queue_length::Int`: current number of entities waiting in queue
 - `busy_servers::Int`: number of servers currently processing
-- `capacity::Int`: maximum queue capacity (`typemax(Int)` = unlimited)
+- `capacity::Int`: maximum entities in system (queue + in-service)
 - `num_servers::Int`: total number of parallel servers
 - `last_event_time::Float64`: time of last event (for time-average stats)
+- `queue::Vector{UInt64}`: ordered FIFO list of entity IDs waiting (O(1) dequeue)
 """
 mutable struct ZoneState
     queue_length    :: Int
@@ -28,15 +29,16 @@ mutable struct ZoneState
     capacity        :: Int
     num_servers     :: Int
     last_event_time :: Float64
+    queue           :: Vector{UInt64}   # FIFO entity ID queue; popfirst! = O(1) amortized
 end
 
 """
     ZoneState(; capacity, num_servers) -> ZoneState
 
-Create a fresh zone state with empty queues and idle servers.
+Create a fresh zone state with empty queue and idle servers.
 """
 ZoneState(; capacity::Int = typemax(Int), num_servers::Int = 1) =
-    ZoneState(0, 0, capacity, num_servers, 0.0)
+    ZoneState(0, 0, capacity, num_servers, 0.0, UInt64[])
 
 # ── SimWorld ──────────────────────────────────────────────────────────────────
 

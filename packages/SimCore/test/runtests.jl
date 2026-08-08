@@ -193,12 +193,18 @@ using StaticArrays: SVector
 
         @testset "DESAgent" begin
             a = DESAgent(0.0, 1)
-            @test a.arrival_time == 0.0
-            @test a.current_zone == 1
-            @test a.priority     == 0
+            @test a.arrival_time       == 0.0
+            @test a.current_zone       == 1
+            @test a.priority           == 0
+            @test a.service_start_time == Inf    # not yet served
 
             a2 = DESAgent(1.5, 2, 5)
-            @test a2.priority == 5
+            @test a2.priority           == 5
+            @test a2.service_start_time == Inf
+
+            # Explicit service_start_time (set when service begins)
+            a3 = DESAgent(1.5, 2, 0, 2.0)
+            @test a3.service_start_time == 2.0
         end
 
         @testset "CrowdAgent defaults" begin
@@ -291,10 +297,11 @@ using StaticArrays: SVector
             w = SimWorld()
             add_zone!(w, 1; capacity=10, num_servers=2)
             z = get_zone(w, 1)
-            @test z.capacity    == 10
-            @test z.num_servers == 2
+            @test z.capacity     == 10
+            @test z.num_servers  == 2
             @test z.queue_length == 0
             @test z.busy_servers == 0
+            @test isempty(z.queue)     # FIFO queue starts empty
         end
     end
 

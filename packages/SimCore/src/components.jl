@@ -27,15 +27,22 @@ Represents an entity moving through a discrete-event system
 - `arrival_time::Float64`: simulated time this entity first entered the system
 - `current_zone::Int`: LP (Logical Process) ID where the entity currently is
 - `priority::Int`: service priority; higher = served first (default 0)
+- `service_start_time::Float64`: simulated time service began; `Inf` while waiting in queue
 """
 struct DESAgent
-    arrival_time  :: Float64
-    current_zone  :: Int
-    priority      :: Int
+    arrival_time       :: Float64
+    current_zone       :: Int
+    priority           :: Int
+    service_start_time :: Float64   # Inf = waiting in queue; set when server claims entity
 end
 
+""" Construct with default priority=0 and service_start_time=Inf (not yet served). """
 DESAgent(arrival_time::Float64, current_zone::Int) =
-    DESAgent(arrival_time, current_zone, 0)
+    DESAgent(arrival_time, current_zone, 0, Inf)
+
+""" Construct with explicit priority; service_start_time=Inf until service begins. """
+DESAgent(arrival_time::Float64, current_zone::Int, priority::Int) =
+    DESAgent(arrival_time, current_zone, priority, Inf)
 
 # ── Crowd agent component ──────────────────────────────────────────────────────
 
