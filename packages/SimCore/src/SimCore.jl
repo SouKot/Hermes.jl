@@ -40,7 +40,9 @@ export DESAgent, CrowdAgent, FluidParticle, CrowdObstacle,
        width, height, center
 
 # World
-export SimWorld, ZoneState, new_entity_id!, add_des_agent!, add_crowd_agent!,
+export SimWorld, ZoneState, new_entity_id!, 
+       add_des_agent!, remove_des_agent!, 
+       add_crowd_agent!, remove_crowd_agent!,
        add_fluid_particle!, add_obstacle!, remove_entity!,
        get_des_agent, get_crowd_agent, update_crowd_agent!,
        add_zone!, get_zone, entity_count
