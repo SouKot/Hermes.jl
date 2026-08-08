@@ -324,6 +324,92 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
 
 ---
 
+### Sprint 2D — SimDES Architecture Hardening `[ ]` NOT STARTED
+
+> **Source**: Code review 2026-08-08 (`code_review.md`).
+> These are architectural improvements to Tier 1 that remove technical debt and prepare
+> SimDES for the Tier 2 PDES engine in Phase 5. None are blocking for Phase 3 or 4.
+
+- [ ] **2D-01** · FEL-local cancellation set — remove global `ReentrantLock`
+  - **Why**: `is_cancelled(id)` currently acquires a `ReentrantLock` on every `safe_dequeue!`,
+    even in single-threaded Tier 1 where the lock is never contested. Cancellation events
+    are rare (only `ResourceFailure` uses them).
+  - **Fix**: Move `cancelled::Set{UInt64}` into `FutureEventList` struct (per-FEL, not global).
+    Tier 1 needs no lock; Tier 2 wraps with a `ReentrantLock` inside the LP's own `run_zone!`.
+  ```julia
+  struct FutureEventList
+      queue     :: PriorityQueue{CancellableEvent, Float64}
+      cancelled :: Set{UInt64}   # per-FEL; Tier 1 needs no lock
+  end
+  is_cancelled(fel, id) = id in fel.cancelled   # O(1), no lock
+  ```
+  - **Effort**: ~1h | **Impact**: removes lock overhead on every event dequeue
+
+- [ ] **2D-02** · `ArrivalProcess` abstraction — replace `arrival_rate` + `arrival_schedule` fields
+  - **Why**: `ZoneConfig` conflates two mutually-exclusive arrival modes in flat fields.
+    Setting both `arrival_rate > 0` AND `arrival_schedule !== nothing` is undefined behaviour.
+    Every new arrival process (batch Poisson, Markov-modulated, shift-scheduled) requires
+    editing `_schedule_next_arrival!` rather than adding a new type.
+  - **Fix**: Abstract type hierarchy dispatched by `_schedule_next_arrival!`:
+  ```julia
+  abstract type ArrivalProcess end
+  struct NoArrival     <: ArrivalProcess end           # pure sink zone
+  struct PoissonArrival <: ArrivalProcess
+      rate :: Float64
+  end
+  struct NHPPArrival   <: ArrivalProcess
+      schedule :: ArrivalRateSchedule
+  end
+  # ZoneConfig: arrival :: ArrivalProcess  (replaces arrival_rate + arrival_schedule)
+  # _schedule_next_arrival! dispatches on typeof(cfg.arrival)
+  ```
+  - **Backward compat**: `ZoneConfig` keyword constructor converts `arrival_rate > 0` →
+    `PoissonArrival(rate)`, `arrival_schedule !== nothing` → `NHPPArrival(sched)` automatically.
+  - **Effort**: ~2h | **Impact**: high (extensibility; closes M1/M3 from code review)
+
+- [ ] **2D-03** · `FailureModel` abstraction — replace `failure_rate` + `repair_rate` fields
+  - **Why**: Same grab-bag issue as `ArrivalProcess`. `fork_join !== nothing` combined with
+    `failure_rate > 0` is untested and likely broken. Failure logic hardcoded in
+    `dispatch!(ResourceFailure)` instead of dispatched by type.
+  - **Fix**:
+  ```julia
+  abstract type FailureModel end
+  struct NoFailure       <: FailureModel end
+  struct BernoulliFailure <: FailureModel
+      α :: Float64   # failure rate (α events/time)
+      β :: Float64   # repair rate (β repairs/time); availability = β/(α+β)
+  end
+  # ZoneConfig: failures :: FailureModel  (replaces failure_rate + repair_rate)
+  ```
+  - **Effort**: ~1h | **Impact**: medium (safety; enables future failure models e.g. Weibull TTF)
+
+- [ ] **2D-04** · Automated Welch warm-up detection in `sim_loop!`
+  - **Why**: All runners currently call `world.stats.warmup_complete = true` immediately
+    (bypassing warmup). Users of `des_validation.jl` must manually choose burn-in periods.
+    The `WelchDetector` type exists in `warmup.jl` but is not wired into `sim_loop!`.
+  - **Fix**: Pass an optional `WelchWarmup` config to `sim_loop!`; flip `warmup_complete`
+    automatically when the sojourn-time moving average stabilises:
+  ```julia
+  struct WelchWarmup
+      batch_size  :: Int      # check every N departures
+      threshold   :: Float64  # warmup ends when |Ŵ_new - Ŵ_old| / Ŵ_old < threshold
+  end
+  # sim_loop!(world, fel, configs, clock, rng; t_end, warmup=nothing)
+  ```
+  - This makes `des_validation.jl` much simpler — no manual burn-in logic needed.
+  - **Effort**: ~4h | **Impact**: high (usability for experiments)
+
+- [ ] **2D-05** · Mark `TransferOut` as legacy / deprecated for direct Tier 1 use
+  - **Why**: `TransferOut` was the original routing mechanism. `RoutingPolicy` (`FixedRoute`,
+    `ProbRoute`) now handles all Tier 1 routing inside `ProcessComplete`. `TransferOut` is
+    only needed as the Chandy-Misra inter-LP message format in Tier 2 (`run_zone!`).
+    Using it directly in Tier 1 bypasses the `is_external` routing-loop fix.
+  - **Fix**: Add `@warn` deprecation on direct Tier 1 dispatch; update docstring to say
+    "Reserved for Tier 2 PDES inter-LP messaging. Use `FixedRoute`/`ProbRoute` in Tier 1."
+  - **Effort**: ~30min | **Impact**: low (documentation / safety)
+
+---
+
 ## Phase 3 — SimCrowd: Social Force Model
 
 > **Goal**: CPU-correct Social Force Model, GPU-accelerated, passing all CRW-S and CRW-M tests.  
@@ -640,6 +726,34 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
   end
   ```
 
+- [ ] **5A-06** · Move `DESContext` fields out of `SimWorld` into SimDES
+  - **Why**: `entry_times`, `join_barriers`, and `sub_entity_map` are pure SimDES concerns
+    (fork-join tracking, total sojourn across zone transfers). They currently live in
+    `SimCore.SimWorld`, which means SimCore has a semantic dependency on SimDES internals.
+    This violates the package boundary: SimCore should be a clean shared kernel.
+  - **Fix**: Introduce `DESContext` in SimDES and thread it alongside `SimWorld`:
+  ```julia
+  # packages/SimDES/src/context.jl
+  mutable struct DESContext
+      entry_times    :: Dict{UInt64, Float64}              # system-entry time per entity
+      join_barriers  :: Dict{UInt64, Tuple{Int,Int,Float64}} # parent→(total,done,t_entry)
+      sub_entity_map :: Dict{UInt64, UInt64}               # sub_id → parent_id
+  end
+  DESContext() = DESContext(Dict(), Dict(), Dict())
+  ```
+  - Update all `dispatch!` handlers to accept `DESContext` alongside `SimWorld`.
+  - Remove the three fields from `SimCore.SimWorld`.
+  - **Effort**: ~3h | **Source**: code review M6 (2026-08-08)
+
+- [ ] **5A-07** · Replace `configs::Dict{Int,ZoneConfig}` with `Vector{ZoneConfig}` for Tier 2
+  - **Why**: In Tier 2, each `run_zone!` LP looks up its config on every event. With tens
+    of zones, a `Dict` hash lookup (17.7ns) vs. direct vector index (15.8ns) is small but
+    constant per event. More importantly, a `Vector` with zone_id as index is cache-friendly
+    when zone IDs are dense (1…N), which they always are in practice.
+  - **Condition**: Only worthwhile when zone count regularly exceeds ~20. For Tier 1 tests
+    (1–4 zones), the Dict is fine. Implement for Tier 2 launch.
+  - **Effort**: ~1h | **Source**: code review P4 (2026-08-08)
+
 ### Sprint 5B — PDES Validation Tests
 
 - [ ] **5B-01** · **PAR-01**: Serial vs. parallel correctness — identical event logs with fixed seed
@@ -799,6 +913,13 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
 - [ ] **8-04** · **CRW-M-04**: T-junction merge (300 agents)
 - [ ] **8-05** · **CRW-M-05**: Stadium aisle evacuation (2,000 agents)
 - [ ] **8-06** · Full benchmark report: all PAR-xx tests with plots
+- [ ] **8-07** · Upgrade `_priority_enqueue!` to O(log n) `SortedList` if needed
+  - **Current**: O(n) linear scan through queue. For 2–3 priority classes and typical
+    queue depths (<20 entities), this is measured at <1μs and negligible.
+  - **Trigger**: If Phase 8 DES-L-01 (manufacturing) or DES-L-02 (call center) shows
+    priority queue depths regularly exceeding ~100 entities at high load, switch to
+    `DataStructures.SortedList` for O(log n) insertion.
+  - **Source**: code review P5 (2026-08-08)
 
 ---
 
@@ -856,13 +977,14 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
 |---|---|---|---|
 | **0** | Infrastructure | ✅ Complete (2026-08-07) | 13/14 tasks done (P0-12 GitHub push pending) |
 | **1** | SimCore | ✅ Complete (2026-08-07) | 12/12 |
-| **2** | SimDES Tier 1 | ✅ Phase 2A+2B+2C Complete (2026-08-08) | 26/26 |
+| **2A+2B+2C** | SimDES Tier 1 | ✅ Complete (2026-08-08) | 26/26 |
+| **2D** | SimDES Architecture Hardening | `[ ]` Not started | 0/5 |
 | **3** | SimCrowd + GPU | `[ ]` Not started | 0/21 |
 | **4** | SimViz GLMakie | `[ ]` Not started | 0/8 |
-| **5** | Conservative PDES | `[ ]` Not started | 0/15 |
+| **5** | Conservative PDES | `[ ]` Not started | 0/17 |
 | **6** | DES + Crowd Integration | `[ ]` Not started | 0/7 |
 | **7** | Godot 4 Desktop App | `[ ]` Not started | 0/14 |
-| **8** | Large DES Validation | `[ ]` Not started | 0/6 |
+| **8** | Large DES Validation | `[ ]` Not started | 0/7 |
 | **9** | SimFluid | `[ ]` Deferred | — |
 | **10** | Multi-facility (MPI) | `[ ]` Future | — |
 | **11** | Web Deployment | `[ ]` Future | — |
@@ -906,3 +1028,6 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
 | Type stability | JET.jl mandatory for SimCore, SimDES, SimCrowd hot paths | code_practices §5 |
 | License | Proprietary commercial (custom LICENSE) | code_practices §12 |
 | Software name | **Hermes.jl** | code_practices §1 |
+| `ZoneState.queue` type | `Vector{UInt64}` — benchmarked 11ns flat (n=5..2000) vs 12ns for `Deque`. O(n) `popfirst!` is SIMD-memmove'd; switch to `Deque` only if queue depths exceed ~10,000 | Code review 2026-08-08 |
+| `QueueDiscipline` | `@enum QueueDiscipline { FIFO=1, PRIORITY_HOL=2 }` — Symbol `:fifo`/`:priority` accepted for backward compat | Phase 2C perf hardening 2026-08-08 |
+| Entity removal (hot path) | `remove_des_agent!` (25.8ns) not `remove_entity!` (103.8ns) — saves 78ns/departure | Code review 2026-08-08 |
