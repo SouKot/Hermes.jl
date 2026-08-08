@@ -122,6 +122,13 @@ end
 An entity departs a zone and is transferred to a destination zone.
 Handled by the destination zone as an `EntityArrival` after transit time.
 
+> **Tier 2 use only.** In Tier 1 serial DES, use `FixedRoute` or `ProbRoute` in
+> `ZoneConfig` instead. `TransferOut` is kept for the Chandy-Misra inter-LP
+> message format in Conservative PDES (Tier 2 / Phase 5), where each LP dispatches
+> `TransferOut` to send entities to downstream LP channels.
+> Direct Tier 1 dispatch of `TransferOut` bypasses the `is_external` routing-loop
+> guard and may cause duplicate arrival scheduling.
+
 # Fields
 - `entity_id::UInt64`: entity being transferred
 - `dest_zone::Int`: destination zone LP ID
@@ -154,9 +161,13 @@ const _cancel_lock      = ReentrantLock()
 """
     cancel!(id::UInt64)
 
-Mark an event as cancelled. The event will be silently skipped the next
-time `safe_dequeue!` encounters it in the FEL.
-Thread-safe.
+Mark an event as cancelled in the **global** cancellation set. The event will be
+silently skipped the next time `safe_dequeue!` encounters it.
+Thread-safe (uses `ReentrantLock`).
+
+> **Note for SimDES users**: prefer `cancel!(fel::FutureEventList, id)` instead.
+> It uses a per-FEL `Set{UInt64}` with no lock — faster in Tier 1 and correct in Tier 2
+> where each LP owns its own FEL. This global version is kept for SimCore-level testing.
 """
 function cancel!(id::UInt64)
     lock(_cancel_lock) do
