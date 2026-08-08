@@ -256,15 +256,15 @@ LEVEL 3 (Micro)  — Physics particles (crowd, fluid) → SimCrowd / SimFluid
 
 Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
 
-- [ ] **2B-01** · **DES-S-01**: M/M/1 ρ=0.50 — `L ≈ 1.0`, `Wq ≈ 0.5 min` (±2%)
-- [ ] **2B-02** · **DES-S-02**: M/M/1 ρ=0.90 — `L ≈ 9.0`, `Wq ≈ 9.0 min` (±5%)
-- [ ] **2B-03** · **DES-S-03**: M/M/1 sweep ρ∈{0.1,0.25,0.5,0.7,0.8,0.9,0.95} — full curve
-- [ ] **2B-04** · **DES-S-04**: M/M/c (c=4, ρ=0.667) — Erlang-C formula comparison
-- [ ] **2B-05** · **DES-S-05**: M/M/1/K (K=5, ρ=1.0) — blocking probability ≈ 1/6
-- [ ] **2B-06** · **DES-S-06**: M/D/1 (ρ=0.8) — `Wq ≈ 2.0 min` (P-K formula)
-- [ ] **2B-07** · **DES-S-07**: M/G/1 Erlang-2 service — P-K formula validation
-- [ ] **2B-08** · **DES-S-08**: Event cancellation — exactly 500/1000 events execute
-- [ ] **2B-09** · **DES-S-09**: SimClock fidelity — 60×, 1×, 0.5× speed accuracy
+- [x] **2B-01** · **DES-S-01**: M/M/1 ρ=0.50 — `L ≈ 1.0`, `Wq ≈ 0.5 min` (±2%)
+- [x] **2B-02** · **DES-S-02**: M/M/1 ρ=0.90 — `L ≈ 9.0`, `Wq ≈ 9.0 min` (±5%)
+- [x] **2B-03** · **DES-S-03**: M/M/1 sweep ρ∈{0.1,0.25,0.5,0.7,0.8,0.9,0.95} — full curve
+- [x] **2B-04** · **DES-S-04**: M/M/c (c=4, ρ=0.667) — Erlang-C formula comparison
+- [x] **2B-05** · **DES-S-05**: M/M/1/K (K=5, ρ=1.0) — blocking probability ≈ 1/6
+- [x] **2B-06** · **DES-S-06**: M/D/1 (ρ=0.8) — `Wq ≈ 2.0 min` (P-K formula)
+- [x] **2B-07** · **DES-S-07**: M/G/1 Erlang-2 service — P-K formula validation
+- [x] **2B-08** · **DES-S-08**: Event cancellation — exactly 500/1000 events execute
+- [x] **2B-09** · **DES-S-09**: SimClock fidelity — 60×, 1×, 0.5× speed accuracy
 
 ### Sprint 2C — Medium DES Scenarios
 
@@ -826,7 +826,7 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
 |---|---|---|---|
 | **0** | Infrastructure | ✅ Complete (2026-08-07) | 13/14 tasks done (P0-12 GitHub push pending) |
 | **1** | SimCore | ✅ Complete (2026-08-07) | 12/12 |
-| **2** | SimDES Tier 1 | ✅ Phase 2A Complete (2026-08-08) | 10/24 (2A done) |
+| **2** | SimDES Tier 1 | ✅ Phase 2A+2B Complete (2026-08-08) | 19/24 |
 | **3** | SimCrowd + GPU | `[ ]` Not started | 0/21 |
 | **4** | SimViz GLMakie | `[ ]` Not started | 0/8 |
 | **5** | Conservative PDES | `[ ]` Not started | 0/15 |
