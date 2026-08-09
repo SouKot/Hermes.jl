@@ -421,10 +421,10 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
 
 ### Sprint 3A — Social Force Model (CPU)
 
-- [ ] **3A-01** · Add dependencies to `SimCrowd/Project.toml`
+- [x] **3A-01** · Add dependencies to `SimCrowd/Project.toml`
   - `Pkg.add(["StaticArrays","LinearAlgebra"]); Pkg.develop(path="../SimCore")`
 
-- [ ] **3A-02** · Implement goal-seeking force (`§3`, Helbing & Molnár 1995)
+- [x] **3A-02** · Implement goal-seeking force (`§3`, Helbing & Molnár 1995)
   ```julia
   function goal_seeking_force(pos::SVector{2,F}, vel::SVector{2,F},
                               goal::SVector{2,F}, v₀::F, τ::F) where F
@@ -433,7 +433,7 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
   end
   ```
 
-- [ ] **3A-03** · Implement agent-agent repulsion force (Gaussian potential)
+- [x] **3A-03** · Implement agent-agent repulsion force (Gaussian potential)
   ```julia
   # Parameters: A=2000N, B=0.08m (Helbing & Molnár 1995 default)
   function agent_repulsion(pos_i, pos_j, r_i, r_j; A=2000f0, B=0.08f0)
@@ -444,7 +444,7 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
   end
   ```
 
-- [ ] **3A-04** · Implement wall/obstacle repulsion force
+- [x] **3A-04** · Implement wall/obstacle repulsion force
   ```julia
   function wall_repulsion(pos, wall_segment; A_w=2000f0, B_w=0.08f0)
       d_w, n_w = closest_point_on_segment(pos, wall_segment)
@@ -452,7 +452,7 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
   end
   ```
 
-- [ ] **3A-05** · Implement Integration abstraction (Symplectic Euler default)
+- [x] **3A-05** · Implement Integration abstraction (Symplectic Euler default)
   - **Why**: Hardcoded Forward Euler is numerically unstable for dense crowds. We need a flexible
     integrator policy (Forward Euler vs Symplectic Euler vs RK2).
   ```julia
@@ -474,7 +474,7 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
   end
   ```
 
-- [ ] **3A-06** · Implement naive O(N²) crowd step (correct but slow — baseline for tests)
+- [x] **3A-06** · Implement naive O(N²) crowd step (correct but slow — baseline for tests)
   ```julia
   function crowd_step_cpu!(world::SimWorld, dt::Float32)
       agents = collect(values(world.crowd_agents))
@@ -502,13 +502,13 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
   end
   ```
 
-- [ ] **3A-07** · Implement Eikonal navigation potential field
+- [x] **3A-07** · Implement Eikonal navigation potential field
   - Build distance-to-goal grid on initialization
   - Fast Marching Method for static obstacles
   - Agent goal direction = gradient of Eikonal field
   - Re-compute when gates open/close (DES event triggers this)
 
-- [ ] **3A-08** · Implement spatial hash grid — O(N·k) neighbor lookup
+- [x] **3A-08** · Implement spatial hash grid — O(N·k) neighbor lookup
   ```julia
   struct SpatialHashGrid{F}
       cell_size  :: F
