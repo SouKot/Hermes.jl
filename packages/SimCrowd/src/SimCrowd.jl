@@ -4,19 +4,40 @@ using StaticArrays
 using LinearAlgebra
 using KernelAbstractions
 using Eikonal
+using Ark
 
 using SimCore
 
-export CrowdAgent
-export Integrator, ForwardEuler, SymplecticEuler
-export integrate_agent!
+export Position, Velocity, AgentParams, Goal, Force
 export goal_seeking_force, agent_repulsion, wall_repulsion
 export SpatialHash, hash_position, build_grid!, get_neighbors
 export NavigationField, build_navigation_field, get_desired_direction
-export crowd_step_cpu!
+export update_navigation_system!, update_social_forces_system!, integrate_physics_system!
+
+# Components
+struct Position{F<:AbstractFloat}
+    p::SVector{2,F}
+end
+
+struct Velocity{F<:AbstractFloat}
+    v::SVector{2,F}
+end
+
+struct Force{F<:AbstractFloat}
+    f::SVector{2,F}
+end
+
+struct AgentParams{F<:AbstractFloat}
+    radius::F
+    v_pref::F
+    τ::F
+end
+
+struct Goal{F<:AbstractFloat}
+    g::SVector{2,F}
+end
 
 include("forces.jl")
-include("integrate.jl")
 include("spatial_hash.jl")
 include("navigation.jl")
 include("loop.jl")

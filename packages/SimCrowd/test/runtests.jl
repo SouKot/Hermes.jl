@@ -3,6 +3,7 @@ using Test
 using StaticArrays
 using LinearAlgebra
 using KernelAbstractions
+using Ark
 
 @testset "SimCrowd.jl" begin
     
@@ -89,16 +90,18 @@ using KernelAbstractions
     
     @testset "Validation: CRW-S-01 (Straight-Line Goal Seeking)" begin
         # Setup: One agent at (0,0), goal (10,0)
-        # v0 = 1.4, τ = 0.5
         v0 = 1.4f0
         τ = 0.5f0
         dt = 0.05f0
         
-        agent = CrowdAgent(
-            UInt64(1), SVector(0.0f0, 0.0f0), SVector(0.0f0, 0.0f0), 0.3f0, v0, τ, SVector(10.0f0, 0.0f0)
-        )
-        
-        integrator = SymplecticEuler()
+        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32})
+        e = new_entity!(world, (
+            Position(SVector(0.0f0, 0.0f0)),
+            Velocity(SVector(0.0f0, 0.0f0)),
+            AgentParams(0.3f0, v0, τ),
+            Goal(SVector(10.0f0, 0.0f0)),
+            Force(SVector(0.0f0, 0.0f0))
+        ))
         
         t = 0.0f0
         reached_goal = false
@@ -106,17 +109,28 @@ using KernelAbstractions
         
         max_steps = 1000
         for step in 1:max_steps
-            # Only goal seeking force
-            F_drive = goal_seeking_force(agent.position, agent.velocity, agent.goal, v0, τ)
-            integrate_agent!(agent, F_drive, dt, integrator)
+            # Manual integration for this specific test
+            for (entities, pos_col, vel_col, params_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}))
+                for i in eachindex(pos_col)
+                    F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, params_col[i].v_pref, params_col[i].τ)
+                    force_col[i] = Force(F_drive)
+                end
+            end
+            
+            integrate_physics_system!(world, dt)
             t += dt
             
             # Check steady state speed around t=3.0
+            pos_c, vel_c, goal_c = get_components(world, e, (Position{Float32}, Velocity{Float32}, Goal{Float32}))
+            pos = pos_c.p
+            vel = vel_c.v
+            goal = goal_c.g
+            
             if abs(t - 3.0f0) < dt/2
-                @test isapprox(norm(agent.velocity), v0, atol=0.05)
+                @test isapprox(norm(vel), v0, atol=0.05)
             end
             
-            if norm(agent.position - agent.goal) < 0.1f0
+            if norm(pos - goal) < 0.1f0
                 reached_goal = true
                 time_to_reach = t
                 break
@@ -129,17 +143,19 @@ using KernelAbstractions
     end
     
     @testset "Validation: CRW-S-02 (Obstacle Avoidance)" begin
-        # Setup: Agent at (0, 0.01) to break perfect symmetry saddle point
-        # goal (10,0). Obstacle at (5,0) radius 0.5m
         v0 = 1.4f0
         τ = 0.5f0
         dt = 0.05f0
         
-        agent = CrowdAgent(
-            UInt64(1), SVector(0.0f0, 0.01f0), SVector(0.0f0, 0.0f0), 0.3f0, v0, τ, SVector(10.0f0, 0.0f0)
-        )
+        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32})
+        e = new_entity!(world, (
+            Position(SVector(0.0f0, 0.01f0)),
+            Velocity(SVector(0.0f0, 0.0f0)),
+            AgentParams(0.3f0, v0, τ),
+            Goal(SVector(10.0f0, 0.0f0)),
+            Force(SVector(0.0f0, 0.0f0))
+        ))
         
-        # We will use navigation field for obstacle avoidance
         grid_min = SVector(-2.0f0, -5.0f0)
         grid_max = SVector(12.0f0, 5.0f0)
         cell_size = 0.2f0
@@ -147,7 +163,6 @@ using KernelAbstractions
         dims = ceil.(Int, (grid_max - grid_min) / cell_size)
         obstacle_mask = zeros(Bool, dims[1], dims[2])
         
-        # Fill obstacle mask for circle at (5,0), radius 0.5m + agent radius 0.3m = 0.8m
         for x in 1:dims[1], y in 1:dims[2]
             cx = grid_min[1] + (x - 0.5f0) * cell_size
             cy = grid_min[2] + (y - 0.5f0) * cell_size
@@ -156,9 +171,7 @@ using KernelAbstractions
             end
         end
         
-        nav = build_navigation_field(grid_min, grid_max, cell_size, agent.goal, obstacle_mask)
-        
-        integrator = SymplecticEuler()
+        nav = build_navigation_field(grid_min, grid_max, cell_size, SVector(10.0f0, 0.0f0), obstacle_mask)
         
         t = 0.0f0
         reached_goal = false
@@ -166,23 +179,24 @@ using KernelAbstractions
         
         max_steps = 2000
         for step in 1:max_steps
-            dir = get_desired_direction(nav, agent.position)
-            F_drive = (v0 * dir - agent.velocity) / τ
-            integrate_agent!(agent, F_drive, dt, integrator)
+            update_navigation_system!(world, nav)
+            integrate_physics_system!(world, dt)
             t += dt
             
-            # Check distance to obstacle
-            dist_to_obs = norm(agent.position - SVector(5.0f0, 0.0f0))
+            pos_c, goal_c = get_components(world, e, (Position{Float32}, Goal{Float32}))
+            pos = pos_c.p
+            goal = goal_c.g
+            
+            dist_to_obs = norm(pos - SVector(5.0f0, 0.0f0))
             min_dist_to_obs = min(min_dist_to_obs, dist_to_obs)
             
-            if norm(agent.position - agent.goal) < 0.2f0
+            if norm(pos - goal) < 0.2f0
                 reached_goal = true
                 break
             end
         end
         
         @test reached_goal
-        # Agent radius is 0.3, obstacle radius is 0.5
         @test min_dist_to_obs > 0.5f0
     end
 end
