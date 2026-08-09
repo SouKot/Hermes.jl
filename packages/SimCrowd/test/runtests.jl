@@ -42,7 +42,7 @@ using Ark
         
         # We need a fallback Backend since CPU() is from KernelAbstractions
         backend = CPU()
-        sh = SpatialHash(backend, N, grid_min, grid_max, cell_size)
+        sh = RadixSpatialHash(backend, N, grid_min, grid_max, cell_size)
         
         # Generate random positions
         positions = [SVector{2, Float32}(rand()*10, rand()*10) for _ in 1:N]
