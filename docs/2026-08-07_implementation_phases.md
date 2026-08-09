@@ -452,11 +452,18 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
   end
   ```
 
-- [ ] **3A-05** · Implement Euler integration step
+- [ ] **3A-05** · Implement Integration abstraction (Symplectic Euler default)
+  - **Why**: Hardcoded Forward Euler is numerically unstable for dense crowds. We need a flexible
+    integrator policy (Forward Euler vs Symplectic Euler vs RK2).
   ```julia
-  function integrate_agent!(agent::CrowdAgent, force::SVector{2,F}, dt::F) where F
+  abstract type Integrator end
+  struct ForwardEuler <: Integrator end
+  struct SymplecticEuler <: Integrator end
+
+  # Symplectic Euler (update velocity first, then position with new velocity)
+  function integrate_agent!(agent::CrowdAgent, force::SVector{2,F}, dt::F, ::SymplecticEuler) where F
       new_vel = agent.velocity + force * dt
-      # Clamp to maximum speed (1.3 × desired_speed for panic)
+      # Clamp to maximum speed (e.g. panic multiplier)
       max_speed = agent.desired_speed * (1f0 + agent.panic_level)
       norm_vel  = norm(new_vel)
       if norm_vel > max_speed
