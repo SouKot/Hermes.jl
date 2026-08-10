@@ -33,9 +33,23 @@ The 16-core CPU vastly outperforms the unoptimized GPU implementation at all sca
 ## Next Steps (Optimization Phase)
 We implemented a `SocialForcesGPUContext` to pre-allocate device buffers, and a generic `reorder_array_kernel!` to physically shuffle the VRAM arrays based on the spatial hash. This guarantees fully coalesced memory access on the GPU. 
 
-## Results: Optimized GPU (Lazy Sorting) vs 16-Core CPU
+## Results: Intermediate GPU (Coalesced Memory) vs 16-Core CPU
 
-*Note: In this final test, per-step GPU allocations have been eliminated, VRAM memory access is strictly coalesced, and a Skin Radius (Verlet List) optimization prevents the spatial grid from being sorted every frame.*
+*Note: In this test, all per-step GPU allocations were eliminated, and VRAM memory access was strictly coalesced, but the GPU still rebuilt the spatial grid on every frame.*
+
+| N (Agents) | 16-Core CPU (`CellListMap`) | Intermediate GPU (ms/step) |
+| :--- | :--- | :--- |
+| **1,000** | **0.19 ms/step** | 0.24 ms/step |
+| **10,000** | 1.11 ms/step | **0.98 ms/step** |
+| **50,000** | 6.68 ms/step | **6.14 ms/step** |
+| **100,000** | 20.70 ms/step | **18.60 ms/step** |
+
+### Intermediate Conclusion
+The coalesced memory and allocation optimizations were incredibly successful. They eliminated roughly 32% of the GPU computation time at 100k scale (from 27.23 ms down to 18.60 ms). As a result, the GPU formally reclaimed the performance crown at simulation scales ≥ 10,000 agents.
+
+## Results: Final Optimized GPU (Lazy Sorting) vs 16-Core CPU
+
+*Note: In this final test, a Skin Radius (Verlet List) optimization was added to prevent the spatial grid from being sorted every frame, layering on top of the coalesced memory fixes.*
 
 | N (Agents) | 16-Core CPU (ms/step) | 16-Core CPU (Total: 100 steps) | Optimized GPU (ms/step) | Optimized GPU (Total: 100 steps) |
 | :--- | :--- | :--- | :--- | :--- |
