@@ -194,7 +194,6 @@ function CPUNeighborSearch(N::Int, grid_min::SVector{2,F}, grid_max::SVector{2,F
     sys = CellListMap.ParticleSystem(
         positions = dummy_positions,
         cutoff = cell_size,
-        unitcell = sides,
         output = zeros(SVector{2,F}, N)
     )
     

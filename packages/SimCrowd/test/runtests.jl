@@ -16,7 +16,7 @@ using Ark
         τ = 0.5f0
         
         # ê = (1, 0). (2.0*(1,0) - (1,0)) / 0.5 = (2, 0)
-        F_drive = goal_seeking_force(pos, vel, goal, v0, τ)
+        F_drive = goal_seeking_force(pos, vel, goal, v0, τ, 80.0f0)
         @test F_drive ≈ SVector(2.0f0, 0.0f0)
         
         # Agent repulsion
@@ -98,7 +98,7 @@ using Ark
         e = new_entity!(world, (
             Position(SVector(0.0f0, 0.0f0)),
             Velocity(SVector(0.0f0, 0.0f0)),
-            AgentParams(0.3f0, v0, τ),
+            AgentParams(0.3f0, 80.0f0, v0, τ),
             Goal(SVector(10.0f0, 0.0f0)),
             Force(SVector(0.0f0, 0.0f0))
         ))
@@ -112,7 +112,7 @@ using Ark
             # Manual integration for this specific test
             for (entities, pos_col, vel_col, params_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}))
                 for i in eachindex(pos_col)
-                    F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, params_col[i].v_pref, params_col[i].τ)
+                    F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, params_col[i].v_pref, params_col[i].τ, params_col[i].mass)
                     force_col[i] = Force(F_drive)
                 end
             end
@@ -151,7 +151,7 @@ using Ark
         e = new_entity!(world, (
             Position(SVector(0.0f0, 0.01f0)),
             Velocity(SVector(0.0f0, 0.0f0)),
-            AgentParams(0.3f0, v0, τ),
+            AgentParams(0.3f0, 80.0f0, v0, τ),
             Goal(SVector(10.0f0, 0.0f0)),
             Force(SVector(0.0f0, 0.0f0))
         ))

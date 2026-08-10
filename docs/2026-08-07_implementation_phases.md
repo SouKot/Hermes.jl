@@ -646,7 +646,25 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
 
 ---
 
-## Phase 5 — Conservative PDES: Tier 2 Engine
+## Phase 5 — Geometric Collision Avoidance (ORCA)
+
+> **Goal**: Implement a highly scalable, robust Optimal Reciprocal Collision Avoidance (ORCA) or RVO system as an alternative to the Social Force Model for macroscopic GPU validation.
+> **Package**: `packages/SimCrowd/src/SimCrowd.jl`
+> **Depends on**: Phase 3 complete
+> **Timeline**: Weeks 3-4
+
+### Sprint 5A — ORCA Research and GPU Architecture
+- [ ] **5A-01** · Research validation tests for ORCA (Antipodal Circle Scenario, Dense Corridor Swapping).
+- [ ] **5A-02** · Study architecture of open-source GPU-parallel ORCA libraries (e.g., FLAME GPU, Menge, RVO2).
+- [ ] **5A-03** · Formulate 2D Linear Programming solver strategy suitable for thousands of concurrent GPU threads.
+
+### Sprint 5B — ORCA Implementation and Validation
+- [ ] **5B-01** · Implement Velocity Obstacle formulation and linear program solver.
+- [ ] **5B-02** · Validate against the strict macroscopic flow rates in Phase 3C using `dt=0.01` (ORCA natively handles this without stiff-spring numerical explosions).
+
+---
+
+## Phase 6 — Conservative PDES: Tier 2 Engine
 
 > **Goal**: Refactor serial DES to per-LP parallel DES using Chandy-Misra protocol.  
 > **Design refs**: §7.5 (Option B), §7.6 (PDES as ABM), §7.7 (no zone limit), §7.10 (Tier 2)  
@@ -784,7 +802,7 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
 
 ---
 
-## Phase 6 — DES + Crowd Integration
+## Phase 7 — DES + Crowd Integration
 
 > **Goal**: DES events trigger crowd behavior changes. Full `§5` unified architecture.  
 > **Design refs**: §5.2 (sim step loop), §3.5 (crowd DES coupling)  

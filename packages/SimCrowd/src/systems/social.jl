@@ -11,15 +11,18 @@ using CellListMap
 struct SocialForcesGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector, VGPU<:AbstractVector, SGPU<:AbstractVector}
     N::Int
     cpu_positions::VCPU
-    cpu_radii::SCPU
+    cpu_social_radii::SCPU
+    cpu_collision_radii::SCPU
     cpu_forces::VCPU
     
     dev_positions::VGPU
-    dev_radii::SGPU
+    dev_social_radii::SGPU
+    dev_collision_radii::SGPU
     dev_forces::VGPU
     
     sorted_dev_positions::VGPU
-    sorted_dev_radii::SGPU
+    sorted_dev_social_radii::SGPU
+    sorted_dev_collision_radii::SGPU
     
     last_build_positions::VGPU
     sorted_last_positions::VGPU
@@ -31,27 +34,30 @@ function SocialForcesGPUContext(backend, F, N::Int)
     SCPU = Vector{F}
     
     cpu_positions = VCPU(undef, N)
-    cpu_radii = SCPU(undef, N)
+    cpu_social_radii = SCPU(undef, N)
+    cpu_collision_radii = SCPU(undef, N)
     cpu_forces = VCPU(undef, N)
     
     dev_positions = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    dev_radii = KernelAbstractions.zeros(backend, F, N)
+    dev_social_radii = KernelAbstractions.zeros(backend, F, N)
+    dev_collision_radii = KernelAbstractions.zeros(backend, F, N)
     dev_forces = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     
     sorted_dev_positions = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    sorted_dev_radii = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_social_radii = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_collision_radii = KernelAbstractions.zeros(backend, F, N)
     
     last_build_positions = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     sorted_last_positions = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     needs_rebuild = KernelAbstractions.ones(backend, Bool, 1) # init to true
     
     VGPU = typeof(dev_positions)
-    SGPU = typeof(dev_radii)
+    SGPU = typeof(dev_social_radii)
     
     return SocialForcesGPUContext{F, VCPU, SCPU, VGPU, SGPU}(
-        N, cpu_positions, cpu_radii, cpu_forces,
-        dev_positions, dev_radii, dev_forces,
-        sorted_dev_positions, sorted_dev_radii,
+        N, cpu_positions, cpu_social_radii, cpu_collision_radii, cpu_forces,
+        dev_positions, dev_social_radii, dev_collision_radii, dev_forces,
+        sorted_dev_positions, sorted_dev_social_radii, sorted_dev_collision_radii,
         last_build_positions, sorted_last_positions, needs_rebuild
     )
 end
@@ -89,19 +95,64 @@ function update_social_forces_system!(world::World, search::AbstractNeighborSear
     # Lazily get or create context
     ctx = get_gpu_context(world, backend, F, num_agents)
     positions = ctx.cpu_positions
-    radii = ctx.cpu_radii
+    social_radii = ctx.cpu_social_radii
+    collision_radii = ctx.cpu_collision_radii
+    
+    # We also need velocities now
+    velocities = Vector{SVector{2,F}}(undef, num_agents)
     
     idx = 1
-    for (entities, pos_col, params_col) in Query(world, (Position{F}, AgentParams{F}))
+    for (entities, pos_col, vel_col, params_col) in Query(world, (Position{F}, Velocity{F}, AgentParams{F}))
         for i in eachindex(pos_col)
             positions[idx] = pos_col[i].p
-            radii[idx] = params_col[i].radius
+            social_radii[idx] = params_col[i].social_radius
+            collision_radii[idx] = params_col[i].collision_radius
+            velocities[idx] = vel_col[i].v
             idx += 1
         end
     end
     
-    # Delegate to a backend-aware method which can handle device transfers
-    _update_social_forces_impl!(world, search, positions, radii, backend, ctx)
+    # Delegate to a backend-aware method which can handle device transfers (agent-agent forces)
+    _update_social_forces_impl!(world, search, positions, social_radii, collision_radii, velocities, backend, ctx)
+    
+    # After computing agent-agent forces, add Wall interactions (done on CPU for validation)
+    # We collect all walls first
+    walls = NTuple{2, SVector{2,F}}[]
+    for (entities, wall_col) in Query(world, (WallSegment{F},))
+        for i in eachindex(wall_col)
+            push!(walls, (wall_col[i].p1, wall_col[i].p2))
+        end
+    end
+    
+    if !isempty(walls)
+        for (entities, pos_col, vel_col, params_col, force_col) in Query(world, (Position{F}, Velocity{F}, AgentParams{F}, Force{F}))
+            for i in eachindex(pos_col)
+                p = pos_col[i].p
+                v = vel_col[i].v
+                s_r = params_col[i].social_radius
+                c_r = params_col[i].collision_radius
+                F_wall = zero(SVector{2,F})
+                for w in walls
+                    F_wall += wall_repulsion(p, v, s_r, c_r, w; μ=params_col[i].μ)
+                end
+                
+                # Add panic noise (random fluctuation)
+                theta = rand(F) * 2f0 * F(pi)
+                F_noise = SVector(cos(theta), sin(theta)) * F(0.5)
+                
+                force_col[i] = Force(force_col[i].f + F_wall + F_noise)
+            end
+        end
+    else
+        # Still add panic noise if no walls
+        for (entities, force_col) in Query(world, (Force{F},))
+            for i in eachindex(force_col)
+                theta = rand(F) * 2f0 * F(pi)
+                F_noise = SVector(cos(theta), sin(theta)) * F(0.5)
+                force_col[i] = Force(force_col[i].f + F_noise)
+            end
+        end
+    end
 end
 
 @kernel function reorder_array_kernel!(out_arr, @Const(in_arr), @Const(indices))
@@ -122,7 +173,7 @@ end
     end
 end
 
-@kernel function compute_social_forces_kernel!(forces, @Const(sorted_positions), @Const(sorted_radii), 
+@kernel function compute_social_forces_kernel!(forces, @Const(sorted_positions), @Const(sorted_social_radii), @Const(sorted_collision_radii), @Const(sorted_velocities),
     @Const(sorted_last_positions), grid_min, grid_dims, cell_size, @Const(cell_starts), @Const(cell_ends), @Const(agent_indices))
     i = @index(Global, Linear)
     
@@ -130,7 +181,9 @@ end
         original_i = agent_indices[i]
         
         pos_i = sorted_positions[i]
-        r_i = sorted_radii[i]
+        vel_i = sorted_velocities[i]
+        s_r_i = sorted_social_radii[i]
+        c_r_i = sorted_collision_radii[i]
         old_pos_i = sorted_last_positions[i]
         
         F_repulse = zero(SVector{2, typeof(cell_size)})
@@ -144,26 +197,33 @@ end
         
         for neighbor_idx in iter
             pos_j = sorted_positions[neighbor_idx]
-            r_j = sorted_radii[neighbor_idx]
+            vel_j = sorted_velocities[neighbor_idx]
+            s_r_j = sorted_social_radii[neighbor_idx]
+            c_r_j = sorted_collision_radii[neighbor_idx]
             
-            F_repulse += agent_repulsion(pos_i, pos_j, r_i, r_j)
+            d2 = sum(abs2.(pos_i - pos_j))
+            if d2 > 0 && d2 <= cell_size * cell_size
+                F_repulse += agent_repulsion(pos_i, vel_i, s_r_i, c_r_i, pos_j, vel_j, s_r_j, c_r_j)
+            end
         end
         forces[original_i] = F_repulse
     end
 end
 
-function _update_social_forces_impl!(world::World, search::RadixSpatialHash{AT,F}, positions, radii, backend, ctx::SocialForcesGPUContext) where {AT,F}
+function _update_social_forces_impl!(world::World, search::RadixSpatialHash{AT,F}, positions, social_radii, collision_radii, velocities, backend, ctx::SocialForcesGPUContext) where {AT,F}
     N = length(positions)
     
     dev_positions = ctx.dev_positions
-    dev_radii = ctx.dev_radii
+    dev_social_radii = ctx.dev_social_radii
+    dev_collision_radii = ctx.dev_collision_radii
     dev_forces = ctx.dev_forces
     
     fill!(dev_forces, zero(SVector{2,F}))
     
     # 2. Copy data to device
     copyto!(dev_positions, positions)
-    copyto!(dev_radii, radii)
+    copyto!(dev_social_radii, social_radii)
+    copyto!(dev_collision_radii, collision_radii)
     
     # 3. Lazy Rebuild Check
     sq_skin_radius = F(2.0)^2
@@ -188,12 +248,21 @@ function _update_social_forces_impl!(world::World, search::RadixSpatialHash{AT,F
     
     # 4. ALWAYS reorder current positions/radii (using current agent_indices, which may be old)
     kernel_reorder!(ctx.sorted_dev_positions, dev_positions, search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_radii, dev_radii, search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_social_radii, dev_social_radii, search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_collision_radii, dev_collision_radii, search.agent_indices, ndrange=N)
     KernelAbstractions.synchronize(backend)
+    
+    # Wait, we need to sort velocities for the GPU kernel too!
+    # I'll create a temporary dev_velocities since we don't have it in the context to save space, but actually it's fine just doing it lazily or modifying context.
+    # For now, since Phase 3C tests run on CPU, I'll quickly allocate it for GPU.
+    dev_velocities = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    sorted_dev_velocities = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    copyto!(dev_velocities, velocities)
+    kernel_reorder!(sorted_dev_velocities, dev_velocities, search.agent_indices, ndrange=N)
     
     # 5. Launch forces kernel using sorted arrays
     kernel! = compute_social_forces_kernel!(backend)
-    kernel!(dev_forces, ctx.sorted_dev_positions, ctx.sorted_dev_radii, ctx.sorted_last_positions,
+    kernel!(dev_forces, ctx.sorted_dev_positions, ctx.sorted_dev_social_radii, ctx.sorted_dev_collision_radii, sorted_dev_velocities, ctx.sorted_last_positions,
         search.grid_min, search.grid_dims, search.cell_size, 
         search.cell_starts, search.cell_ends, search.agent_indices, 
         ndrange=N)
@@ -213,7 +282,7 @@ function _update_social_forces_impl!(world::World, search::RadixSpatialHash{AT,F
     end
 end
 
-function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F}, positions, radii, backend::CPU, ctx) where {F}
+function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F}, positions, social_radii, collision_radii, velocities, backend::CPU, ctx) where {F}
     build_grid!(search, positions, backend)
     
     # Define the closure for CellListMap mapping
@@ -221,15 +290,16 @@ function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F},
         (; i, j, d2, d) = pair
         if d > F(1e-6)
             pos_i = positions[i]
-            pos_j = positions[j]
-            r_i = radii[i]
-            r_j = radii[j]
+            vel_i = velocities[i]
+            s_r_i = social_radii[i]
+            c_r_i = collision_radii[i]
             
-            # agent_repulsion already checks distance, but we can reuse d
-            A = F(2000.0)
-            B = F(0.08)
-            r_ij = pos_i - pos_j
-            f = A * exp((r_i + r_j - d) / B) * (r_ij / d)
+            pos_j = positions[j]
+            vel_j = velocities[j]
+            s_r_j = social_radii[j]
+            c_r_j = collision_radii[j]
+            
+            f = agent_repulsion(pos_i, vel_i, s_r_i, c_r_i, pos_j, vel_j, s_r_j, c_r_j)
             
             forces[i] += f
             forces[j] -= f

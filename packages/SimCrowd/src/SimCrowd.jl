@@ -8,7 +8,7 @@ using Ark
 
 using SimCore
 
-export Position, Velocity, AgentParams, Goal, Force
+export Position, Velocity, AgentParams, Goal, Force, WallSegment
 export goal_seeking_force, agent_repulsion, wall_repulsion
 export AbstractNeighborSearch, RadixSpatialHash, CPUNeighborSearch, build_grid!, get_neighbors
 export NavigationField, build_navigation_field, get_desired_direction
@@ -28,9 +28,21 @@ struct Force{F<:AbstractFloat}
 end
 
 struct AgentParams{F<:AbstractFloat}
-    radius::F
+    social_radius::F
+    collision_radius::F
+    mass::F
     v_pref::F
     τ::F
+    μ::F
+end
+
+# Provide an outer constructor for backward compatibility and easy defaulting
+AgentParams(social_radius::F, mass::F, v_pref::F, τ::F, μ::F) where {F<:AbstractFloat} = 
+    AgentParams(social_radius, social_radius * F(2/3), mass, v_pref, τ, μ)
+
+struct WallSegment{F<:AbstractFloat}
+    p1::SVector{2,F}
+    p2::SVector{2,F}
 end
 
 struct Goal{F<:AbstractFloat}
