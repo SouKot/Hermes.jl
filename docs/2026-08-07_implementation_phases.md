@@ -526,12 +526,12 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
   end
   ```
 
-### Sprint 3B — GPU Acceleration (KernelAbstractions.jl)
+### Sprint 3B — GPU Acceleration (KernelAbstractions.jl) `[x]` COMPLETE
 
 > **Design ref**: §6.3 (FLAME GPU 2 agent function pattern)
 
-- [ ] **3B-01** · Add `KernelAbstractions.jl` to `SimCrowd/Project.toml`
-- [ ] **3B-02** · Convert agent state to SoA (Structure of Arrays) for GPU efficiency
+- [x] **3B-01** · Add `KernelAbstractions.jl` to `SimCrowd/Project.toml`
+- [x] **3B-02** · Convert agent state to SoA (Structure of Arrays) for GPU efficiency
   ```julia
   struct CrowdAgentSoA
       positions     :: Vector{SVector{2, Float32}}    # or CuVector for GPU
@@ -542,17 +542,17 @@ Wire validation scripts in `experiments/scripts/des/` to use real `SimDES`:
   end
   ```
 
-- [ ] **3B-03** · Implement `@kernel social_force_kernel!` with KernelAbstractions
+- [x] **3B-03** · Implement `@kernel social_force_kernel!` with KernelAbstractions
   - Thread index → agent index `i`
   - Read neighbors from spatial hash (pre-computed on GPU)
   - Compute goal + repulsion + wall forces
   - Write to force buffer (no race conditions — each thread owns `forces[i]`)
   
-- [ ] **3B-04** · Implement GPU-resident spatial hash grid
+- [x] **3B-04** · Implement GPU-resident spatial hash grid
   - Sort agents by cell → build CSR (compressed sparse row) neighbor list
   - GPU-friendly: no dynamic `Dict`, sorted arrays + binary search
 
-- [ ] **3B-05** · Benchmark GPU vs CPU: at N=1k, 10k, 50k, 100k agents
+- [x] **3B-05** · Benchmark GPU vs CPU: at N=1k, 10k, 50k, 100k agents
   - Corresponds to **PAR-05**
 
 ### Sprint 3C — Crowd Validation Tests
