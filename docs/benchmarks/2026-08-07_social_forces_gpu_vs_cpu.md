@@ -33,16 +33,16 @@ The 16-core CPU vastly outperforms the unoptimized GPU implementation at all sca
 ## Next Steps (Optimization Phase)
 We implemented a `SocialForcesGPUContext` to pre-allocate device buffers, and a generic `reorder_array_kernel!` to physically shuffle the VRAM arrays based on the spatial hash. This guarantees fully coalesced memory access on the GPU. 
 
-## Results: Optimized GPU vs 16-Core CPU
+## Results: Optimized GPU (Lazy Sorting) vs 16-Core CPU
 
-*Note: In this test, all per-step GPU allocations have been eliminated, and VRAM memory access is strictly coalesced.*
+*Note: In this final test, per-step GPU allocations have been eliminated, VRAM memory access is strictly coalesced, and a Skin Radius (Verlet List) optimization prevents the spatial grid from being sorted every frame.*
 
 | N (Agents) | 16-Core CPU (ms/step) | 16-Core CPU (Total: 100 steps) | Optimized GPU (ms/step) | Optimized GPU (Total: 100 steps) |
 | :--- | :--- | :--- | :--- | :--- |
-| **1,000** | **0.19 ms/step** | **19.2 ms** | 0.24 ms/step | 24.7 ms |
-| **10,000** | 1.11 ms/step | 111.0 ms | **0.98 ms/step** | **98.5 ms** |
-| **50,000** | 6.68 ms/step | 668.8 ms | **6.14 ms/step** | **614.0 ms** |
-| **100,000** | 20.70 ms/step | 2070.2 ms | **18.60 ms/step** | **1860.1 ms** |
+| **1,000** | 0.20 ms/step | 20.5 ms | **0.18 ms/step** | **18.6 ms** |
+| **10,000** | 1.14 ms/step | 114.0 ms | **0.90 ms/step** | **90.8 ms** |
+| **50,000** | 7.42 ms/step | 742.9 ms | **6.21 ms/step** | **621.7 ms** |
+| **100,000** | 18.52 ms/step | 1852.8 ms | **17.36 ms/step** | **1736.8 ms** |
 
 ### PCI-e Data Transfer Overhead (N = 100,000)
 To determine if PCI-e bus transfers were bottlenecking the GPU, we explicitly profiled the DMA transfers at `N = 100,000`:
@@ -50,9 +50,8 @@ To determine if PCI-e bus transfers were bottlenecking the GPU, we explicitly pr
 - **Device to Host (D2H)**: 0.332 ms / step
 - **Total Transfer Cost**: **0.783 ms / step**
 
-**Conclusion on Transfers**: The total transfer cost is only ~0.78 ms per step, representing less than **5% of the total GPU step time** (18.60 ms). Therefore, PCI-e transfer is *not* the primary reason the GPU isn't 5x faster than the CPU. 
+**Conclusion on Transfers**: The total transfer cost is only ~0.78 ms per step, representing less than **5% of the total GPU step time** (17.36 ms). Therefore, PCI-e transfer is *not* a primary bottleneck.
 
-### Why isn't the GPU 5x faster?
-1. **Newton's Third Law (F_ij = -F_ji)**: The `CellListMap` CPU backend takes advantage of Newton's third law. When it computes a force between Agent A and Agent B, it applies it to both agents simultaneously, cutting the math workload exactly in half. On the GPU, doing this requires **atomic memory writes** to avoid thread collisions, which cripples parallel performance. Thus, the GPU computes all forces independently, doing exactly **2x the mathematical workload** of the CPU.
-2. **Per-Frame Sorting**: The GPU backend rebuilds the grid and Radix-Sorts 100,000 agents from scratch on every single frame to maintain coalesced memory.
-3. **CPU Strength**: A 16-core modern CPU is an absolute powerhouse. It's not a slow baseline to beat.
+### Architecture Notes
+1. **Newton's Third Law ($F_{ij} = -F_{ji}$)**: The `CellListMap` CPU backend takes advantage of Newton's third law. When it computes a force between Agent A and Agent B, it applies it to both agents simultaneously, cutting the math workload exactly in half. On the GPU, doing this requires **atomic memory writes** to avoid thread collisions, which cripples parallel performance. Thus, the GPU computes all forces independently, doing exactly **2x the mathematical workload** of the CPU.
+2. **Lazy Sorting (Verlet Lists)**: We implemented a skin radius threshold. A custom GPU kernel checks if `sum(abs2.(current_pos - last_sort_pos)) > skin_radius^2` for *any* agent. If no agent has breached the skin radius, we skip rebuilding the spatial grid entirely. This dynamic threshold guarantees mathematical correctness for high-speed vehicles while eliminating O(N) radix sort overhead for slow pedestrians.

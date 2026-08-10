@@ -20,6 +20,10 @@ struct SocialForcesGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector, VGP
     
     sorted_dev_positions::VGPU
     sorted_dev_radii::SGPU
+    
+    last_build_positions::VGPU
+    sorted_last_positions::VGPU
+    needs_rebuild::AbstractArray{Bool, 1}
 end
 
 function SocialForcesGPUContext(backend, F, N::Int)
@@ -37,13 +41,18 @@ function SocialForcesGPUContext(backend, F, N::Int)
     sorted_dev_positions = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     sorted_dev_radii = KernelAbstractions.zeros(backend, F, N)
     
+    last_build_positions = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    sorted_last_positions = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    needs_rebuild = KernelAbstractions.ones(backend, Bool, 1) # init to true
+    
     VGPU = typeof(dev_positions)
     SGPU = typeof(dev_radii)
     
     return SocialForcesGPUContext{F, VCPU, SCPU, VGPU, SGPU}(
         N, cpu_positions, cpu_radii, cpu_forces,
         dev_positions, dev_radii, dev_forces,
-        sorted_dev_positions, sorted_dev_radii
+        sorted_dev_positions, sorted_dev_radii,
+        last_build_positions, sorted_last_positions, needs_rebuild
     )
 end
 
@@ -100,8 +109,21 @@ end
     @inbounds out_arr[i] = in_arr[indices[i]]
 end
 
+@kernel function check_rebuild_kernel!(needs_rebuild, @Const(current), @Const(last), sq_skin_radius)
+    i = @index(Global, Linear)
+    @inbounds begin
+        # If already true, don't write (to avoid unnecessary memory traffic)
+        if !needs_rebuild[1]
+            d2 = sum(abs2.(current[i] - last[i]))
+            if d2 > sq_skin_radius
+                needs_rebuild[1] = true
+            end
+        end
+    end
+end
+
 @kernel function compute_social_forces_kernel!(forces, @Const(sorted_positions), @Const(sorted_radii), 
-    grid_min, grid_dims, cell_size, @Const(cell_starts), @Const(cell_ends), @Const(agent_indices))
+    @Const(sorted_last_positions), grid_min, grid_dims, cell_size, @Const(cell_starts), @Const(cell_ends), @Const(agent_indices))
     i = @index(Global, Linear)
     
     @inbounds begin
@@ -109,10 +131,12 @@ end
         
         pos_i = sorted_positions[i]
         r_i = sorted_radii[i]
+        old_pos_i = sorted_last_positions[i]
         
         F_repulse = zero(SVector{2, typeof(cell_size)})
         
-        idx = floor.(Int, (pos_i - grid_min) / cell_size)
+        # Calculate search cell based on OLD position
+        idx = floor.(Int, (old_pos_i - grid_min) / cell_size)
         
         # NeighborIterator no longer needs agent_indices! 
         # cell_starts and cell_ends point to the indices of the *sorted* array!
@@ -141,18 +165,35 @@ function _update_social_forces_impl!(world::World, search::RadixSpatialHash{AT,F
     copyto!(dev_positions, positions)
     copyto!(dev_radii, radii)
     
-    # 3. Build spatial grid entirely on device
-    build_grid!(search, dev_positions, backend)
+    # 3. Lazy Rebuild Check
+    sq_skin_radius = F(2.0)^2
+    kernel_check! = check_rebuild_kernel!(backend)
+    kernel_check!(ctx.needs_rebuild, dev_positions, ctx.last_build_positions, sq_skin_radius, ndrange=N)
+    KernelAbstractions.synchronize(backend)
     
-    # Reorder arrays to achieve coalesced memory access
+    cpu_needs_rebuild = Vector{Bool}(undef, 1)
+    copyto!(cpu_needs_rebuild, ctx.needs_rebuild)
+    
     kernel_reorder! = reorder_array_kernel!(backend)
+    
+    if cpu_needs_rebuild[1]
+        copyto!(ctx.last_build_positions, dev_positions)
+        build_grid!(search, dev_positions, backend)
+        
+        # Reorder the last_build_positions ONCE so it's coalesced for the physics kernel
+        kernel_reorder!(ctx.sorted_last_positions, ctx.last_build_positions, search.agent_indices, ndrange=N)
+        
+        fill!(ctx.needs_rebuild, false)
+    end
+    
+    # 4. ALWAYS reorder current positions/radii (using current agent_indices, which may be old)
     kernel_reorder!(ctx.sorted_dev_positions, dev_positions, search.agent_indices, ndrange=N)
     kernel_reorder!(ctx.sorted_dev_radii, dev_radii, search.agent_indices, ndrange=N)
     KernelAbstractions.synchronize(backend)
     
-    # 4. Launch forces kernel using sorted arrays
+    # 5. Launch forces kernel using sorted arrays
     kernel! = compute_social_forces_kernel!(backend)
-    kernel!(dev_forces, ctx.sorted_dev_positions, ctx.sorted_dev_radii, 
+    kernel!(dev_forces, ctx.sorted_dev_positions, ctx.sorted_dev_radii, ctx.sorted_last_positions,
         search.grid_min, search.grid_dims, search.cell_size, 
         search.cell_starts, search.cell_ends, search.agent_indices, 
         ndrange=N)
