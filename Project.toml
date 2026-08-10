@@ -1,11 +1,7 @@
 name = "HermesWorkspace"
 
 [workspace]
-projects = [
-    "packages/SimCore",
-    "packages/SimDES",
-    "packages/SimCrowd",
-    "packages/SimFluid",
-    "packages/SimViz",
-    "experiments",
-]
+projects = ["packages/SimCore", "packages/SimDES", "packages/SimCrowd", "packages/SimFluid", "packages/SimViz", "experiments"]
+
+[deps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"

@@ -88,11 +88,16 @@ end
 
 @inline function get_neighbors(sh::RadixSpatialHash{AT, F}, pos::SVector{2, F}) where {AT, F}
     idx = floor.(Int, (pos - sh.grid_min) / sh.cell_size)
-    return NeighborIterator(sh, idx)
+    return NeighborIterator(sh.grid_min, sh.grid_dims, sh.cell_size, sh.cell_starts, sh.cell_ends, sh.agent_indices, idx)
 end
 
 struct NeighborIterator{AT, F}
-    sh::RadixSpatialHash{AT, F}
+    grid_min::SVector{2, F}
+    grid_dims::SVector{2, Int}
+    cell_size::F
+    cell_starts::AT
+    cell_ends::AT
+    agent_indices::AT
     center_idx::SVector{2, Int}
 end
 
@@ -101,16 +106,16 @@ function Base.iterate(iter::NeighborIterator, state=(-1, -1, -1))
     while dy <= 1
         x = iter.center_idx[1] + dx
         y = iter.center_idx[2] + dy
-        if x >= 0 && x < iter.sh.grid_dims[1] && y >= 0 && y < iter.sh.grid_dims[2]
-            cell_id = x + y * iter.sh.grid_dims[1] + 1
-            start_idx = iter.sh.cell_starts[cell_id]
-            end_idx = iter.sh.cell_ends[cell_id]
+        if x >= 0 && x < iter.grid_dims[1] && y >= 0 && y < iter.grid_dims[2]
+            cell_id = x + y * iter.grid_dims[1] + 1
+            start_idx = iter.cell_starts[cell_id]
+            end_idx = iter.cell_ends[cell_id]
             if start_idx != 0
                 if current_idx == -1
                     current_idx = start_idx
                 end
                 if current_idx <= end_idx
-                    agent_id = iter.sh.agent_indices[current_idx]
+                    agent_id = iter.agent_indices[current_idx]
                     return (agent_id, (dx, dy, current_idx + 1))
                 end
             end
