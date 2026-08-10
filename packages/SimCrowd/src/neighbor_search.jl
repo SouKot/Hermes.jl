@@ -132,6 +132,45 @@ end
 Base.IteratorSize(::Type{NeighborIterator{AT, F}}) where {AT, F} = Base.SizeUnknown()
 Base.eltype(::Type{NeighborIterator{AT, F}}) where {AT, F} = Int
 
+struct SortedNeighborIterator{AT, F}
+    grid_min::SVector{2, F}
+    grid_dims::SVector{2, Int}
+    cell_size::F
+    cell_starts::AT
+    cell_ends::AT
+    center_idx::SVector{2, Int}
+end
+
+function Base.iterate(iter::SortedNeighborIterator, state=(-1, -1, -1))
+    dx, dy, current_idx = state
+    while dy <= 1
+        x = iter.center_idx[1] + dx
+        y = iter.center_idx[2] + dy
+        if x >= 0 && x < iter.grid_dims[1] && y >= 0 && y < iter.grid_dims[2]
+            cell_id = x + y * iter.grid_dims[1] + 1
+            start_idx = iter.cell_starts[cell_id]
+            end_idx = iter.cell_ends[cell_id]
+            if start_idx != 0
+                if current_idx == -1
+                    current_idx = start_idx
+                end
+                if current_idx <= end_idx
+                    return (current_idx, (dx, dy, current_idx + 1))
+                end
+            end
+        end
+        current_idx = -1
+        dx += 1
+        if dx > 1
+            dx = -1
+            dy += 1
+        end
+    end
+    return nothing
+end
+Base.IteratorSize(::Type{SortedNeighborIterator{AT, F}}) where {AT, F} = Base.SizeUnknown()
+Base.eltype(::Type{SortedNeighborIterator{AT, F}}) where {AT, F} = Int
+
 
 # ── 2. CPUNeighborSearch (CellListMap) ────────────────────────────────────────
 

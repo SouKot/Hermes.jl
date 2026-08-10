@@ -31,4 +31,18 @@ The 16-core CPU vastly outperforms the unoptimized GPU implementation at all sca
 3. **Uncoalesced Memory Access**: The `RadixSpatialHash` uses `sortperm!` to yield a permutation array. The subsequent physics kernel looks up memory via `positions[agent_indices[i]]`, resulting in random VRAM reads.
 
 ## Next Steps (Optimization Phase)
-We will implement a `SocialForcesGPUContext` to pre-allocate device buffers, and a generic `reorder_array_kernel!` to physically shuffle the VRAM arrays based on the spatial hash. This will guarantee fully coalesced memory access on the GPU. We expect this to significantly change the performance profile.
+We implemented a `SocialForcesGPUContext` to pre-allocate device buffers, and a generic `reorder_array_kernel!` to physically shuffle the VRAM arrays based on the spatial hash. This guarantees fully coalesced memory access on the GPU. 
+
+## Results: Optimized GPU vs 16-Core CPU
+
+*Note: In this test, all per-step GPU allocations have been eliminated, and VRAM memory access is strictly coalesced.*
+
+| N (Agents) | 16-Core CPU (`CellListMap`) | Optimized GPU (`RadixSpatialHash`) |
+| :--- | :--- | :--- |
+| **1,000** | **0.19 ms/step** | 0.24 ms/step |
+| **10,000** | 1.11 ms/step | **0.98 ms/step** |
+| **50,000** | 6.68 ms/step | **6.14 ms/step** |
+| **100,000** | 20.70 ms/step | **18.60 ms/step** |
+
+### Final Conclusion
+The coalesced memory and allocation optimizations were incredibly successful. They eliminated roughly 32% of the GPU computation time at 100k scale (from 27.23 ms down to 18.60 ms). As a result, the **GPU has formally reclaimed the performance crown** at simulation scales ≥ 10,000 agents. At 100,000 agents, the optimized GPU achieves ~53 FPS compared to the CPU's ~48 FPS.

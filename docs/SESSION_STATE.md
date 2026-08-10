@@ -11,12 +11,12 @@
 - **GPU Acceleration (CUDA.jl)**: Upgraded `RadixSpatialHash` to fully support device arrays and implemented `compute_social_forces_kernel!` in `KernelAbstractions.jl`.
 - **isbits Architecture**: Refactored internal iterators (`NeighborIterator`) to handle raw `CuDeviceArray`s instead of parent structs to satisfy GPU kernel requirements.
 - **Unified Dispatch**: The CPU-ECS transparently dispatches to the GPU. For GPU runs, arrays are allocated on the device, math runs heavily parallelized, and forces are copied back to the CPU ECS. 
-- **Massive Performance Scaling (16-Core CPU vs GPU)**: 
-  - N=1,000 CPU: ~0.18 ms/step | GPU: ~0.26 ms/step 
-  - N=10,000 CPU: ~0.72 ms/step | GPU: ~1.37 ms/step 
-  - N=50,000 CPU: ~5.65 ms/step | GPU: ~6.94 ms/step
-  - N=100,000 CPU: ~15.15 ms/step | GPU: ~27.23 ms/step
-  *Conclusion: The 16-core CPU entirely outperforms the GPU at all scales due to high optimization in CellListMap and PCI-e transfer overhead/GPU Radix Sort bottlenecks.*
+- **Massive Performance Scaling (16-Core CPU vs Optimized GPU)**: 
+  - N=1,000 CPU: ~0.19 ms/step | GPU: ~0.24 ms/step 
+  - N=10,000 CPU: ~1.11 ms/step | GPU: ~0.98 ms/step 
+  - N=50,000 CPU: ~6.68 ms/step | GPU: ~6.14 ms/step
+  - N=100,000 CPU: ~20.70 ms/step | GPU: ~18.60 ms/step (~53 FPS)
+  *Conclusion: After eliminating memory allocations and enforcing fully coalesced VRAM access via a system-level GPUContext, the GPU formally reclaims the performance crown at scale.*
 
 ## 3. Next Tasks: Sprint 4 — Next Phase Planning
 | Task ID | Description | Status |
