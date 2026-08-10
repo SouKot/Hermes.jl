@@ -95,9 +95,14 @@ function run_bench_gpu(N, steps)
 end
 
 # Run
-run_bench(5000, 100)
+run_bench(1000, 100)
+run_bench(10000, 100)
+run_bench(50000, 100)
+run_bench(100000, 100)
+
 if CUDA.functional()
-    run_bench_gpu(5000, 100)
-    # Massive scaling test
-    run_bench_gpu(20000, 100)
+    run_bench_gpu(1000, 100)
+    run_bench_gpu(10000, 100)
+    run_bench_gpu(50000, 100)
+    run_bench_gpu(100000, 100)
 end
