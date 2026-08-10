@@ -13,6 +13,7 @@ export goal_seeking_force, agent_repulsion, wall_repulsion
 export AbstractNeighborSearch, RadixSpatialHash, CPUNeighborSearch, build_grid!, get_neighbors
 export NavigationField, build_navigation_field, get_desired_direction
 export update_navigation_system!, update_social_forces_system!, integrate_physics_system!
+export ORCAParams, update_orca_system!
 
 # Components
 struct Position{F<:AbstractFloat}
@@ -40,6 +41,17 @@ end
 AgentParams(social_radius::F, mass::F, v_pref::F, τ::F, μ::F) where {F<:AbstractFloat} = 
     AgentParams(social_radius, social_radius * F(2/3), mass, v_pref, τ, μ)
 
+struct ORCAParams{F<:AbstractFloat}
+    time_horizon::F
+    time_horizon_obst::F
+    max_neighbors::Int
+    neighbor_dist::F
+    radius::F
+    v_pref::F
+    τ::F
+    mass::F
+end
+
 struct WallSegment{F<:AbstractFloat}
     p1::SVector{2,F}
     p2::SVector{2,F}
@@ -56,5 +68,7 @@ include("navigation.jl")
 # Systems
 include("systems/physics.jl")
 include("systems/social.jl")
+include("systems/orca_math.jl")
+include("systems/orca.jl")
 
 end

@@ -25,7 +25,7 @@ end
 @testset "Phase 3C Empirical Validations" begin
     
     @testset "CRW-S-03: Two Agents Head-On Avoidance" begin
-        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
         v0 = 1.4f0
         τ = 0.5f0
         dt = 0.01f0
@@ -74,7 +74,7 @@ end
     end
     
     @testset "CRW-S-04: 10-Agent Bottleneck (1.2m door)" begin
-        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
         N = 10
         dt = 0.001f0
         v0 = 1.4f0
@@ -129,9 +129,73 @@ end
         @test 1.0 <= flow_rate <= 1.5 # Expected ~1.44
     end
     
+    @testset "ORCA: 10-Agent Bottleneck (1.2m door)" begin
+        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+        N = 10
+        dt = 0.01f0 # ORCA can use larger dt safely
+        v0 = 1.4f0
+        
+        new_entity!(world, (WallSegment(SVector(5.0f0, 0.0f0), SVector(5.0f0, 1.9f0)),))
+        new_entity!(world, (WallSegment(SVector(5.0f0, 3.1f0), SVector(5.0f0, 5.0f0)),))
+        
+        goal_final = SVector(10.0f0, 2.5f0)
+        
+        for i in 1:N
+            pos = SVector(1.0f0 + rand(Float32)*3.0f0, 1.0f0 + rand(Float32)*3.0f0)
+            goal_door = SVector(5.0f0, clamp(pos[2], 2.1f0, 2.9f0))
+            # 2.0s time_horizon, 0.5s obst, 10 max neighbors, 15m radius
+            # Include AgentParams with tiny radius (0.1m) for wall repulsion without strong agent-agent SFM repulsions
+            new_entity!(world, (
+                Position(pos), Velocity(SVector(0.0f0,0.0f0)), 
+                AgentParams(0.1f0, 80.0f0, v0, 0.5f0, 0.5f0),
+                ORCAParams(2.0f0, 0.5f0, 10, 15.0f0, 0.2f0, v0, 0.5f0, 80.0f0), 
+                Goal(goal_door), Force(SVector(0.0f0,0.0f0))
+            ))
+        end
+        
+        sh = CPUNeighborSearch(N, SVector(0.0f0, 0.0f0), SVector(12.0f0, 5.0f0), 4.0f0)
+        
+        function count_passed_x(world, x_val)
+            count = 0
+            for (entities, pos_col) in Query(world, (Position{Float32},))
+                for i in eachindex(pos_col)
+                    if pos_col[i].p[1] > x_val
+                        count += 1
+                    end
+                end
+            end
+            return count
+        end
+        
+        t = 0.0f0
+        while count_passed_x(world, 9.0f0) < N && t < 30.0f0
+            for (entities, pos_col, vel_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, Goal{Float32}, Force{Float32}))
+                for i in eachindex(pos_col)
+                    if pos_col[i].p[1] > 5.0f0
+                        goal_col[i] = Goal(goal_final)
+                    else
+                        goal_col[i] = Goal(SVector(5.0f0, clamp(pos_col[i].p[2], 2.1f0, 2.9f0)))
+                    end
+                    # ORCA provides its own driving force, we do NOT manually add goal_seeking_force here!
+                    force_col[i] = Force(SVector(0.0f0, 0.0f0))
+                end
+            end
+            
+            update_social_forces_system!(world, sh, CPU())
+            update_orca_system!(world, sh, CPU(), dt)
+            integrate_physics_system!(world, dt)
+            t += dt
+        end
+        
+        @test count_passed_x(world, 9.0f0) == N
+        flow_rate = N / t
+        println("ORCA Bottleneck flow rate: ", flow_rate, " (expected 1.0-1.5)")
+        @test 1.0 <= flow_rate <= 1.5
+    end
+    
     @testset "CRW-S-05: Faster-is-slower (20 agents, multiple v0)" begin
         function run_panic_scenario(v_pref)
-            world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+            world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
             N = 20
             dt = 0.001f0
             
@@ -187,8 +251,72 @@ end
         @test t_normal < t_panic
     end
     
+    @testset "ORCA: Faster-is-slower Elimination" begin
+        function run_orca_panic_scenario(v_pref)
+            world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+            N = 20
+            dt = 0.01f0
+            
+            new_entity!(world, (WallSegment(SVector(5.0f0, 0.0f0), SVector(5.0f0, 2.05f0)),))
+            new_entity!(world, (WallSegment(SVector(5.0f0, 2.95f0), SVector(5.0f0, 5.0f0)),))
+            
+            goal_final = SVector(10.0f0, 2.5f0)
+            
+            for i in 1:N
+                pos = SVector(1.0f0 + rand(Float32)*3.0f0, 1.0f0 + rand(Float32)*3.0f0)
+                goal_door = SVector(5.0f0, clamp(pos[2], 2.1f0, 2.9f0))
+                new_entity!(world, (
+                    Position(pos), Velocity(SVector(0.0f0,0.0f0)), 
+                    AgentParams(0.1f0, 80.0f0, v_pref, 0.5f0, 0.5f0),
+                    ORCAParams(2.0f0, 0.5f0, 10, 15.0f0, 0.2f0, v_pref, 0.5f0, 80.0f0), 
+                    Goal(goal_door), Force(SVector(0.0f0,0.0f0))
+                ))
+            end
+            
+            sh = CPUNeighborSearch(N, SVector(0.0f0, 0.0f0), SVector(12.0f0, 5.0f0), 4.0f0)
+            
+            function count_passed_x(world, x_val)
+                count = 0
+                for (entities, pos_col) in Query(world, (Position{Float32},))
+                    for i in eachindex(pos_col)
+                        if pos_col[i].p[1] > x_val
+                            count += 1
+                        end
+                    end
+                end
+                return count
+            end
+            
+            t = 0.0f0
+            while count_passed_x(world, 9.0f0) < N && t < 100.0f0
+                for (entities, pos_col, vel_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, Goal{Float32}, Force{Float32}))
+                    for i in eachindex(pos_col)
+                        if pos_col[i].p[1] > 5.0f0
+                            goal_col[i] = Goal(goal_final)
+                        else
+                            goal_col[i] = Goal(SVector(5.0f0, clamp(pos_col[i].p[2], 2.1f0, 2.9f0)))
+                        end
+                        force_col[i] = Force(SVector(0.0f0,0.0f0))
+                    end
+                end
+                
+                update_social_forces_system!(world, sh, CPU())
+                update_orca_system!(world, sh, CPU(), dt)
+                integrate_physics_system!(world, dt)
+                t += dt
+            end
+            return t
+        end
+        
+        t_normal = run_orca_panic_scenario(1.0f0)
+        t_panic = run_orca_panic_scenario(5.0f0)
+        println("ORCA Faster-is-slower evac times: Normal=", t_normal, "s vs Panic=", t_panic, "s")
+        # In ORCA, panic should logically resolve faster because there is no friction locking arch
+        @test t_panic <= t_normal
+    end
+    
     @testset "CRW-M-01: Bidirectional Lane Formation" begin
-        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
         N_half = 100
         N = 200
         dt = 0.001f0
@@ -239,7 +367,7 @@ end
     
     @testset "CRW-M-02: Fundamental Diagram (Speed vs Density)" begin
         function run_density(target_density)
-            world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+            world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
             
             # We want a fixed track size to prevent tight curve issues
             R = 10.0f0
@@ -314,7 +442,7 @@ end
     end
     
     @testset "CRW-M-03: Room Evacuation with Multiple Exits (500 agents)" begin
-        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
         N = 500
         dt = 0.01f0
         

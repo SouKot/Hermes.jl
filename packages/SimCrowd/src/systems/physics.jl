@@ -31,7 +31,26 @@ function integrate_physics_system!(world::World, dt::F) where {F<:AbstractFloat}
                 new_vel = (new_vel / speed) * F(5.0)
             end
             
-            # x_{t+1} = x_t + v_{t+1} * dt
+            new_pos = pos_col[i].p + new_vel * dt
+            
+            vel_col[i] = Velocity(new_vel)
+            pos_col[i] = Position(new_pos)
+        end
+    end
+
+    for (entities, pos_col, vel_col, params_col, force_col) in Query(world, (Position{F}, Velocity{F}, ORCAParams{F}, Force{F}))
+        Threads.@threads for i in eachindex(pos_col)
+            mass = params_col[i].mass
+            acc = force_col[i].f / mass
+            
+            new_vel = vel_col[i].v + acc * dt
+            
+            # Clamp to maximum absolute speed
+            speed = norm(new_vel)
+            if speed > F(5.0)
+                new_vel = (new_vel / speed) * F(5.0)
+            end
+            
             new_pos = pos_col[i].p + new_vel * dt
             
             vel_col[i] = Velocity(new_vel)
