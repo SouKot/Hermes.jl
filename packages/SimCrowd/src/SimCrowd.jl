@@ -41,6 +41,9 @@ end
 AgentParams(social_radius::F, mass::F, v_pref::F, τ::F, μ::F) where {F<:AbstractFloat} = 
     AgentParams(social_radius, social_radius * F(2/3), mass, v_pref, τ, μ)
 
+AgentParams(social_radius::F, mass::F, v_pref::F, τ::F) where {F<:AbstractFloat} =
+    AgentParams(social_radius, social_radius * F(2/3), mass, v_pref, τ, F(1.2e5))
+
 struct ORCAParams{F<:AbstractFloat}
     time_horizon::F
     time_horizon_obst::F
@@ -70,5 +73,6 @@ include("systems/physics.jl")
 include("systems/social.jl")
 include("systems/orca_math.jl")
 include("systems/orca.jl")
+include("systems/orca_cpu.jl")
 
 end

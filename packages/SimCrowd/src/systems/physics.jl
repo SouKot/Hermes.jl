@@ -19,7 +19,8 @@ function integrate_physics_system!(world::World, dt::F) where {F<:AbstractFloat}
             # Helbing Fluctuation Term (breaks symmetrical friction locking)
             # Correct SDE scaling: velocity diffusion = sigma * sqrt(dt) * Z.
             # So acc_noise = (sigma / sqrt(dt)) * Z
-            sigma = 0.5f0 # 0.5 m/s diffusion
+            # BUG-SFM-02 FIX: sigma = 0.05 m/s (Helbing 1995 fitted value, not 0.5).
+            sigma = 0.05f0 # m/s velocity diffusion — calibrated from Helbing 1995
             acc += SVector(randn(F), randn(F)) * (sigma / sqrt(dt))
             
 
@@ -46,6 +47,7 @@ function integrate_physics_system!(world::World, dt::F) where {F<:AbstractFloat}
             new_vel = vel_col[i].v + acc * dt
             
             # Clamp to maximum absolute speed
+            # BUG-ORCA-03 FIX: ORCA agents are pedestrians too, cap at 5.0 m/s (panic speed)
             speed = norm(new_vel)
             if speed > F(5.0)
                 new_vel = (new_vel / speed) * F(5.0)

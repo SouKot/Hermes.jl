@@ -94,7 +94,7 @@ using Ark
         τ = 0.5f0
         dt = 0.05f0
         
-        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32})
+        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32})
         e = new_entity!(world, (
             Position(SVector(0.0f0, 0.0f0)),
             Velocity(SVector(0.0f0, 0.0f0)),
@@ -110,7 +110,7 @@ using Ark
         max_steps = 1000
         for step in 1:max_steps
             # Manual integration for this specific test
-            for (entities, pos_col, vel_col, params_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}))
+            for (entities, pos_col, vel_col, params_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}))
                 for i in eachindex(pos_col)
                     F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, params_col[i].v_pref, params_col[i].τ, params_col[i].mass)
                     force_col[i] = Force(F_drive)
@@ -147,7 +147,7 @@ using Ark
         τ = 0.5f0
         dt = 0.05f0
         
-        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32})
+        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32})
         e = new_entity!(world, (
             Position(SVector(0.0f0, 0.01f0)),
             Velocity(SVector(0.0f0, 0.0f0)),

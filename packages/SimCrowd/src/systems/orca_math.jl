@@ -3,6 +3,8 @@
 using StaticArrays
 using LinearAlgebra
 
+const RVO_EPSILON = 1f-5
+
 struct Line{F<:AbstractFloat}
     point::SVector{2,F}
     dir::SVector{2,F}
@@ -27,7 +29,7 @@ end
         denominator = det(lines[line_no].dir, lines[i].dir)
         numerator = det(lines[i].dir, lines[line_no].point - lines[i].point)
         
-        if abs(denominator) <= eps(F)
+        if abs(denominator) <= RVO_EPSILON
             if numerator < zero(F)
                 return false, opt_velocity
             end
@@ -75,15 +77,14 @@ end
     end
     
     for i in 1:length(lines)
-        if det(lines[i].dir, lines[i].point - result) > det(lines[i].dir, zero(SVector{2,F})) # RVO2 uses det(dir, point - result) > 0, wait, it's det(dir, point - result) > 0.
-            # But mathematically det(dir, point - result) > 0 is correct
-            if det(lines[i].dir, lines[i].point - result) > zero(F)
-                # Result does not satisfy constraint i. Compute new optimal result.
-                temp_result = result
-                success, result = linear_program_1(lines, i, radius, opt_velocity, direction_opt)
-                if !success
-                    return i, temp_result
-                end
+        # BUG-ORCA-02 FIX: Removed redundant outer check. det(dir, point-result) > det(dir, 0)
+        # is equivalent to > 0 since det(a,0)=0 always. Only one check needed.
+        if det(lines[i].dir, lines[i].point - result) > zero(F)
+            # Result does not satisfy constraint i. Compute new optimal result.
+            temp_result = result
+            success, result = linear_program_1(lines, i, radius, opt_velocity, direction_opt)
+            if !success
+                return i, temp_result
             end
         end
     end
@@ -102,7 +103,7 @@ end
             # Since this is a fallback and we want zero allocations, we use MVector on stack, but for GPU it's safer to use an SVector and rebuild it.
             # Actually, `Tuple` with a fixed length `MAX_LINES` is best.
             # Let's use an MVector but we MUST initialize it correctly.
-            proj_lines = MVector{20, Line{F}}(undef) # Assume max 20 lines total
+            proj_lines = typeof(lines)(undef, length(lines))
             
             for j in 1:num_obst_lines
                 proj_lines[j] = lines[j]
@@ -111,7 +112,7 @@ end
             num_proj_lines = num_obst_lines
             for j in (num_obst_lines+1):(i-1)
                 determinant = det(lines[i].dir, lines[j].dir)
-                if abs(determinant) <= eps(F)
+                if abs(determinant) <= RVO_EPSILON
                     if dot(lines[i].dir, lines[j].dir) > zero(F)
                         continue
                     else
@@ -173,7 +174,7 @@ end
     
     for i in begin_line:num_lines
         if det(lines[i].dir, lines[i].point - result) > distance
-            proj_lines = MVector{20, Line{F}}(undef)
+            proj_lines = typeof(lines)(undef)
             for j in 1:num_obst_lines
                 proj_lines[j] = lines[j]
             end
@@ -181,7 +182,7 @@ end
             num_proj_lines = num_obst_lines
             for j in (num_obst_lines+1):(i-1)
                 determinant = det(lines[i].dir, lines[j].dir)
-                if abs(determinant) <= eps(F)
+                if abs(determinant) <= RVO_EPSILON
                     if dot(lines[i].dir, lines[j].dir) > zero(F)
                         continue
                     else
@@ -193,7 +194,7 @@ end
                 
                 dir = normalize(lines[j].dir - lines[i].dir)
                 num_proj_lines += 1
-                if num_proj_lines <= 20
+                if num_proj_lines <= 25
                     proj_lines[num_proj_lines] = Line(point, dir)
                 end
             end
@@ -227,6 +228,10 @@ end
     if dist_sq <= combined_radius_sq
         w = relative_vel - relative_pos / dt
         w_len_sq = sum(abs2, w)
+        if w_len_sq <= RVO_EPSILON
+            w = SVector{2,F}(1.0f0, 0.0f0)
+            w_len_sq = F(1.0)
+        end
         w_len = sqrt(w_len_sq)
         unit_w = w / w_len
         dir = SVector(unit_w[2], -unit_w[1])
@@ -241,6 +246,10 @@ end
     
     # Project on cut-off circle
     if dot_product < zero(F) && dot_product^2 > combined_radius_sq * w_len_sq
+        if w_len_sq <= RVO_EPSILON
+            w = SVector{2,F}(1.0f0, 0.0f0)
+            w_len_sq = F(1.0)
+        end
         w_len = sqrt(w_len_sq)
         unit_w = w / w_len
         dir = SVector(unit_w[2], -unit_w[1])

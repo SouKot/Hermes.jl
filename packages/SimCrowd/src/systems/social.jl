@@ -13,16 +13,19 @@ struct SocialForcesGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector, VGP
     cpu_positions::VCPU
     cpu_social_radii::SCPU
     cpu_collision_radii::SCPU
+    cpu_velocities::VCPU     # pre-allocated: avoids Vector{SVector}(undef, N) per step
     cpu_forces::VCPU
     
     dev_positions::VGPU
     dev_social_radii::SGPU
     dev_collision_radii::SGPU
+    dev_velocities::VGPU     # pre-allocated: avoids KernelAbstractions.zeros per step
     dev_forces::VGPU
     
     sorted_dev_positions::VGPU
     sorted_dev_social_radii::SGPU
     sorted_dev_collision_radii::SGPU
+    sorted_dev_velocities::VGPU  # pre-allocated
     
     last_build_positions::VGPU
     sorted_last_positions::VGPU
@@ -33,31 +36,34 @@ function SocialForcesGPUContext(backend, F, N::Int)
     VCPU = Vector{SVector{2,F}}
     SCPU = Vector{F}
     
-    cpu_positions = VCPU(undef, N)
-    cpu_social_radii = SCPU(undef, N)
-    cpu_collision_radii = SCPU(undef, N)
-    cpu_forces = VCPU(undef, N)
+    cpu_positions         = VCPU(undef, N)
+    cpu_social_radii      = SCPU(undef, N)
+    cpu_collision_radii   = SCPU(undef, N)
+    cpu_velocities        = VCPU(undef, N)  # pre-allocated
+    cpu_forces            = VCPU(undef, N)
     
-    dev_positions = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    dev_social_radii = KernelAbstractions.zeros(backend, F, N)
-    dev_collision_radii = KernelAbstractions.zeros(backend, F, N)
-    dev_forces = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    dev_positions         = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    dev_social_radii      = KernelAbstractions.zeros(backend, F, N)
+    dev_collision_radii   = KernelAbstractions.zeros(backend, F, N)
+    dev_velocities        = KernelAbstractions.zeros(backend, SVector{2,F}, N)  # pre-allocated
+    dev_forces            = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     
-    sorted_dev_positions = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    sorted_dev_social_radii = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_positions      = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    sorted_dev_social_radii   = KernelAbstractions.zeros(backend, F, N)
     sorted_dev_collision_radii = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_velocities     = KernelAbstractions.zeros(backend, SVector{2,F}, N)  # pre-allocated
     
-    last_build_positions = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    last_build_positions  = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     sorted_last_positions = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    needs_rebuild = KernelAbstractions.ones(backend, Bool, 1) # init to true
+    needs_rebuild = KernelAbstractions.ones(backend, Bool, 1)
     
     VGPU = typeof(dev_positions)
     SGPU = typeof(dev_social_radii)
     
     return SocialForcesGPUContext{F, VCPU, SCPU, VGPU, SGPU}(
-        N, cpu_positions, cpu_social_radii, cpu_collision_radii, cpu_forces,
-        dev_positions, dev_social_radii, dev_collision_radii, dev_forces,
-        sorted_dev_positions, sorted_dev_social_radii, sorted_dev_collision_radii,
+        N, cpu_positions, cpu_social_radii, cpu_collision_radii, cpu_velocities, cpu_forces,
+        dev_positions, dev_social_radii, dev_collision_radii, dev_velocities, dev_forces,
+        sorted_dev_positions, sorted_dev_social_radii, sorted_dev_collision_radii, sorted_dev_velocities,
         last_build_positions, sorted_last_positions, needs_rebuild
     )
 end
@@ -98,16 +104,16 @@ function update_social_forces_system!(world::World, search::AbstractNeighborSear
     social_radii = ctx.cpu_social_radii
     collision_radii = ctx.cpu_collision_radii
     
-    # We also need velocities now
-    velocities = Vector{SVector{2,F}}(undef, num_agents)
+    # We also need velocities now — use pre-allocated context buffer
+    velocities = ctx.cpu_velocities
     
     idx = 1
     for (entities, pos_col, vel_col, params_col) in Query(world, (Position{F}, Velocity{F}, AgentParams{F}))
         for i in eachindex(pos_col)
-            positions[idx] = pos_col[i].p
-            social_radii[idx] = params_col[i].social_radius
-            collision_radii[idx] = params_col[i].collision_radius
-            velocities[idx] = vel_col[i].v
+            positions[idx]        = pos_col[i].p
+            social_radii[idx]     = params_col[i].social_radius
+            collision_radii[idx]  = params_col[i].collision_radius
+            velocities[idx]       = vel_col[i].v
             idx += 1
         end
     end
@@ -135,21 +141,10 @@ function update_social_forces_system!(world::World, search::AbstractNeighborSear
                 for w in walls
                     F_wall += wall_repulsion(p, v, s_r, c_r, w; μ=params_col[i].μ)
                 end
-                
-                # Add panic noise (random fluctuation)
-                theta = rand(F) * 2f0 * F(pi)
-                F_noise = SVector(cos(theta), sin(theta)) * F(0.5)
-                
-                force_col[i] = Force(force_col[i].f + F_wall + F_noise)
-            end
-        end
-    else
-        # Still add panic noise if no walls
-        for (entities, force_col) in Query(world, (Force{F},))
-            for i in eachindex(force_col)
-                theta = rand(F) * 2f0 * F(pi)
-                F_noise = SVector(cos(theta), sin(theta)) * F(0.5)
-                force_col[i] = Force(force_col[i].f + F_noise)
+                # BUG-SFM-01 FIX: Removed spurious F_noise here.
+                # The Helbing SDE fluctuation belongs only in physics.jl (the integrator),
+                # not as a random force added during social force accumulation.
+                force_col[i] = Force(force_col[i].f + F_wall)
             end
         end
     end
@@ -246,27 +241,23 @@ function _update_social_forces_impl!(world::World, search::RadixSpatialHash{AT,F
         fill!(ctx.needs_rebuild, false)
     end
     
-    # 4. ALWAYS reorder current positions/radii (using current agent_indices, which may be old)
-    kernel_reorder!(ctx.sorted_dev_positions, dev_positions, search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_social_radii, dev_social_radii, search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_collision_radii, dev_collision_radii, search.agent_indices, ndrange=N)
-    KernelAbstractions.synchronize(backend)
-    
-    # Wait, we need to sort velocities for the GPU kernel too!
-    # I'll create a temporary dev_velocities since we don't have it in the context to save space, but actually it's fine just doing it lazily or modifying context.
-    # For now, since Phase 3C tests run on CPU, I'll quickly allocate it for GPU.
-    dev_velocities = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    sorted_dev_velocities = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    copyto!(dev_velocities, velocities)
-    kernel_reorder!(sorted_dev_velocities, dev_velocities, search.agent_indices, ndrange=N)
+    # 4. ALWAYS reorder current positions/radii/velocities using current agent_indices
+    kernel_reorder!(ctx.sorted_dev_positions,       dev_positions,           search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_social_radii,    dev_social_radii,        search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_collision_radii, dev_collision_radii,     search.agent_indices, ndrange=N)
+    # Use pre-allocated ctx buffers for velocities (Fix A: no per-step GPU malloc)
+    copyto!(ctx.dev_velocities, velocities)
+    kernel_reorder!(ctx.sorted_dev_velocities,      ctx.dev_velocities,      search.agent_indices, ndrange=N)
+    # Fix B: No synchronize() here — GPU stream ordering is automatic.
+    # The compute kernel below will wait for all reorders on the same stream.
     
     # 5. Launch forces kernel using sorted arrays
     kernel! = compute_social_forces_kernel!(backend)
-    kernel!(dev_forces, ctx.sorted_dev_positions, ctx.sorted_dev_social_radii, ctx.sorted_dev_collision_radii, sorted_dev_velocities, ctx.sorted_last_positions,
-        search.grid_min, search.grid_dims, search.cell_size, 
-        search.cell_starts, search.cell_ends, search.agent_indices, 
+    kernel!(dev_forces, ctx.sorted_dev_positions, ctx.sorted_dev_social_radii, ctx.sorted_dev_collision_radii, ctx.sorted_dev_velocities, ctx.sorted_last_positions,
+        search.grid_min, search.grid_dims, search.cell_size,
+        search.cell_starts, search.cell_ends, search.agent_indices,
         ndrange=N)
-    KernelAbstractions.synchronize(backend)
+    KernelAbstractions.synchronize(backend)  # mandatory: CPU must wait before reading forces
     
     # 5. Copy forces back to host
     cpu_forces = ctx.cpu_forces

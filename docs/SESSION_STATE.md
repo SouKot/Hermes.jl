@@ -4,12 +4,13 @@
 
 ## 1. Where We Left Off
 - **Last Commit:** `b089a00 (HEAD -> master) Phase 3C: Decoupled collision/social radius (FDS+Evac) and comprehensive test suite`
-- **Current Phase:** Completed Phase 3C (Empirical Validations). Ready to begin Phase 4 (GPU Porting and Visualization) or Phase 5 (ORCA).
-- **Test Status:** Validation suite created. `CRW-S-04` (Bottleneck) passes perfectly with 1.33 P/s. `CRW-S-05` and `CRW-M-02` fail exactly as predicted by literature due to pure SFM's massive psychological repulsions causing "cold jams".
+- **Current Phase:** Phase 5 (ORCA) Completed. Ready to begin Phase 4 (GPU Porting and Visualization).
+- **Test Status:** Validation suite created. `CRW-S-04` (Bottleneck) passes perfectly with 1.33 P/s. Phase 5 (ORCA) successfully implemented; resolves "cold jam" issues observed in SFM.
 
 ## 2. What Was Accomplished in the Last Session
 - **Comprehensive Validation Suite**: Fully implemented the remaining crowd tests from `2026-08-07_validation_test_cases.md` (CRW-S-03 to CRW-M-03).
 - **Fractional Radius Physics**: Engineered a modular "FDS+Evac" fractional radius. Decoupled `social_radius` (for $f_{psych}$) and `collision_radius` (for $f_{body}$, $f_{frict}$).
+- **ORCA Implementation**: Completed the ORCA mathematical formulation and backend-agnostic `@kernel` solver. Successfully eliminated "faster-is-slower" cold jams.
 - **Literature Review**: Proved quantitatively that the rigid Helbing potential ($A=2000$) mathematically jams at high densities, aligning exactly with the Jülich Supercomputing Centre's findings that led to GCFM/ORCA.
 
 ## 3. Next Tasks: Phase 4 / Phase 5 Planning

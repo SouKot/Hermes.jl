@@ -20,7 +20,7 @@ for i in 1:N
     ))
 end
 
-sh = CPUNeighborSearch(N, SVector(0.0f0, 0.0f0), SVector(100.0f0, 100.0f0), 4.0f0)
+sh = RadixSpatialHash(CPU(), N, SVector(0.0f0, 0.0f0), SVector(100.0f0, 100.0f0), 4.0f0)
 update_orca_system!(world, sh, CPU(), 0.01f0)
 
 println("Benchmarking ORCA Step (5000 agents)...")
