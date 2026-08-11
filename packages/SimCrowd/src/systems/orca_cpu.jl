@@ -20,32 +20,37 @@ end
 
 # CPU-only implementation that uses dynamic Vectors to handle infinite neighbors
 function update_orca_system_cpu!(world, dt::F) where {F<:AbstractFloat}
-    # Collect data
-    positions = Vector{SVector{2, F}}()
-    velocities = Vector{SVector{2, F}}()
-    radii = Vector{F}()
-    v_prefs = Vector{F}()
-    taus = Vector{F}()
-    masses = Vector{F}()
-    time_horizons = Vector{F}()  # BUG-ORCA-01 FIX: per-agent time horizons
-    goals = Vector{SVector{2, F}}()
-    indices = Vector{Int}()
+    # Count entities
+    N = 0
+    for (entities, pos_col) in Query(world, (Position{F},))
+        N += length(pos_col)
+    end
     
-    for (entities, pos_col, vel_col, params_col, goal_col) in Query(world, (Position{F}, Velocity{F}, ORCAParams{F}, Goal{F}))
+    # Pre-extract all per-agent data (avoids repeated Query inside the hot loop)
+    positions     = Vector{SVector{2,F}}(undef, N)
+    velocities    = Vector{SVector{2,F}}(undef, N)
+    radii         = Vector{F}(undef, N)
+    v_prefs       = Vector{F}(undef, N)
+    lp_radii      = Vector{F}(undef, N)  # LP velocity-disc radius = orca.v_pref (max speed)
+    time_horizons = Vector{F}(undef, N)
+    goals         = Vector{SVector{2,F}}(undef, N)
+    masses        = Vector{F}(undef, N)
+    
+    idx = 1
+    for (entities, pos_col, vel_col, params_col, orca_col, goal_col) in Query(world, (Position{F}, Velocity{F}, AgentParams{F}, ORCAParams{F}, Goal{F}))
         for i in eachindex(pos_col)
-            push!(positions, pos_col[i].p)
-            push!(velocities, vel_col[i].v)
-            push!(radii, params_col[i].radius)
-            push!(v_prefs, params_col[i].v_pref)
-            push!(taus, params_col[i].τ)
-            push!(masses, params_col[i].mass)
-            push!(time_horizons, params_col[i].time_horizon)  # BUG-ORCA-01 FIX
-            push!(goals, goal_col[i].g)
-            push!(indices, i)
+            positions[idx]     = pos_col[i].p
+            velocities[idx]    = vel_col[i].v
+            radii[idx]         = orca_col[i].radius
+            v_prefs[idx]       = orca_col[i].v_pref
+            lp_radii[idx]      = orca_col[i].v_pref  # LP disc radius = max speed (stored as v_pref in ORCAParams)
+            time_horizons[idx] = orca_col[i].time_horizon
+            goals[idx]         = goal_col[i].g
+            masses[idx]        = params_col[i].mass
+            idx += 1
         end
     end
     
-    N = length(positions)
     if N == 0
         return
     end
@@ -57,12 +62,13 @@ function update_orca_system_cpu!(world, dt::F) where {F<:AbstractFloat}
     
     # O(N²) LP solve — each agent's computation is fully independent (safe for @threads)
     Threads.@threads for i in 1:N
-        pos_i    = positions[i]
-        vel_i    = velocities[i]
-        r_i      = radii[i]
-        v_pref_i = v_prefs[i]
-        goal_i   = goals[i]
-        time_h_i = time_horizons[i]
+        pos_i      = positions[i]
+        vel_i      = velocities[i]
+        r_i        = radii[i]
+        v_pref_i   = v_prefs[i]
+        lp_radius_i= lp_radii[i]
+        goal_i     = goals[i]
+        time_h_i   = time_horizons[i]
         
         # Preferred velocity direction
         dir  = goal_i - pos_i
@@ -97,10 +103,10 @@ function update_orca_system_cpu!(world, dt::F) where {F<:AbstractFloat}
             lines[k] = compute_orca_line(pos_i, vel_i, r_i, pos_j, vel_j, r_j, time_h_i, dt)
         end
         
-        # Solve 2D LP
-        fail_line, v_opt = linear_program_2_len(lines, K, 20.0f0, pref_vel, false, pref_vel)
+        # Solve 2D LP — radius is agent's max_speed (velocity disc constraint)
+        fail_line, v_opt = linear_program_2_len(lines, K, lp_radius_i, pref_vel, false, pref_vel)
         if fail_line > 0
-            v_opt = linear_program_3(lines, 0, fail_line, 20.0f0, v_opt)
+            v_opt = linear_program_3(lines, 0, fail_line, lp_radius_i, v_opt)
         end
         
         new_velocities[i] = v_opt

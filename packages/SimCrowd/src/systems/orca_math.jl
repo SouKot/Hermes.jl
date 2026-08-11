@@ -91,24 +91,29 @@ end
     return 0, result
 end
 
-# 3D LP Fallback for overconstrained scenarios
+# LP3 Fallback: minimize constraint violations when LP2 is infeasible.
+# When all velocities violate at least one constraint, LP3 finds the velocity
+# that penetrates constraints as little as possible.
+#
+# Algorithm (van den Berg 2011 §3.2 / RVO2 reference):
+#   For each violated constraint i, project all previous constraints onto i's
+#   boundary and re-run LP2 with the goal direction perpendicular to i.
+#   ALWAYS accept the result (even if inner LP2 also fails) — a partial
+#   solution along constraint i's boundary is always less bad than freezing.
+#
+# CPU path only (uses Vector, so has heap allocation — acceptable since this
+# is only called when LP2 is infeasible, i.e. in crowded transients).
 @inline function linear_program_3(lines, num_obst_lines::Int, begin_line::Int, radius::F, result::SVector{2,F})::SVector{2,F} where {F}
     distance = zero(F)
-    
+
     for i in begin_line:length(lines)
         if det(lines[i].dir, lines[i].point - result) > distance
-            # Create a static tuple of lines to avoid any allocations
-            # Since max neighbors is small (e.g. 10), we can just build a tuple.
-            # But Tuple building dynamically is hard in Julia. We can use a static array of size max_neighbors!
-            # Since this is a fallback and we want zero allocations, we use MVector on stack, but for GPU it's safer to use an SVector and rebuild it.
-            # Actually, `Tuple` with a fixed length `MAX_LINES` is best.
-            # Let's use an MVector but we MUST initialize it correctly.
-            proj_lines = typeof(lines)(undef, length(lines))
-            
+            proj_lines = Vector{Line{F}}(undef, i - 1)
+
             for j in 1:num_obst_lines
                 proj_lines[j] = lines[j]
             end
-            
+
             num_proj_lines = num_obst_lines
             for j in (num_obst_lines+1):(i-1)
                 determinant = det(lines[i].dir, lines[j].dir)
@@ -121,27 +126,26 @@ end
                 else
                     point = lines[i].point + (det(lines[j].dir, lines[i].point - lines[j].point) / determinant) * lines[i].dir
                 end
-                
+
                 dir = normalize(lines[j].dir - lines[i].dir)
                 num_proj_lines += 1
                 proj_lines[num_proj_lines] = Line(point, dir)
             end
-            
+
+            # Run inner LP2 with projected constraints.
+            # opt direction = perpendicular to constraint i (move along its boundary).
             temp_result = result
-            # Call LP2 with the projected lines
-            # Wait, LP2 doesn't take num_proj_lines. We can pass a view, but view allocates.
-            # Instead, let's make an LP2 that takes a length.
-            
-            # For GPU compatibility, let's just use SVector for the subset:
-            subset_lines = SVector{num_proj_lines, Line{F}}(Tuple(proj_lines[1:num_proj_lines]))
-            
-            # The direction_opt is true, opt_velocity is lines[i].dir, radius is radius
-            fail_line, temp_res = linear_program_2(subset_lines, radius, SVector(-lines[i].dir[2], lines[i].dir[1]), true, temp_result)
-            
-            if fail_line == 0
-                result = temp_res
-                distance = det(lines[i].dir, lines[i].point - result)
-            end
+            fail_line, temp_res = linear_program_2_len(proj_lines, num_proj_lines, radius,
+                                                        SVector(-lines[i].dir[2], lines[i].dir[1]),
+                                                        true, temp_result)
+
+            # KEY FIX (vs prior implementation): ALWAYS accept temp_res.
+            # If inner LP2 succeeded (fail_line==0): temp_res is the exact optimal.
+            # If inner LP2 also failed (fail_line>0): temp_res is the best partial
+            # solution found before the inner failure — still less bad than result.
+            # NOT accepting when fail_line>0 was the bug causing deadlock at N=250.
+            result   = temp_res
+            distance = det(lines[i].dir, lines[i].point - result)
         end
     end
     return result
@@ -168,17 +172,19 @@ end
     return 0, result
 end
 
-# Rewritten LP3 without views or dynamic SVectors
+# LP3 (static / GPU-safe variant) — same algorithm as linear_program_3 but
+# operates on a fixed-size MVector for zero heap allocation.
+# Used from the GPU ORCA kernel where Vector is not allowed.
 @inline function linear_program_3_static(lines, num_lines::Int, num_obst_lines::Int, begin_line::Int, radius::F, result::SVector{2,F})::SVector{2,F} where {F}
     distance = zero(F)
-    
+
     for i in begin_line:num_lines
         if det(lines[i].dir, lines[i].point - result) > distance
             proj_lines = typeof(lines)(undef)
             for j in 1:num_obst_lines
                 proj_lines[j] = lines[j]
             end
-            
+
             num_proj_lines = num_obst_lines
             for j in (num_obst_lines+1):(i-1)
                 determinant = det(lines[i].dir, lines[j].dir)
@@ -191,21 +197,22 @@ end
                 else
                     point = lines[i].point + (det(lines[j].dir, lines[i].point - lines[j].point) / determinant) * lines[i].dir
                 end
-                
+
                 dir = normalize(lines[j].dir - lines[i].dir)
                 num_proj_lines += 1
                 if num_proj_lines <= 25
                     proj_lines[num_proj_lines] = Line(point, dir)
                 end
             end
-            
+
             temp_result = result
-            fail_line, temp_res = linear_program_2_len(proj_lines, num_proj_lines, radius, SVector(-lines[i].dir[2], lines[i].dir[1]), true, temp_result)
-            
-            if fail_line == 0
-                result = temp_res
-                distance = det(lines[i].dir, lines[i].point - result)
-            end
+            fail_line, temp_res = linear_program_2_len(proj_lines, num_proj_lines, radius,
+                                                        SVector(-lines[i].dir[2], lines[i].dir[1]),
+                                                        true, temp_result)
+
+            # KEY FIX: always accept temp_res (minimum-norm fallback, matches RVO2).
+            result   = temp_res
+            distance = det(lines[i].dir, lines[i].point - result)
         end
     end
     return result
