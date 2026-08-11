@@ -20,12 +20,14 @@ end
 
 # CPU-only implementation that uses dynamic Vectors to handle infinite neighbors
 function update_orca_system_cpu!(world, dt::F) where {F<:AbstractFloat}
-    # Count entities
+    # Count agents that have ORCA components (ignore non-ORCA entities like SFM-only agents)
     N = 0
-    for (entities, pos_col) in Query(world, (Position{F},))
+    for (entities, pos_col, vel_col, params_col, orca_col, goal_col) in Query(world, (Position{F}, Velocity{F}, AgentParams{F}, ORCAParams{F}, Goal{F}))
         N += length(pos_col)
     end
-    
+    if N == 0
+        return
+    end
     # Pre-extract all per-agent data (avoids repeated Query inside the hot loop)
     positions      = Vector{SVector{2,F}}(undef, N)
     velocities     = Vector{SVector{2,F}}(undef, N)
