@@ -95,14 +95,17 @@ end
 # When all velocities violate at least one constraint, LP3 finds the velocity
 # that penetrates constraints as little as possible.
 #
-# Algorithm (van den Berg 2011 §3.2 / RVO2 reference):
+# Algorithm (van den Berg 2011 §3.2 / RVO2 Agent.cc):
 #   For each violated constraint i, project all previous constraints onto i's
 #   boundary and re-run LP2 with the goal direction perpendicular to i.
-#   ALWAYS accept the result (even if inner LP2 also fails) — a partial
-#   solution along constraint i's boundary is always less bad than freezing.
+#   If LP2 succeeds: use the new result.
+#   If LP2 fails: restore temp_result (LP3 iteration start). RVO2 comment:
+#     "This should in principle not happen. [...] due to small floating point
+#      error, and the current result is kept."
+#   ALWAYS update distance (ensures greedy ordering of violations).
 #
-# CPU path only (uses Vector, so has heap allocation — acceptable since this
-# is only called when LP2 is infeasible, i.e. in crowded transients).
+# CPU path only (uses Vector heap allocation — acceptable since LP3 is only
+# invoked when LP2 is infeasible, i.e. in crowded transients).
 @inline function linear_program_3(lines, num_obst_lines::Int, begin_line::Int, radius::F, result::SVector{2,F})::SVector{2,F} where {F}
     distance = zero(F)
 
@@ -132,19 +135,23 @@ end
                 proj_lines[num_proj_lines] = Line(point, dir)
             end
 
-            # Run inner LP2 with projected constraints.
-            # opt direction = perpendicular to constraint i (move along its boundary).
+            # Save LP3 iteration start — this is the conservative fallback.
+            # By construction, temp_result already satisfies all projLines
+            # (it was produced by satisfying previous LP3 iterations).
             temp_result = result
-            fail_line, temp_res = linear_program_2_len(proj_lines, num_proj_lines, radius,
-                                                        SVector(-lines[i].dir[2], lines[i].dir[1]),
-                                                        true, temp_result)
+            perp = SVector(-lines[i].dir[2], lines[i].dir[1])
+            fail_line, new_res = linear_program_2_len(proj_lines, num_proj_lines, radius,
+                                                       perp, true, temp_result)
 
-            # KEY FIX (vs prior implementation): ALWAYS accept temp_res.
-            # If inner LP2 succeeded (fail_line==0): temp_res is the exact optimal.
-            # If inner LP2 also failed (fail_line>0): temp_res is the best partial
-            # solution found before the inner failure — still less bad than result.
-            # NOT accepting when fail_line>0 was the bug causing deadlock at N=250.
-            result   = temp_res
+            if fail_line == 0
+                # LP2 succeeded: new_res satisfies constraint i and all projLines
+                result = new_res
+            else
+                # LP2 failed (floating point edge case per RVO2). Restore conservative
+                # fallback — temp_result satisfies all previous LP3 constraints.
+                result = temp_result
+            end
+            # ALWAYS update distance (tracks greedy max-violation threshold)
             distance = det(lines[i].dir, lines[i].point - result)
         end
     end
@@ -206,12 +213,17 @@ end
             end
 
             temp_result = result
-            fail_line, temp_res = linear_program_2_len(proj_lines, num_proj_lines, radius,
-                                                        SVector(-lines[i].dir[2], lines[i].dir[1]),
-                                                        true, temp_result)
+            perp = SVector(-lines[i].dir[2], lines[i].dir[1])
+            fail_line, new_res = linear_program_2_len(proj_lines, num_proj_lines, radius,
+                                                       perp, true, temp_result)
 
-            # KEY FIX: always accept temp_res (minimum-norm fallback, matches RVO2).
-            result   = temp_res
+            if fail_line == 0
+                result = new_res
+            else
+                # Floating point edge case: restore conservative LP3-iteration start
+                result = temp_result
+            end
+            # ALWAYS update distance (matches RVO2)
             distance = det(lines[i].dir, lines[i].point - result)
         end
     end

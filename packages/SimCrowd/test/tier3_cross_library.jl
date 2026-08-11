@@ -149,8 +149,10 @@ end
         # PRIMARY assertion: collision avoidance (ORCA's core guarantee)
         # Allow integration-step penetration ≤ r/2 at dt=0.05s, v_max=2.0m/s
         @test min_sep >= -r/2f0
-        # OBSERVATION (no hard assertion): document the liveness result
-        @test_skip reached == N  # Known hard case; liveness at N=250 requires LP3 improvement
+        # LIVENESS: with correct max_neighbors=10 (matching RVO2), LP is tractable.
+        # At N=250, t=30s is enough to cross center but some agents may still be
+        # navigating the far side — accept ≥60% as the liveness threshold.
+        @test reached >= round(Int, 0.6 * N)
     end
 
     # ─────────────────────────────────────────────────────────────────────────
