@@ -76,6 +76,73 @@ end
 
 
 """
+    contact_force(pos_i, vel_i, c_r_i, pos_j, vel_j, c_r_j; k, κ, μ)
+
+Physical contact forces: body compression + viscous sliding friction.
+These are SYMMETRIC by construction — `contact_force(i→j) = −contact_force(j→i)` —
+so Newton's 3rd law holds exactly. Safe for CellListMap `pairwise!`.
+
+The psychological (social potential) force is intentionally excluded here because it is
+ASYMMETRIC (the anisotropy weight `w` depends on each agent's own velocity direction).
+See `psychological_force` for that term.
+"""
+@inline function contact_force(pos_i::SVector{2,F}, vel_i::SVector{2,F}, c_r_i::F,
+                                pos_j::SVector{2,F}, vel_j::SVector{2,F}, c_r_j::F;
+                                k::F=120000f0, κ::F=240000f0, μ::F=0.5f0) where {F<:AbstractFloat}
+    r_ij = pos_i - pos_j
+    d = norm(r_ij)
+    d < F(1e-6) && return zero(SVector{2,F})
+
+    n_ij = r_ij / d
+    t_ij = SVector(-n_ij[2], n_ij[1])
+
+    g = max(zero(F), (c_r_i + c_r_j) - d)
+    f_body_mag = k * g
+    f_body     = f_body_mag * n_ij
+
+    Δv_t    = dot(vel_j - vel_i, t_ij)
+    f_frict = clamp(κ * g * Δv_t, -μ * f_body_mag, μ * f_body_mag) * t_ij
+
+    return f_body + f_frict
+end
+
+
+"""
+    psychological_force(pos_i, vel_i, s_r_i, pos_j, s_r_j; A, B, λ)
+
+Anisotropic psychological (social potential) force exerted on agent `i` by agent `j`.
+Uses **agent i's velocity** for the field-of-view anisotropy weight (Helbing & Molnár 1995, eq. 5):
+
+    wᵢ = λ + (1−λ) × (1 + cos φᵢ) / 2,    φᵢ = angle between i's heading and direction toward j
+
+Agents pay full attention to threats ahead (w=1.0) and reduced attention behind (w=λ=0.5).
+
+**ASYMMETRIC by definition**: `psychological_force(i,j)` ≠ `−psychological_force(j,i)` because
+each agent uses its own velocity. Call this separately for each agent in a per-agent loop.
+This is the ONLY asymmetric term in Helbing's SFM — see `contact_force` for the symmetric part.
+"""
+@inline function psychological_force(pos_i::SVector{2,F}, vel_i::SVector{2,F}, s_r_i::F,
+                                      pos_j::SVector{2,F}, s_r_j::F;
+                                      A::F=2000f0, B::F=0.08f0, λ::F=0.5f0) where {F<:AbstractFloat}
+    r_ij = pos_i - pos_j
+    d = norm(r_ij)
+    d < F(1e-6) && return zero(SVector{2,F})
+
+    n_ij          = r_ij / d
+    social_overlap = (s_r_i + s_r_j) - d
+
+    w = one(F)
+    if dot(vel_i, vel_i) > F(1e-6)
+        e_i   = vel_i / norm(vel_i)
+        cos_φ = dot(e_i, -n_ij)
+        w     = λ + (one(F) - λ) * (one(F) + cos_φ) / 2f0
+    end
+
+    return A * exp(social_overlap / B) * w * n_ij
+end
+
+
+"""
     wall_repulsion(pos, wall_segment; A_w=2000f0, B_w=0.08f0)
 
 Computes the repulsion force from a static wall segment (line from `p1` to `p2`).

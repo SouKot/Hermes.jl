@@ -184,6 +184,7 @@ mutable struct CPUNeighborSearch{F<:AbstractFloat, Sys} <: AbstractNeighborSearc
     grid_min::SVector{2, F}
     grid_max::SVector{2, F}
     system::Sys
+    psych_forces::Vector{SVector{2, F}}  # Pre-allocated: asymmetric psychological force accumulator (N agents)
 end
 
 function CPUNeighborSearch(N::Int, grid_min::SVector{2,F}, grid_max::SVector{2,F}, cell_size::F) where {F<:AbstractFloat}
@@ -197,7 +198,10 @@ function CPUNeighborSearch(N::Int, grid_min::SVector{2,F}, grid_max::SVector{2,F
         output = zeros(SVector{2,F}, N)
     )
     
-    return CPUNeighborSearch{F, typeof(sys)}(cell_size, grid_min, grid_max, sys)
+    # Pre-allocate psychological force accumulator — avoids per-step heap allocation
+    psych_forces = zeros(SVector{2,F}, N)
+
+    return CPUNeighborSearch{F, typeof(sys)}(cell_size, grid_min, grid_max, sys, psych_forces)
 end
 
 function build_grid!(search::CPUNeighborSearch, positions::AbstractArray, backend::CPU)

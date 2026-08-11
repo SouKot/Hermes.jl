@@ -276,9 +276,9 @@ end
 function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F}, positions, social_radii, collision_radii, velocities, backend::CPU, ctx) where {F}
     N = length(positions)
 
-    # Extract per-agent μ for the Coulomb friction cap in agent_repulsion.
-    # Different scenarios use different μ: normal (0.5) vs panic/arch tests (10.0).
-    # This local allocation is N×4 bytes — negligible compared to CellListMap overhead.
+    # ── Phase 1: Per-agent μ extraction ──────────────────────────────────────────
+    # Coulomb friction cap is per-agent (scenarios differ: μ=0.5 walking, μ=10 panic).
+    # This allocation is N×4 bytes; negligible compared to CellListMap overhead.
     mus = Vector{F}(undef, N)
     μ_idx = 1
     for (_, _, _, params_col) in Query(world, (Position{F}, Velocity{F}, AgentParams{F}))
@@ -290,46 +290,55 @@ function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F},
 
     build_grid!(search, positions, backend)
 
-    # Define the closure for CellListMap mapping
-    function compute_repulsion(pair, forces)
-        (; i, j, d2, d) = pair
+    # ── Phase 2: Contact forces via CellListMap (Newton's 3rd law) ────────────────
+    # Body compression + viscous friction are physically SYMMETRIC (f_ij = −f_ji).
+    # CellListMap processes each unique pair once — Newton's 3rd law is exact here.
+    function compute_contact(pair, forces)
+        (; i, j, d) = pair
         if d > F(1e-6)
-            pos_i = positions[i]
-            vel_i = velocities[i]
-            s_r_i = social_radii[i]
-            c_r_i = collision_radii[i]
-
-            pos_j = positions[j]
-            vel_j = velocities[j]
-            s_r_j = social_radii[j]
-            c_r_j = collision_radii[j]
-
-            # Use the smaller μ of the pair (conservative: cap based on easier-to-slide contact)
             mu_ij = min(mus[i], mus[j])
-            f = agent_repulsion(pos_i, vel_i, s_r_i, c_r_i, pos_j, vel_j, s_r_j, c_r_j; μ=mu_ij)
-
-            # NOTE: Newton's 3rd law approximation. Helbing's anisotropic SFM is NOT
-            # Newton's 3rd law (f_ij ≠ -f_ji because w depends on each agent's velocity
-            # direction). The physically correct model would compute both f_ij and f_ji
-            # independently and use forces[j] += f_ji. However, CellListMap's pairwise!
-            # uses thread-local reductions that assume Newton symmetry; asymmetric updates
-            # cause data races that freeze all agents. This approximation under-estimates
-            # the backward push on crowd members behind an arch (by ~50%), which prevents
-            # the full faster-is-slower effect from showing (ratio ≈ 0.92 instead of > 1.0).
+            f = contact_force(positions[i], velocities[i], collision_radii[i],
+                              positions[j], velocities[j], collision_radii[j]; μ=mu_ij)
             forces[i] += f
-            forces[j] -= f
+            forces[j] -= f   # Newton's 3rd law — provably exact for body + friction
         end
         return forces
     end
+    contact_forces = CellListMap.pairwise!(compute_contact, search.system)
 
-    forces = CellListMap.pairwise!(compute_repulsion, search.system)
+    # ── Phase 3: Psychological forces per-agent (ASYMMETRIC) ─────────────────────
+    # The anisotropy weight w depends on each agent's own velocity direction, so
+    # f_ij ≠ −f_ji. This must be computed per agent, mirroring the GPU kernel:
+    # each iteration handles one agent i and accumulates forces from all nearby j.
+    #
+    # Threading note: Threads.@threads interferes with CellListMap's internal thread
+    # pool in some Julia configurations, causing agent lockup. The sequential loop is
+    # used here — for N≤500 (all CPU tests), this is <0.2ms and negligible.
+    # Future: use Polyester.@batch when the threading interaction is resolved.
+    psych_forces = search.psych_forces
+    fill!(psych_forces, zero(SVector{2, F}))
+    cutoff_sq = search.cell_size * search.cell_size
 
-    # Write forces back to the ECS
-    idx = 1
+    @inbounds for i in 1:N
+        pos_i = positions[i]
+        vel_i = velocities[i]
+        s_r_i = social_radii[i]
+        f_i   = zero(SVector{2, F})
+        @inbounds for j in 1:N
+            j == i && continue
+            d2 = sum(abs2.(pos_i - positions[j]))
+            d2 > cutoff_sq && continue
+            f_i += psychological_force(pos_i, vel_i, s_r_i, positions[j], social_radii[j])
+        end
+        psych_forces[i] = f_i
+    end
+
+    # ── Phase 4: Write combined forces back to ECS ────────────────────────────────
+    contact_idx = 1
     for (entities, force_col) in Query(world, (Force{F},))
         for i in eachindex(force_col)
-            force_col[i] = Force(force_col[i].f + forces[idx])
-            idx += 1
+            force_col[i] = Force(force_col[i].f + contact_forces[contact_idx] + psych_forces[contact_idx])
+            contact_idx += 1
         end
     end
 end

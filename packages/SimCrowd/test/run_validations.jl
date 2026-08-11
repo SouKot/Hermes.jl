@@ -7,6 +7,7 @@ using LinearAlgebra
 using KernelAbstractions
 using Ark
 using Test
+using Random
 
 # Helper for counting agents that have reached their goal
 # Helper for counting agents that have reached their goal
@@ -20,6 +21,43 @@ function count_reached(world::World, tolerance::Float32=0.5f0)
         end
     end
     return count
+end
+
+"""
+    place_with_min_sep(rng, N, x_min, x_max, y_min, y_max, min_sep)
+
+Place N agents using rejection sampling so no two agents are closer than `min_sep`.
+
+This prevents the exponentially large asymmetric social forces (Helbing 1995/2000)
+from dominating the goal force at simulation startup. With the correct per-agent
+anisotropy weight w, a pair at distance d generates a net center-of-mass backward
+force of f×(1-λ)/2. For min_sep ≥ 3×social_radius, this net force is << goal force.
+"""
+function place_with_min_sep(rng::AbstractRNG, N::Int,
+                             x_min::F, x_max::F, y_min::F, y_max::F,
+                             min_sep::F; max_attempts::Int=1000) where {F<:AbstractFloat}
+    positions = Vector{SVector{2,F}}(undef, N)
+    n_placed = 0
+    while n_placed < N
+        placed = false
+        for _ in 1:max_attempts
+            x = x_min + rand(rng, F) * (x_max - x_min)
+            y = y_min + rand(rng, F) * (y_max - y_min)
+            candidate = SVector(x, y)
+            ok = true
+            for k in 1:n_placed
+                norm(candidate - positions[k]) < min_sep && (ok = false; break)
+            end
+            if ok
+                n_placed += 1
+                positions[n_placed] = candidate
+                placed = true
+                break
+            end
+        end
+        placed || error("Could not place agent $(n_placed+1)/$N with min_sep=$min_sep in [$x_min,$x_max]×[$y_min,$y_max]")
+    end
+    return positions
 end
 
 @testset "Phase 3C Empirical Validations" begin
@@ -367,15 +405,21 @@ end
         new_entity!(world, (WallSegment(SVector(0.0f0, 0.0f0), SVector(30.0f0, 0.0f0)),))
         new_entity!(world, (WallSegment(SVector(0.0f0, 4.0f0), SVector(30.0f0, 4.0f0)),))
         
-        # Left -> Right
+        # Fixed seed for reproducibility; min_sep=3×social_r=0.6m ensures
+        # psychological forces at startup are << goal force (164N << 224N).
+        rng_lane = MersenneTwister(123)
+
+        # Left -> Right: place in x∈[0,5], y∈[0,4] with min_sep=0.6m
+        pos_lr = place_with_min_sep(rng_lane, N_half, 0.0f0, 5.0f0, 0.0f0, 4.0f0, 0.6f0)
         for i in 1:N_half
-            pos = SVector(rand(Float32)*5.0f0, rand(Float32)*4.0f0)
+            pos = pos_lr[i]
             new_entity!(world, (Position(pos), Velocity(SVector(v0,0.0f0)), AgentParams(0.2f0, 80.0f0, v0, 0.5f0, 0.5f0), Goal(SVector(30.0f0, pos[2])), Force(SVector(0.0f0,0.0f0))))
         end
         
-        # Right -> Left
+        # Right -> Left: place in x∈[25,30], y∈[0,4] with min_sep=0.6m
+        pos_rl = place_with_min_sep(rng_lane, N_half, 25.0f0, 30.0f0, 0.0f0, 4.0f0, 0.6f0)
         for i in 1:N_half
-            pos = SVector(25.0f0 + rand(Float32)*5.0f0, rand(Float32)*4.0f0)
+            pos = pos_rl[i]
             new_entity!(world, (Position(pos), Velocity(SVector(-v0,0.0f0)), AgentParams(0.2f0, 80.0f0, v0, 0.5f0, 0.5f0), Goal(SVector(0.0f0, pos[2])), Force(SVector(0.0f0,0.0f0))))
         end
         
@@ -500,8 +544,12 @@ end
         new_entity!(world, (WallSegment(SVector(0.0f0, 0.0f0), SVector(30.0f0, 0.0f0)),))
         new_entity!(world, (WallSegment(SVector(0.0f0, 20.0f0), SVector(30.0f0, 20.0f0)),))
         
+        # min_sep=0.6m = 3×social_r ensures psychological forces at startup (164N/pair)
+        # are safely below the goal force (224N), preventing backward jamming.
+        rng_evac = MersenneTwister(42)
+        pos_evac = place_with_min_sep(rng_evac, N, 2.0f0, 28.0f0, 2.0f0, 18.0f0, 0.6f0)
         for i in 1:N
-            pos = SVector(2.0f0 + rand(Float32)*26.0f0, 2.0f0 + rand(Float32)*16.0f0)
+            pos = pos_evac[i]
             
             # Agents choose closest exit
             dist1 = norm(pos - SVector(0.0f0, 10.0f0))
