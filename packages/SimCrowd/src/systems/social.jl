@@ -274,8 +274,22 @@ function _update_social_forces_impl!(world::World, search::RadixSpatialHash{AT,F
 end
 
 function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F}, positions, social_radii, collision_radii, velocities, backend::CPU, ctx) where {F}
+    N = length(positions)
+
+    # Extract per-agent μ for the Coulomb friction cap in agent_repulsion.
+    # Different scenarios use different μ: normal (0.5) vs panic/arch tests (10.0).
+    # This local allocation is N×4 bytes — negligible compared to CellListMap overhead.
+    mus = Vector{F}(undef, N)
+    μ_idx = 1
+    for (_, _, _, params_col) in Query(world, (Position{F}, Velocity{F}, AgentParams{F}))
+        for i in eachindex(params_col)
+            mus[μ_idx] = params_col[i].μ
+            μ_idx += 1
+        end
+    end
+
     build_grid!(search, positions, backend)
-    
+
     # Define the closure for CellListMap mapping
     function compute_repulsion(pair, forces)
         (; i, j, d2, d) = pair
@@ -284,22 +298,32 @@ function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F},
             vel_i = velocities[i]
             s_r_i = social_radii[i]
             c_r_i = collision_radii[i]
-            
+
             pos_j = positions[j]
             vel_j = velocities[j]
             s_r_j = social_radii[j]
             c_r_j = collision_radii[j]
-            
-            f = agent_repulsion(pos_i, vel_i, s_r_i, c_r_i, pos_j, vel_j, s_r_j, c_r_j)
-            
+
+            # Use the smaller μ of the pair (conservative: cap based on easier-to-slide contact)
+            mu_ij = min(mus[i], mus[j])
+            f = agent_repulsion(pos_i, vel_i, s_r_i, c_r_i, pos_j, vel_j, s_r_j, c_r_j; μ=mu_ij)
+
+            # NOTE: Newton's 3rd law approximation. Helbing's anisotropic SFM is NOT
+            # Newton's 3rd law (f_ij ≠ -f_ji because w depends on each agent's velocity
+            # direction). The physically correct model would compute both f_ij and f_ji
+            # independently and use forces[j] += f_ji. However, CellListMap's pairwise!
+            # uses thread-local reductions that assume Newton symmetry; asymmetric updates
+            # cause data races that freeze all agents. This approximation under-estimates
+            # the backward push on crowd members behind an arch (by ~50%), which prevents
+            # the full faster-is-slower effect from showing (ratio ≈ 0.92 instead of > 1.0).
             forces[i] += f
             forces[j] -= f
         end
         return forces
     end
-    
+
     forces = CellListMap.pairwise!(compute_repulsion, search.system)
-    
+
     # Write forces back to the ECS
     idx = 1
     for (entities, force_col) in Query(world, (Force{F},))

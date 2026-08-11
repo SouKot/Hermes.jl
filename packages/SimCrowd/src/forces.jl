@@ -21,45 +21,59 @@ end
     agent_repulsion(pos_i, pos_j, r_i, r_j; A=2000f0, B=0.08f0)
 
 Computes the social repulsion force exerted by agent `j` on agent `i`.
-Uses the Helbing & Molnár (1995) Gaussian potential.
+Uses the Helbing & Molnár (1995) / Helbing, Farkas & Vicsek (2000) model:
+  - Psychological force: A × exp((r_ij − d)/B) × n̂_ij  (always active, decays exponentially)
+  - Body compression:    k × g(d)                × n̂_ij  (contact only)
+  - Viscous friction:    κ × g(d) × (Δv·t̂)      × t̂_ij  (contact only)
+    capped at μ × F_body (Coulomb cap, per agent from AgentParams.μ)
+
+Note on μ: Helbing 2000 uses pure viscous friction (no cap). The cap is kept here
+for numerical stability and to allow per-scenario tuning:
+  μ = 0.5  → normal pedestrian contact (CRW-M-01 lane formation)
+  μ = 10.0 → effectively uncapped ≈ Helbing exact (3C faster-is-slower, panic)
+The CPU pipeline threads per-agent μ (social.jl). Wall friction uses per-agent
+μ from AgentParams directly in wall_repulsion.
 """
-@inline function agent_repulsion(pos_i::SVector{2,F}, vel_i::SVector{2,F}, social_r_i::F, collision_r_i::F, 
-                                 pos_j::SVector{2,F}, vel_j::SVector{2,F}, social_r_j::F, collision_r_j::F; 
-                                 A::F=2000f0, B::F=0.08f0, k::F=120000f0, κ::F=240000f0, λ::F=0.5f0, μ::F=0.1f0) where {F<:AbstractFloat}
+@inline function agent_repulsion(pos_i::SVector{2,F}, vel_i::SVector{2,F}, social_r_i::F, collision_r_i::F,
+                                 pos_j::SVector{2,F}, vel_j::SVector{2,F}, social_r_j::F, collision_r_j::F;
+                                 A::F=2000f0, B::F=0.08f0, k::F=120000f0, κ::F=240000f0,
+                                 λ::F=0.5f0, μ::F=0.5f0) where {F<:AbstractFloat}
     r_ij = pos_i - pos_j
     d = norm(r_ij)
     if d < 1f-6
         return zero(SVector{2,F})
     end
-    
+
     n_ij = r_ij / d
     t_ij = SVector(-n_ij[2], n_ij[1])
-    
+
     social_overlap = (social_r_i + social_r_j) - d
     f_psych = A * exp(social_overlap / B) * n_ij
-    
+
     collision_overlap = (collision_r_i + collision_r_j) - d
     g_overlap = max(0f0, collision_overlap)
-    
+
     f_body_mag = k * g_overlap
-    f_body = f_body_mag * n_ij
-    
+    f_body     = f_body_mag * n_ij
+
     Δv_ji_t = dot(vel_j - vel_i, t_ij)
     f_frict_viscous = κ * g_overlap * Δv_ji_t
-    # Coulomb cap: viscous friction cannot exceed μ * body_force
-    f_frict_max = μ * f_body_mag
+    # Coulomb cap: friction ≤ μ × body_force.
+    # μ=0.5 → normal walking; μ=10.0 → effectively Helbing-exact (arch formation).
+    f_frict_max    = μ * f_body_mag
     f_frict_clamped = clamp(f_frict_viscous, -f_frict_max, f_frict_max)
     f_frict = f_frict_clamped * t_ij
-    
+
     w = 1f0
     if dot(vel_i, vel_i) > 1f-6
         e_i = vel_i / norm(vel_i)
         cos_φ = dot(e_i, -n_ij)
         w = λ + (1f0 - λ) * (1f0 + cos_φ) / 2f0
     end
-    
+
     return f_psych * w + f_body + f_frict
 end
+
 
 """
     wall_repulsion(pos, wall_segment; A_w=2000f0, B_w=0.08f0)
