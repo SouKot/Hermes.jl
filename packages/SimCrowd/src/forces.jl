@@ -78,13 +78,19 @@ end
 """
     contact_force(pos_i, vel_i, c_r_i, pos_j, vel_j, c_r_j; k, κ, μ)
 
-Physical contact forces: body compression + viscous sliding friction.
+Physical contact forces: body compression + sliding friction.
 These are SYMMETRIC by construction — `contact_force(i→j) = −contact_force(j→i)` —
 so Newton's 3rd law holds exactly. Safe for CellListMap `pairwise!`.
 
-The psychological (social potential) force is intentionally excluded here because it is
-ASYMMETRIC (the anisotropy weight `w` depends on each agent's own velocity direction).
-See `psychological_force` for that term.
+**ContactModel dispatch via `μ` sentinel** (see `ContactModel` in SimCrowd.jl):
+- `iszero(μ)`  → `NoContact`:  returns zero (no body forces at all).
+                  Automatically triggered when `collision_radius = 0`.
+- `isinf(μ)`   → `Viscous`:   pure viscous `κ×g×Δv_t` with no Coulomb cap.
+                  Helbing 2000 exact form; required for Faster-is-Slower effect.
+- `0 < μ < Inf` → `Coulomb`: `clamp(κ×g×Δv_t, -μ×F_body, +μ×F_body)`.
+                  Default for normal pedestrian walking (μ = 0.5, Helbing 2000 Table I).
+
+GPU-safe: `isinf` and `iszero` compile to single-instruction IEEE 754 checks.
 """
 @inline function contact_force(pos_i::SVector{2,F}, vel_i::SVector{2,F}, c_r_i::F,
                                 pos_j::SVector{2,F}, vel_j::SVector{2,F}, c_r_j::F;
@@ -97,11 +103,24 @@ See `psychological_force` for that term.
     t_ij = SVector(-n_ij[2], n_ij[1])
 
     g = max(zero(F), (c_r_i + c_r_j) - d)
+
+    # NoContact: collision_radius = 0 → g = 0 always, OR explicit μ = 0 sentinel.
+    # Both routes return zero without computing body/friction forces.
+    (iszero(g) || iszero(μ)) && return zero(SVector{2,F})
+
     f_body_mag = k * g
     f_body     = f_body_mag * n_ij
 
-    Δv_t    = dot(vel_j - vel_i, t_ij)
-    f_frict = clamp(κ * g * Δv_t, -μ * f_body_mag, μ * f_body_mag) * t_ij
+    Δv_t = dot(vel_j - vel_i, t_ij)
+
+    # ContactModel dispatch:
+    f_frict = if isinf(μ)
+        # Viscous — Helbing 2000 exact; enables arch formation + FiS
+        κ * g * Δv_t * t_ij
+    else
+        # Coulomb — standard cap: |f_frict| ≤ μ × |f_body|
+        clamp(κ * g * Δv_t, -μ * f_body_mag, μ * f_body_mag) * t_ij
+    end
 
     return f_body + f_frict
 end

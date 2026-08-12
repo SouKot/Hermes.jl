@@ -13,18 +13,21 @@ struct SocialForcesGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector, VGP
     cpu_positions::VCPU
     cpu_social_radii::SCPU
     cpu_collision_radii::SCPU
+    cpu_mus::SCPU                # per-agent μ (ContactModel discriminant)
     cpu_velocities::VCPU     # pre-allocated: avoids Vector{SVector}(undef, N) per step
     cpu_forces::VCPU
     
     dev_positions::VGPU
     dev_social_radii::SGPU
     dev_collision_radii::SGPU
+    dev_mus::SGPU                # per-agent μ on device
     dev_velocities::VGPU     # pre-allocated: avoids KernelAbstractions.zeros per step
     dev_forces::VGPU
     
     sorted_dev_positions::VGPU
     sorted_dev_social_radii::SGPU
     sorted_dev_collision_radii::SGPU
+    sorted_dev_mus::SGPU         # per-agent μ, sorted by radix key
     sorted_dev_velocities::VGPU  # pre-allocated
     
     last_build_positions::VGPU
@@ -39,18 +42,21 @@ function SocialForcesGPUContext(backend, F, N::Int)
     cpu_positions         = VCPU(undef, N)
     cpu_social_radii      = SCPU(undef, N)
     cpu_collision_radii   = SCPU(undef, N)
+    cpu_mus               = SCPU(undef, N)  # per-agent μ
     cpu_velocities        = VCPU(undef, N)  # pre-allocated
     cpu_forces            = VCPU(undef, N)
     
     dev_positions         = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     dev_social_radii      = KernelAbstractions.zeros(backend, F, N)
     dev_collision_radii   = KernelAbstractions.zeros(backend, F, N)
+    dev_mus               = KernelAbstractions.zeros(backend, F, N)  # per-agent μ
     dev_velocities        = KernelAbstractions.zeros(backend, SVector{2,F}, N)  # pre-allocated
     dev_forces            = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     
     sorted_dev_positions      = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     sorted_dev_social_radii   = KernelAbstractions.zeros(backend, F, N)
     sorted_dev_collision_radii = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_mus            = KernelAbstractions.zeros(backend, F, N)  # per-agent μ, sorted
     sorted_dev_velocities     = KernelAbstractions.zeros(backend, SVector{2,F}, N)  # pre-allocated
     
     last_build_positions  = KernelAbstractions.zeros(backend, SVector{2,F}, N)
@@ -61,9 +67,9 @@ function SocialForcesGPUContext(backend, F, N::Int)
     SGPU = typeof(dev_social_radii)
     
     return SocialForcesGPUContext{F, VCPU, SCPU, VGPU, SGPU}(
-        N, cpu_positions, cpu_social_radii, cpu_collision_radii, cpu_velocities, cpu_forces,
-        dev_positions, dev_social_radii, dev_collision_radii, dev_velocities, dev_forces,
-        sorted_dev_positions, sorted_dev_social_radii, sorted_dev_collision_radii, sorted_dev_velocities,
+        N, cpu_positions, cpu_social_radii, cpu_collision_radii, cpu_mus, cpu_velocities, cpu_forces,
+        dev_positions, dev_social_radii, dev_collision_radii, dev_mus, dev_velocities, dev_forces,
+        sorted_dev_positions, sorted_dev_social_radii, sorted_dev_collision_radii, sorted_dev_mus, sorted_dev_velocities,
         last_build_positions, sorted_last_positions, needs_rebuild
     )
 end
@@ -113,6 +119,7 @@ function update_social_forces_system!(world::World, search::AbstractNeighborSear
             positions[idx]        = pos_col[i].p
             social_radii[idx]     = params_col[i].social_radius
             collision_radii[idx]  = params_col[i].collision_radius
+            ctx.cpu_mus[idx]      = params_col[i].μ     # per-agent μ for ContactModel dispatch
             velocities[idx]       = vel_col[i].v
             idx += 1
         end
@@ -168,8 +175,11 @@ end
     end
 end
 
-@kernel function compute_social_forces_kernel!(forces, @Const(sorted_positions), @Const(sorted_social_radii), @Const(sorted_collision_radii), @Const(sorted_velocities),
-    @Const(sorted_last_positions), grid_min, grid_dims, cell_size, @Const(cell_starts), @Const(cell_ends), @Const(agent_indices))
+@kernel function compute_social_forces_kernel!(forces,
+    @Const(sorted_positions), @Const(sorted_social_radii), @Const(sorted_collision_radii),
+    @Const(sorted_mus), @Const(sorted_velocities),
+    @Const(sorted_last_positions), grid_min, grid_dims, cell_size,
+    @Const(cell_starts), @Const(cell_ends), @Const(agent_indices))
     i = @index(Global, Linear)
     
     @inbounds begin
@@ -179,6 +189,7 @@ end
         vel_i = sorted_velocities[i]
         s_r_i = sorted_social_radii[i]
         c_r_i = sorted_collision_radii[i]
+        μ_i   = sorted_mus[i]           # per-agent ContactModel discriminant
         old_pos_i = sorted_last_positions[i]
         
         F_repulse = zero(SVector{2, typeof(cell_size)})
@@ -186,8 +197,6 @@ end
         # Calculate search cell based on OLD position
         idx = floor.(Int, (old_pos_i - grid_min) / cell_size)
         
-        # NeighborIterator no longer needs agent_indices! 
-        # cell_starts and cell_ends point to the indices of the *sorted* array!
         iter = SortedNeighborIterator(grid_min, grid_dims, cell_size, cell_starts, cell_ends, idx)
         
         for neighbor_idx in iter
@@ -198,7 +207,9 @@ end
             
             d2 = sum(abs2.(pos_i - pos_j))
             if d2 > 0 && d2 <= cell_size * cell_size
-                F_repulse += agent_repulsion(pos_i, vel_i, s_r_i, c_r_i, pos_j, vel_j, s_r_j, c_r_j)
+                # Pass per-agent μ_i — removes last hardcoded GPU default.
+                # Uses μ_i only (not min(μ_i, μ_j)) for GPU simplicity; CPU uses min.
+                F_repulse += agent_repulsion(pos_i, vel_i, s_r_i, c_r_i, pos_j, vel_j, s_r_j, c_r_j; μ=μ_i)
             end
         end
         forces[original_i] = F_repulse
@@ -241,10 +252,13 @@ function _update_social_forces_impl!(world::World, search::RadixSpatialHash{AT,F
         fill!(ctx.needs_rebuild, false)
     end
     
-    # 4. ALWAYS reorder current positions/radii/velocities using current agent_indices
+    # 4. ALWAYS reorder current positions/radii/velocities/mus using current agent_indices
     kernel_reorder!(ctx.sorted_dev_positions,       dev_positions,           search.agent_indices, ndrange=N)
     kernel_reorder!(ctx.sorted_dev_social_radii,    dev_social_radii,        search.agent_indices, ndrange=N)
     kernel_reorder!(ctx.sorted_dev_collision_radii, dev_collision_radii,     search.agent_indices, ndrange=N)
+    # Upload and sort per-agent μ (GPU parameter parity fix — previously hardcoded to 0.5)
+    copyto!(ctx.dev_mus, ctx.cpu_mus)
+    kernel_reorder!(ctx.sorted_dev_mus,             ctx.dev_mus,             search.agent_indices, ndrange=N)
     # Use pre-allocated ctx buffers for velocities (Fix A: no per-step GPU malloc)
     copyto!(ctx.dev_velocities, velocities)
     kernel_reorder!(ctx.sorted_dev_velocities,      ctx.dev_velocities,      search.agent_indices, ndrange=N)
@@ -253,10 +267,13 @@ function _update_social_forces_impl!(world::World, search::RadixSpatialHash{AT,F
     
     # 5. Launch forces kernel using sorted arrays
     kernel! = compute_social_forces_kernel!(backend)
-    kernel!(dev_forces, ctx.sorted_dev_positions, ctx.sorted_dev_social_radii, ctx.sorted_dev_collision_radii, ctx.sorted_dev_velocities, ctx.sorted_last_positions,
-        search.grid_min, search.grid_dims, search.cell_size,
-        search.cell_starts, search.cell_ends, search.agent_indices,
-        ndrange=N)
+    kernel!(dev_forces,
+            ctx.sorted_dev_positions, ctx.sorted_dev_social_radii, ctx.sorted_dev_collision_radii,
+            ctx.sorted_dev_mus, ctx.sorted_dev_velocities,
+            ctx.sorted_last_positions,
+            search.grid_min, search.grid_dims, search.cell_size,
+            search.cell_starts, search.cell_ends, search.agent_indices,
+            ndrange=N)
     KernelAbstractions.synchronize(backend)  # mandatory: CPU must wait before reading forces
     
     # 5. Copy forces back to host
@@ -308,13 +325,12 @@ function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F},
 
     # ── Phase 3: Psychological forces per-agent (ASYMMETRIC) ─────────────────────
     # The anisotropy weight w depends on each agent's own velocity direction, so
-    # f_ij ≠ −f_ji. This must be computed per agent, mirroring the GPU kernel:
-    # each iteration handles one agent i and accumulates forces from all nearby j.
+    # f_ij ≠ −f_ji. Must be computed per agent: each iteration handles one agent i
+    # and accumulates forces from all nearby j.
     #
-    # Threading note: Threads.@threads interferes with CellListMap's internal thread
-    # pool in some Julia configurations, causing agent lockup. The sequential loop is
-    # used here — for N≤500 (all CPU tests), this is <0.2ms and negligible.
-    # Future: use Polyester.@batch when the threading interaction is resolved.
+    # Threading: sequential loop is correct and safe (no shared writes per i).
+    # Sprint 2: replace with a KA @kernel(CPU()) for CPU thread parallelism and
+    # GPU portability — one implementation for both backends.
     psych_forces = search.psych_forces
     fill!(psych_forces, zero(SVector{2, F}))
     cutoff_sq = search.cell_size * search.cell_size

@@ -14,6 +14,7 @@ export AbstractNeighborSearch, RadixSpatialHash, CPUNeighborSearch, build_grid!,
 export NavigationField, build_navigation_field, get_desired_direction
 export update_navigation_system!, update_social_forces_system!, integrate_physics_system!
 export ORCAParams, update_orca_system!
+export ContactModel, NoContact, Coulomb, Viscous
 
 # Components
 struct Position{F<:AbstractFloat}
@@ -60,6 +61,47 @@ AgentParams(social_radius::F, mass::F, v_pref::F, τ::F, μ::F) where {F<:Abstra
 
 AgentParams(social_radius::F, mass::F, v_pref::F, τ::F) where {F<:AbstractFloat} =
     AgentParams(social_radius, social_radius * F(2/3), mass, v_pref, τ, F(0.5))
+
+"""
+    ContactModel
+
+Specifies how body-contact forces are modeled in the Helbing SFM.
+The model is encoded in `AgentParams.μ` at construction time:
+
+| ContactModel | `collision_radius`  | `μ` value | Physical meaning |
+|--------------|---------------------|-----------|------------------|
+| `NoContact`  | 0 (disabled)        | 0.0       | Social force only — low-density normal walking (svenkreiss approach) |
+| `Coulomb`    | `2/3 × social_r`   | supplied  | Coulomb-capped viscous friction — default, good for lane formation |
+| `Viscous`    | `2/3 × social_r`   | Inf       | Pure viscous κ×g×Δv_t — Helbing 2000 exact; enables Faster-is-Slower effect |
+
+Usage:
+```julia
+p = AgentParams(0.25f0, 80f0, 1.4f0, 0.5f0, NoContact)          # social force only
+p = AgentParams(0.25f0, 80f0, 4.0f0, 0.5f0, Viscous)             # FiS-capable
+p = AgentParams(0.25f0, 80f0, 1.4f0, 0.5f0, Coulomb, 0.3f0)      # custom μ
+```
+"""
+@enum ContactModel::Int32 begin
+    NoContact   # collision_radius = 0; μ = 0  → no body contact forces
+    Coulomb     # collision_radius = 2/3 r; μ ∈ (0, ∞) → Coulomb-capped friction
+    Viscous     # collision_radius = 2/3 r; μ = Inf → pure viscous, Helbing exact
+end
+
+"""
+    AgentParams(social_radius, mass, v_pref, τ, model::ContactModel [, μ=0.5f0])
+
+Convenience constructor that sets both `collision_radius` and `μ` from a `ContactModel`.
+"""
+function AgentParams(social_radius::F, mass::F, v_pref::F, τ::F,
+                     model::ContactModel, μ::F=F(0.5)) where {F<:AbstractFloat}
+    if model == NoContact
+        return AgentParams(social_radius, zero(F), mass, v_pref, τ, zero(F))
+    elseif model == Viscous
+        return AgentParams(social_radius, social_radius * F(2/3), mass, v_pref, τ, F(Inf))
+    else  # Coulomb
+        return AgentParams(social_radius, social_radius * F(2/3), mass, v_pref, τ, μ)
+    end
+end
 
 struct ORCAParams{F<:AbstractFloat}
     time_horizon::F
