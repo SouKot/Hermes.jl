@@ -3,6 +3,7 @@
 using KernelAbstractions
 using StaticArrays
 using CellListMap
+import AcceleratedKernels as AK
 
 """
     AbstractNeighborSearch{F}
@@ -33,7 +34,11 @@ end
 
 function RadixSpatialHash(backend::Backend, N::Int, grid_min::SVector{2,F}, grid_max::SVector{2,F}, cell_size::F) where {F<:AbstractFloat}
     dims = ceil.(Int, (grid_max - grid_min) / cell_size)
-    num_cells = dims[1] * dims[2]
+    # Morton key-space: interleaved x,y bits → key ∈ [0, 2^(2×bits) − 1] where
+    # bits = number of bits to represent max(dims)-1.  Sized as a power-of-two.
+    max_dim  = max(dims[1], dims[2])
+    bits     = max_dim <= 1 ? 0 : ceil(Int, log2(Float64(max_dim)))
+    num_cells = max(1, 1 << (2 * bits))
     
     cell_hashes = KernelAbstractions.zeros(backend, Int, N)
     agent_indices = KernelAbstractions.zeros(backend, Int, N)
@@ -43,11 +48,41 @@ function RadixSpatialHash(backend::Backend, N::Int, grid_min::SVector{2,F}, grid
     return RadixSpatialHash{typeof(cell_hashes), F}(cell_size, grid_min, dims, cell_hashes, agent_indices, cell_starts, cell_ends)
 end
 
-@inline function position_to_hash(pos::SVector{2, F}, grid_min::SVector{2, F}, cell_size::F, dims::SVector{2, Int}) where {F<:AbstractFloat}
+"""
+    morton_spread_bits(v::UInt32) → UInt32
+
+Spreads the low 16 bits of `v` into even bit positions:
+  bit 0 → position 0, bit 1 → position 2, bit 2 → position 4, ...
+
+Used to build Morton (Z-order) curve codes by interleaving x and y bit-spreads.
+All operations are integer bitwise — GPU-safe.
+"""
+@inline function morton_spread_bits(v::UInt32)::UInt32
+    v &= UInt32(0x0000ffff)
+    v = (v | (v << UInt32(8)))  & UInt32(0x00ff00ff)
+    v = (v | (v << UInt32(4)))  & UInt32(0x0f0f0f0f)
+    v = (v | (v << UInt32(2)))  & UInt32(0x33333333)
+    v = (v | (v << UInt32(1)))  & UInt32(0x55555555)
+    return v
+end
+
+"""
+    position_to_hash(pos, grid_min, cell_size, dims) → Int
+
+Maps a 2D position to a 1-indexed cell ID using the **Morton (Z-order) curve**.
+
+Morton encoding interleaves the x and y cell-coordinate bits, so spatially adjacent
+cells receive nearby codes. After sorting agents by this hash, agents in neighboring
+cells are closer in memory — improving cache hit rates in the GPU neighbor kernel.
+
+GPU-safe: only integer bitwise ops (`&`, `|`, `<<`, `UInt32` casts).
+"""
+@inline function position_to_hash(pos::SVector{2, F}, grid_min::SVector{2, F},
+                                   cell_size::F, dims::SVector{2, Int}) where {F<:AbstractFloat}
     idx = floor.(Int, (pos - grid_min) / cell_size)
-    x = clamp(idx[1], 0, dims[1] - 1)
-    y = clamp(idx[2], 0, dims[2] - 1)
-    return x + y * dims[1] + 1
+    x   = UInt32(clamp(idx[1], 0, dims[1] - 1))
+    y   = UInt32(clamp(idx[2], 0, dims[2] - 1))
+    return Int(morton_spread_bits(x) | (morton_spread_bits(y) << UInt32(1))) + 1
 end
 
 @kernel function compute_hashes_kernel!(cell_hashes, @Const(positions), grid_min, cell_size, dims)
@@ -68,6 +103,13 @@ end
     end
 end
 
+# ── Sortperm backend dispatch ─────────────────────────────────────────────────
+# AK.merge_sortperm! requires GPU (uses static block-size KA kernels / shared memory).
+# Julia base sortperm! works on CPU Vector but not on GPU device arrays (CuArray).
+# Dispatch ensures correct implementation for each backend.
+_sortperm!(ix::AbstractArray, v::AbstractArray, ::CPU) = sortperm!(ix, v)
+_sortperm!(ix::AbstractArray, v::AbstractArray, backend) = AK.merge_sortperm!(ix, v, backend)
+
 function build_grid!(sh::RadixSpatialHash, positions::AbstractArray, backend::Backend)
     N = length(positions)
     num_cells = length(sh.cell_starts)
@@ -79,7 +121,10 @@ function build_grid!(sh::RadixSpatialHash, positions::AbstractArray, backend::Ba
     kernel_hashes!(sh.cell_hashes, positions, sh.grid_min, sh.cell_size, sh.grid_dims, ndrange=N)
     KernelAbstractions.synchronize(backend)
     
-    sortperm!(sh.agent_indices, sh.cell_hashes)
+    # AK.merge_sortperm! uses static block-size kernels (GPU shared memory) — GPU only.
+    # Julia base sortperm! is CPU-only (no device array support).
+    # Dispatch: CPU uses Julia base, GPU backends use AcceleratedKernels.
+    _sortperm!(sh.agent_indices, sh.cell_hashes, backend)
     
     kernel_csr! = build_csr_kernel!(backend)
     kernel_csr!(sh.cell_starts, sh.cell_ends, sh.cell_hashes, sh.agent_indices, ndrange=N)
@@ -107,7 +152,9 @@ function Base.iterate(iter::NeighborIterator, state=(-1, -1, -1))
         x = iter.center_idx[1] + dx
         y = iter.center_idx[2] + dy
         if x >= 0 && x < iter.grid_dims[1] && y >= 0 && y < iter.grid_dims[2]
-            cell_id = x + y * iter.grid_dims[1] + 1
+            # Morton cell ID: interleaved x,y bits → cache-friendly neighbor access
+            xi = UInt32(x); yi = UInt32(y)
+            cell_id = Int(morton_spread_bits(xi) | (morton_spread_bits(yi) << UInt32(1))) + 1
             start_idx = iter.cell_starts[cell_id]
             end_idx = iter.cell_ends[cell_id]
             if start_idx != 0
@@ -147,7 +194,9 @@ function Base.iterate(iter::SortedNeighborIterator, state=(-1, -1, -1))
         x = iter.center_idx[1] + dx
         y = iter.center_idx[2] + dy
         if x >= 0 && x < iter.grid_dims[1] && y >= 0 && y < iter.grid_dims[2]
-            cell_id = x + y * iter.grid_dims[1] + 1
+            # Morton cell ID: interleaved x,y bits → cache-friendly neighbor access
+            xi = UInt32(x); yi = UInt32(y)
+            cell_id = Int(morton_spread_bits(xi) | (morton_spread_bits(yi) << UInt32(1))) + 1
             start_idx = iter.cell_starts[cell_id]
             end_idx = iter.cell_ends[cell_id]
             if start_idx != 0

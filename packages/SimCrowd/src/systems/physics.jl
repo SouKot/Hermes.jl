@@ -16,16 +16,10 @@ function integrate_physics_system!(world::World, dt::F) where {F<:AbstractFloat}
             mass = params_col[i].mass
             acc = force_col[i].f / mass
             
-            # Helbing Fluctuation Term (breaks symmetrical friction locking)
-            # Correct SDE scaling: velocity diffusion = sigma * sqrt(dt) * Z.
-            # So acc_noise = (sigma / sqrt(dt)) * Z
-            # BUG-SFM-02 FIX: sigma = 0.1 m/s (Helbing 2000, Table I / Appendix).
-            # Helbing 1995 pedestrian-flow calibration used 0.05 m/s; the 2000 paper's
-            # evacuation/panic scenario uses 0.1 m/s. At 0.05 the arch-breaking time
-            # for 13 stuck agents (crowd pressure < arch friction) exceeds 500s.
-            # At 0.1 m/s: arch-break time ≈ 1.5s, all agents clear within ~200s.
-            sigma = 0.1f0  # m/s velocity diffusion — Helbing 2000 evacuation calibration
-            acc += SVector(randn(F), randn(F)) * (sigma / sqrt(dt))
+            # Helbing Fluctuation Term — SDE noise breaks symmetrical friction locking.
+            # Correct SDE scaling: velocity diffusion = σ × sqrt(dt) × Z → acc_noise = σ/sqrt(dt) × Z.
+            # σ is per-agent (AgentParams.σ): 0.10 evacuation, 0.05 normal flow, 0.0 deterministic.
+            acc += SVector(randn(F), randn(F)) * (params_col[i].σ / sqrt(dt))
             
 
             new_vel = vel_col[i].v + acc * dt

@@ -341,9 +341,9 @@ end
                 new_entity!(world, (
                     Position(pos),
                     Velocity(SVector(0f0, 0f0)),
-                    # Helbing 2000 exact: r=0.25m body+collision, m=80kg, τ=0.5, μ=0.5
-                    # 6-arg AgentParams: enables body contact (k, κ) needed for arch formation
-                    AgentParams(0.25f0, 0.25f0, 80f0, v0, 0.5f0, 0.5f0),
+                    # Helbing 2000 exact: r=0.25m body+collision, m=80kg, τ=0.5, μ=0.5, σ=0.1 m/s
+                    # 7-arg AgentParams: enables body contact (k, κ) needed for arch formation
+                    AgentParams(0.25f0, 0.25f0, 80f0, v0, 0.5f0, 0.5f0, 0.1f0),
                     Goal(SVector(room_W, door_y)),
                     Force(SVector(0f0, 0f0))
                 ))

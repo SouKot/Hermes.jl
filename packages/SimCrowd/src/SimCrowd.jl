@@ -36,31 +36,56 @@ struct AgentParams{F<:AbstractFloat}
     v_pref::F
     τ::F
     μ::F
+    σ::F      # velocity diffusion (Helbing SDE noise, m/s).
+              # 0.10 m/s — Helbing 2000 evacuation calibration (arch-break in ~1.5 s)
+              # 0.05 m/s — Helbing 1995 normal pedestrian flow
+              # 0.00     — deterministic (disable stochastic fluctuation term)
+    A::F      # social repulsion strength (N) — Helbing 2000: 2000 N
+    B::F      # social repulsion decay length (m) — Helbing 2000: 0.08 m
+    λ::F      # anisotropy: attention behind vs. ahead — Helbing 2000: 0.5
+              # λ=1 → isotropic; λ=0.5 → agents pay half-attention to threats from behind
 end
 
 """
-    AgentParams(social_radius, collision_radius, mass, v_pref, τ, μ) → 6-arg (full)
-    AgentParams(social_radius, mass, v_pref, τ, μ)                  → 5-arg (auto collision_radius = 2/3 × social_radius)
-    AgentParams(social_radius, mass, v_pref, τ)                     → 4-arg (μ defaults to 0.5, Helbing 2000 normal walking)
+    AgentParams(sr, cr, m, vp, τ, μ, σ, A, B, λ) → 10-arg full struct literal
+    AgentParams(sr, cr, m, vp, τ, μ, σ)           → 7-arg  (A=2000, B=0.08, λ=0.5)
+    AgentParams(sr, m, vp, τ, μ, σ)               → 6-arg  (auto cr, A=2000, B=0.08, λ=0.5)
+    AgentParams(sr, m, vp, τ, μ)                  → 5-arg  (auto cr, σ=0.1, A=2000, B=0.08, λ=0.5)
+    AgentParams(sr, m, vp, τ)                     → 4-arg  (all defaults)
 
 Outer constructors for ergonomic construction.
 
-`collision_radius = social_radius × 2/3` is a standard Helbing ratio: the physical
-body (collision) is smaller than the "personal space" (social) radius so that the
-body-contact force only activates at closer range than the social force.
+`collision_radius = social_radius × 2/3` is the standard Helbing body/personal-space ratio.
 
-`μ = 0.5` is the Coulomb friction cap for normal pedestrian walking (Helbing 2000,
-Table I). For panic/evacuation scenarios where Helbing's pure viscous friction (no cap)
-is needed, pass `μ = Inf` or use the 6-arg constructor with the desired value.
+`μ = 0.5` is the Coulomb friction cap for normal pedestrian walking (Helbing 2000, Table I).
+For panic/evacuation scenarios using Helbing's pure viscous friction set `μ = Inf` or use
+the `ContactModel` constructor.
 
-**BUG NOTE (historical):** The 4-arg constructor previously defaulted to `μ = F(1.2e5)`,
-which is the body stiffness constant `k`, not a friction coefficient. Fixed 2026-08-12.
+`σ = 0.1 m/s` (Helbing 2000 evacuation default). For normal low-density flow use 0.05 m/s.
+Set to 0 for deterministic simulations.
+
+`A = 2000 N`, `B = 0.08 m`, `λ = 0.5` are Helbing 2000 calibrated social force parameters.
+Vary for heterogeneous crowds: Johansson 2007 found 2× variation across countries/cultures.
+
+**BUG NOTE (historical):** 4-arg constructor previously defaulted `μ = F(1.2e5)` (body
+stiffness constant `k`, not friction coefficient). Fixed 2026-08-12.
 """
-AgentParams(social_radius::F, mass::F, v_pref::F, τ::F, μ::F) where {F<:AbstractFloat} =
-    AgentParams(social_radius, social_radius * F(2/3), mass, v_pref, τ, μ)
+# 7-arg: (sr, cr, m, vp, τ, μ, σ) — fills in Helbing defaults for A, B, λ.
+# Catches the common full-constructor pattern where cr is specified explicitly.
+AgentParams(sr::F, cr::F, m::F, vp::F, τ::F, μ::F, σ::F) where {F<:AbstractFloat} =
+    AgentParams(sr, cr, m, vp, τ, μ, σ, F(2000), F(0.08), F(0.5))
 
-AgentParams(social_radius::F, mass::F, v_pref::F, τ::F) where {F<:AbstractFloat} =
-    AgentParams(social_radius, social_radius * F(2/3), mass, v_pref, τ, F(0.5))
+# 6-arg: (sr, m, vp, τ, μ, σ) — auto collision_radius = 2/3 × social_radius
+AgentParams(sr::F, m::F, vp::F, τ::F, μ::F, σ::F) where {F<:AbstractFloat} =
+    AgentParams(sr, sr * F(2/3), m, vp, τ, μ, σ, F(2000), F(0.08), F(0.5))
+
+# 5-arg: (sr, m, vp, τ, μ) — σ defaults to 0.1 m/s (Helbing 2000 evacuation)
+AgentParams(sr::F, m::F, vp::F, τ::F, μ::F) where {F<:AbstractFloat} =
+    AgentParams(sr, sr * F(2/3), m, vp, τ, μ, F(0.1), F(2000), F(0.08), F(0.5))
+
+# 4-arg: (sr, m, vp, τ) — all defaults: μ=0.5, σ=0.1, A=2000, B=0.08, λ=0.5
+AgentParams(sr::F, m::F, vp::F, τ::F) where {F<:AbstractFloat} =
+    AgentParams(sr, sr * F(2/3), m, vp, τ, F(0.5), F(0.1), F(2000), F(0.08), F(0.5))
 
 """
     ContactModel
@@ -88,18 +113,19 @@ p = AgentParams(0.25f0, 80f0, 1.4f0, 0.5f0, Coulomb, 0.3f0)      # custom μ
 end
 
 """
-    AgentParams(social_radius, mass, v_pref, τ, model::ContactModel [, μ=0.5f0])
+    AgentParams(social_radius, mass, v_pref, τ, model::ContactModel [, μ=0.5f0 [, σ=0.1f0]])
 
 Convenience constructor that sets both `collision_radius` and `μ` from a `ContactModel`.
+A, B, λ default to Helbing 2000 calibrated values.
 """
 function AgentParams(social_radius::F, mass::F, v_pref::F, τ::F,
-                     model::ContactModel, μ::F=F(0.5)) where {F<:AbstractFloat}
+                     model::ContactModel, μ::F=F(0.5), σ::F=F(0.1)) where {F<:AbstractFloat}
     if model == NoContact
-        return AgentParams(social_radius, zero(F), mass, v_pref, τ, zero(F))
+        return AgentParams(social_radius, zero(F), mass, v_pref, τ, zero(F), σ, F(2000), F(0.08), F(0.5))
     elseif model == Viscous
-        return AgentParams(social_radius, social_radius * F(2/3), mass, v_pref, τ, F(Inf))
+        return AgentParams(social_radius, social_radius * F(2/3), mass, v_pref, τ, F(Inf), σ, F(2000), F(0.08), F(0.5))
     else  # Coulomb
-        return AgentParams(social_radius, social_radius * F(2/3), mass, v_pref, τ, μ)
+        return AgentParams(social_radius, social_radius * F(2/3), mass, v_pref, τ, μ, σ, F(2000), F(0.08), F(0.5))
     end
 end
 

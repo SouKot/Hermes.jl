@@ -1,17 +1,19 @@
 # SESSION STATE
 
 > **DO NOT EDIT BY HAND.** Updated automatically at end of each session.  
-> Last updated: 2026-08-11 (conversation `78616c9e-3fd6-407c-bebd-abc1d7c4255f`)
+> Last updated: 2026-08-12 (conversation `78616c9e-3fd6-407c-bebd-abc1d7c4255f`)
 
 ---
 
 ## 1. Where We Left Off
 
-- **Last Commit:** `45386a1 (HEAD → master) fix(SimCrowd): Tier 3 suite → 8/8 green; sigma calibration, force split, 3B/3C redesign`
-- **Current Phase:** Tier 3 cross-library validation COMPLETE (8/8 passing). Now planning improvement sprint.
+- **Last Commit:** `763ab36 (HEAD → master) feat(SimCrowd): Sprint 1B — ContactModel enum + GPU μ parity`
+- **Previous:** `64ce516 fix(SimCrowd): Sprint 1A — AgentParams μ default + navigation mass + test API sync`
+- **Current Phase:** Sprint 1 COMPLETE. Ready for Sprint 2 (Performance).
 - **Test Status:**
   ```
-  Tier 3: Cross-Library Validation vs Published Benchmarks | 8/8  1m27s
+  runtests.jl:                18/18   2.8s
+  Tier 3: Cross-Library Validation vs Published Benchmarks |  8/8   1m20s
     3A-easy ORCA N=30 antipodal circle                      | 3/3
     3A-hard ORCA N=250 collision avoidance                  | 2/2
     3B SFM Bottleneck N=50 6×6m (Helbing 2000)              | 1/1
@@ -20,41 +22,38 @@
 
 ---
 
-## 2. What Was Accomplished in the Last Session
+## 2. What Was Accomplished in Sprint 1
 
-### Physics Fixes
+### Sprint 1A (commit 64ce516) — Correctness Bugs
 | Fix | File | Details |
 |-----|------|---------|
-| Noise sigma `0.05→0.1 m/s` | `physics.jl` | Helbing 2000 evacuation calibration; arch-break time 6s→1.5s |
-| Force split: `contact_force` + `psychological_force` | `forces.jl` | Contact is Newton-3-exact (symmetric via CellListMap); psych is asymmetric (anisotropy on psych only) |
-| CPU pipeline Phase 2+3 separation | `social.jl` | Phase 2: body+friction via `CellListMap.pairwise!`; Phase 3: psych O(N²) sequential |
-| Restored ORCA call in 3A-hard loop | `tier3_cross_library.jl` | Regression introduced when editing 3B setup |
+| `AgentParams` 4-arg constructor: `μ = F(1.2e5) → F(0.5)` | `SimCrowd.jl:45` | `1.2e5` was body stiffness `k`, not friction coefficient |
+| `update_navigation_system!` mass bug | `navigation.jl:116` | `F_drive = (v_pref×dir−vel)/τ` stored as Force; physics divided by mass again → 80× too weak. Fixed → `mass × ...` |
+| `agent_repulsion` old 4-arg API | `runtests.jl:31` | Forces refactor expanded to 8-arg; test not updated |
+| CRW-S-01 query included `ORCAParams` | `runtests.jl:113` | Entity has AgentParams only; query returned empty → no force → agent drifted on noise |
+| `goal_seeking_force` test assertion | `runtests.jl:20` | Expected 2.0 (old accel) → 160.0 N (mass × accel) |
+| 3-arg `AgentParams(r, v_pref, τ)` | bench/validate scripts | Old form predating `mass` field; fixed to 4-arg with mass=80.0f0 |
+| `ap.radius` → `ap.social_radius` | `validate_parity.jl` | Field rename not propagated |
 
-### Test Redesigns (3B/3C)
-- **3B**: Changed N=200/20×10m → N=50/6×6m (Helbing 2000 exact geometry). Liveness threshold 55%. Documented that 5-arg (social-only) produces 0.17 ped/s vs Weidmann 1.44 ped/s — correct physics, not a bug.
-- **3C**: Changed N=200/12×12m → N=50/6×6m. Removed n_normal liveness (Coulomb arch too stable at v₀=1.0) and FiS ratio (t_normal hits 500s timeout). Kept: arch-formation proof (`t_panic >> 18.75s`) + panic liveness.
-
-### Key Scientific Finding (Documented in improvement plan)
-Our Coulomb friction cap (`clamp(κ×g×Δv_t, -μ×k×g, +μ×k×g)`) prevents the Faster-is-Slower effect at normal speed. Helbing's pure viscous model (`κ×g×Δv_t`, no cap) is required for correct FiS physics. This is the #1 issue in the improvement plan.
+### Sprint 1B (commit 763ab36) — ContactModel + GPU Parity
+| Fix | File | Details |
+|-----|------|---------|
+| `ContactModel` enum | `SimCrowd.jl` | `@enum ContactModel::Int32 { NoContact, Coulomb, Viscous }` encoded in `AgentParams.μ` sentinel |
+| New `AgentParams` constructor | `SimCrowd.jl` | `AgentParams(r, m, vp, τ, model::ContactModel [, μ])` — sets both collision_radius and μ from model |
+| `contact_force` ContactModel dispatch | `forces.jl` | `isinf(μ)` → Viscous (pure κ×g×Δv_t, FiS-capable); `iszero(μ)` → NoContact; else Coulomb |
+| GPU μ parity | `social.jl` | `cpu_mus/dev_mus/sorted_dev_mus` buffers in `SocialForcesGPUContext`; per-agent μ uploaded and sorted each step; kernel reads `μ_i` from `sorted_mus[i]` — last hardcoded GPU default removed |
 
 ---
 
-## 3. Next Sprint — The Improvement Plan
+## 3. Next Sprint — Sprint 2 (Performance)
 
-Full plan at: `simcrowd_improvement_plan.md` (in conversation artifacts) and summarized below.
+Full plan at: `simcrowd_improvement_plan.md` (in conversation artifacts).
 
-### Sprint 1 — Correctness Bugs (START HERE)
-| Task | File | Effort |
-|------|------|--------|
-| Fix `AgentParams` 4-arg constructor: `μ=1.2e5` should be `μ=0.5` | `SimCrowd.jl:44` | 30 min |
-| Add `ContactModel` enum (`Viscous \| Coulomb \| NoContact`), dispatch in `contact_force` | `forces.jl` | 4h |
-| Upload per-agent A, B, λ to `SocialForcesGPUContext`; remove hardcoded GPU defaults | `social.jl` | 4h |
-
-### Sprint 2 — Performance (before N > 1000)
-| Task | File | Effort |
-|------|------|--------|
-| Replace O(N²) psych loop with `Polyester.@batch` (quick win) or CSR neighbor list | `social.jl:322` | 1 day |
-| Morton curve sorting in `RadixSpatialHash` | `neighbor_search.jl` | 3h |
+### Sprint 2 — Performance (START HERE)
+| Task | File | Effort | Notes |
+|------|------|--------|-------|
+| Replace O(N²) psych loop with KA `@kernel(CPU())` | `social.jl:322` | 1 day | Architecture: one kernel, `CPU()` + `CUDABackend()` dispatch. No Polyester. |
+| Morton curve sorting in `RadixSpatialHash` | `neighbor_search.jl` | 3h | Memory locality improvement for cache performance |
 
 ### Sprint 3 — Scientific Completeness
 | Task | Effort |
@@ -69,32 +68,60 @@ Full plan at: `simcrowd_improvement_plan.md` (in conversation artifacts) and sum
 
 | File | Why |
 |------|-----|
-| `packages/SimCrowd/src/SimCrowd.jl` | 4-arg AgentParams constructor bug (line 44) |
-| `packages/SimCrowd/src/forces.jl` | ContactModel enum to add |
-| `packages/SimCrowd/src/systems/social.jl` | GPU hardcoded defaults + O(N²) psych loop |
-| `packages/SimCrowd/src/systems/orca_math.jl` | LP3 fallback quality |
-| `packages/SimCrowd/test/tier3_cross_library.jl` | Tier 3 tests (reference for verification) |
+| `packages/SimCrowd/src/systems/social.jl` | Phase 3 O(N²) psych loop → KA `@kernel` |
+| `packages/SimCrowd/src/neighbor_search.jl` | `RadixSpatialHash` Morton curve sorting |
+| `packages/SimCrowd/src/SimCrowd.jl` | ContactModel enum (just added) |
+| `packages/SimCrowd/src/forces.jl` | contact_force ContactModel dispatch (just added) |
 
 ---
 
-## 5. Resume Commands
+## 5. API Reference — What Changed in Sprint 1
+
+### New types
+```julia
+@enum ContactModel::Int32 NoContact Coulomb Viscous  # exported
+```
+
+### New constructors
+```julia
+# ContactModel constructor — sets collision_radius and μ automatically
+AgentParams(r, m, vp, τ, model::ContactModel)           # μ defaults to 0.5 for Coulomb
+AgentParams(r, m, vp, τ, model::ContactModel, μ::F)     # explicit μ for Coulomb
+
+# Examples
+AgentParams(0.25f0, 80f0, 1.4f0, 0.5f0, NoContact)     # social force only
+AgentParams(0.25f0, 80f0, 4.0f0, 0.5f0, Viscous)       # FiS-capable evacuation
+AgentParams(0.25f0, 80f0, 1.4f0, 0.5f0, Coulomb, 0.3f0) # custom μ
+```
+
+### contact_force dispatch via μ
+| μ value | ContactModel | Behavior |
+|---------|--------------|----------|
+| `iszero(μ)` | NoContact | Returns zero — no body contact |
+| `isinf(μ)` | Viscous | Pure `κ×g×Δv_t` — Helbing 2000 exact, FiS-capable |
+| `0 < μ < Inf` | Coulomb | `clamp(κ×g×Δv_t, ±μ×k×g)` — default |
+
+---
+
+## 6. Resume Commands
 
 **After restart**, paste this in the new conversation to restore context instantly:
-> "Continue antigravity/SimCrowd development. Read SESSION_STATE.md. The last session fixed the Tier 3 cross-library tests (8/8 green). Next sprint is SimCrowd improvement plan Sprint 1 — start with the AgentParams constructor bug."
+> "Continue antigravity/SimCrowd development. Read SESSION_STATE.md. Sprint 1 is complete (runtests 18/18, Tier 3 8/8). Start Sprint 2: replace the O(N²) psych loop in social.jl with a KA @kernel."
 
 **Run tests to verify no drift:**
 ```bash
 cd /run/media/sourabh/SANDISK-2TB/antigravity/ABM/packages/SimCrowd
-julia --startup-file=no --project=. test/tier3_cross_library.jl
-# Expected: 8 passed, 0 failed in ~90s
+julia --startup-file=no --project=. test/runtests.jl       # Expected: 18/18
+julia --startup-file=no --project=. test/tier3_cross_library.jl  # Expected: 8/8
 ```
 
 ---
 
-## 6. Open Questions / Decisions Pending
+## 7. Open Questions / Decisions Pending
 
-| Question | Context |
-|----------|---------|
-| Does `Polyester.@batch` work with `KernelAbstractions.jl`? | Yes — Polyester is CPU-only threading; KA handles GPU dispatch. They live at different stack layers and don't conflict. `@batch` replaces `Threads.@threads` on the CPU social force loop only. |
-| Should we switch to Chraibi GCF as the DEFAULT social force? | Deferred — requires validation dataset. Keep Helbing as default, add GCF as a `ForceModel` option (Sprint 4). |
-| Should 3B use 6-arg (body contact) instead of 5-arg? | No — 5-arg is intentional. 3B tests social-force-only behavior; 3C tests full contact+FiS. The separation is valuable. |
+| Question | Context | Decision |
+|----------|---------|---------|
+| Polyester.@batch for psych loop? | Sprint 2 | **No** — use KA @kernel with CPU()/GPU() backends. One implementation, zero new deps. See §3.1 of improvement plan. |
+| Should we switch to Chraibi GCF as default SFM? | Sprint 4 | Deferred — keep Helbing as default, add GCF as `ForceModel` option |
+| Should 3B use 6-arg (body contact)? | Tier 3 | No — 5-arg is intentional. 3B = social-only, 3C = full contact+FiS |
+| Per-agent A, B, k, κ, λ? | Sprint 3/4 | Deferred — requires AgentParams struct expansion. Currently module-level defaults |

@@ -102,7 +102,10 @@ using Ark
         e = new_entity!(world, (
             Position(SVector(0.0f0, 0.0f0)),
             Velocity(SVector(0.0f0, 0.0f0)),
-            AgentParams(0.3f0, 80.0f0, v0, τ),
+            # σ=0.0 → deterministic: this test checks goal-seeking convergence, not SDE noise.
+            # With σ=0.1 (default), the instantaneous speed at t=3s has ~0.07 m/s variance
+            # from the stochastic term, which exceeds the atol=0.05 → spurious failures ~60%.
+            AgentParams(0.3f0, 80.0f0, v0, τ, 0.5f0, 0.0f0),
             Goal(SVector(10.0f0, 0.0f0)),
             Force(SVector(0.0f0, 0.0f0))
         ))
