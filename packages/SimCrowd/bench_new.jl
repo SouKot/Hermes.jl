@@ -28,7 +28,7 @@ function run_bench(N, steps)
         new_entity!(world, (
             Position(pos),
             Velocity(SVector(0.0f0, 0.0f0)),
-            AgentParams(0.3f0, 1.4f0, 0.5f0),
+            AgentParams(0.3f0, 80.0f0, 1.4f0, 0.5f0),
             Goal(SVector(50.0f0, 50.0f0)),
             Force(SVector(0.0f0, 0.0f0))
         ))
@@ -70,7 +70,7 @@ function run_bench_gpu(N, steps)
         new_entity!(world, (
             Position(pos),
             Velocity(SVector(0.0f0, 0.0f0)),
-            AgentParams(0.3f0, 1.4f0, 0.5f0),
+            AgentParams(0.3f0, 80.0f0, 1.4f0, 0.5f0),
             Goal(SVector(50.0f0, 50.0f0)),
             Force(SVector(0.0f0, 0.0f0))
         ))

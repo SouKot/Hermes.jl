@@ -19,7 +19,7 @@ function clone_world(orig_world)
             ap = ap_col[i]
             goal = goal_col[i]
             f = f_col[i]
-            new_entity!(w, (Position(pos.p), Velocity(vel.v), AgentParams(ap.radius, ap.v_pref, ap.τ), Goal(goal.g), Force(f.f)))
+            new_entity!(w, (Position(pos.p), Velocity(vel.v), AgentParams(ap.social_radius, ap.mass, ap.v_pref, ap.τ), Goal(goal.g), Force(f.f)))
         end
     end
     return w
@@ -47,7 +47,7 @@ function run_parity_check()
         new_entity!(base_world, (
             Position(pos),
             Velocity(SVector(0.0f0, 0.0f0)),
-            AgentParams(0.3f0, 1.4f0, 1.5f0),
+            AgentParams(0.3f0, 80.0f0, 1.4f0, 1.5f0),
             Goal(SVector(50.0f0, 50.0f0)),
             Force(SVector(0.0f0, 0.0f0))
         ))

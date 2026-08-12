@@ -37,12 +37,29 @@ struct AgentParams{F<:AbstractFloat}
     μ::F
 end
 
-# Provide an outer constructor for backward compatibility and easy defaulting
-AgentParams(social_radius::F, mass::F, v_pref::F, τ::F, μ::F) where {F<:AbstractFloat} = 
+"""
+    AgentParams(social_radius, collision_radius, mass, v_pref, τ, μ) → 6-arg (full)
+    AgentParams(social_radius, mass, v_pref, τ, μ)                  → 5-arg (auto collision_radius = 2/3 × social_radius)
+    AgentParams(social_radius, mass, v_pref, τ)                     → 4-arg (μ defaults to 0.5, Helbing 2000 normal walking)
+
+Outer constructors for ergonomic construction.
+
+`collision_radius = social_radius × 2/3` is a standard Helbing ratio: the physical
+body (collision) is smaller than the "personal space" (social) radius so that the
+body-contact force only activates at closer range than the social force.
+
+`μ = 0.5` is the Coulomb friction cap for normal pedestrian walking (Helbing 2000,
+Table I). For panic/evacuation scenarios where Helbing's pure viscous friction (no cap)
+is needed, pass `μ = Inf` or use the 6-arg constructor with the desired value.
+
+**BUG NOTE (historical):** The 4-arg constructor previously defaulted to `μ = F(1.2e5)`,
+which is the body stiffness constant `k`, not a friction coefficient. Fixed 2026-08-12.
+"""
+AgentParams(social_radius::F, mass::F, v_pref::F, τ::F, μ::F) where {F<:AbstractFloat} =
     AgentParams(social_radius, social_radius * F(2/3), mass, v_pref, τ, μ)
 
 AgentParams(social_radius::F, mass::F, v_pref::F, τ::F) where {F<:AbstractFloat} =
-    AgentParams(social_radius, social_radius * F(2/3), mass, v_pref, τ, F(1.2e5))
+    AgentParams(social_radius, social_radius * F(2/3), mass, v_pref, τ, F(0.5))
 
 struct ORCAParams{F<:AbstractFloat}
     time_horizon::F

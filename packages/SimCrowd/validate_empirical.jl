@@ -41,7 +41,7 @@ function run_bottleneck_scenario(door_width::Float32)
         new_entity!(world, (
             Position(pos),
             Velocity(SVector(0.0f0, 0.0f0)),
-            AgentParams(0.3f0, 1.5f0, 0.5f0),
+            AgentParams(0.3f0, 80.0f0, 1.5f0, 0.5f0),
             Goal(goal_pos),
             Force(SVector(0.0f0, 0.0f0))
         ))

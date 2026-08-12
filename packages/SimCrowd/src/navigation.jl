@@ -112,8 +112,11 @@ function update_navigation_system!(world::World, nav::NavigationField{F}) where 
             
             dir = get_desired_direction(nav, pos)
             
-            # F_drive = (v0 * e_i - v_i) / τ
-            F_drive = (params.v_pref * dir - vel) / params.τ
+            # F_drive = mass × (v0 × e_i − v_i) / τ   [Newtons]
+            # Matches goal_seeking_force() in forces.jl.
+            # BUG FIX (2026-08-12): previously missing params.mass, making effective
+            # acceleration (v0*dir - vel)/(τ * mass) — 80× too weak for pedestrians.
+            F_drive = params.mass * (params.v_pref * dir - vel) / params.τ
             force_col[i] = Force(F_drive)
         end
     end

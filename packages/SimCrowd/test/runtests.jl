@@ -15,9 +15,9 @@ using Ark
         v0 = 2.0f0
         τ = 0.5f0
         
-        # ê = (1, 0). (2.0*(1,0) - (1,0)) / 0.5 = (2, 0)
+        # ê = (1, 0). F = mass × (v0 × ê − v_i) / τ = 80 × (2.0×(1,0) − (1,0)) / 0.5 = 80 × 2.0 = (160, 0) [N]
         F_drive = goal_seeking_force(pos, vel, goal, v0, τ, 80.0f0)
-        @test F_drive ≈ SVector(2.0f0, 0.0f0)
+        @test F_drive ≈ SVector(160.0f0, 0.0f0)
         
         # Agent repulsion
         # A = 2000, B = 0.08
@@ -28,7 +28,11 @@ using Ark
         # d = 0.5. (r_i + r_j - d) = 0.1
         # exp(0.1 / 0.08) = exp(1.25) ≈ 3.49034
         # A * exp(1.25) * (-1, 0) = 2000 * 3.49034 * (-1, 0)
-        F_rep = agent_repulsion(pos_i, pos_j, r_i, r_j)
+        # agent_repulsion: 8-arg (pos_i, vel_i, social_r_i, collision_r_i, pos_j, vel_j, social_r_j, collision_r_j)
+        # Use zero velocities: tests pure position-based repulsion (no anisotropy weight from velocity)
+        vel_zero = SVector(0.0f0, 0.0f0)
+        F_rep = agent_repulsion(pos_i, vel_zero, r_i, r_i * (2f0/3f0),
+                                pos_j, vel_zero, r_j, r_j * (2f0/3f0))
         @test F_rep[1] < 0.0f0
         @test F_rep[2] == 0.0f0
     end
@@ -110,7 +114,7 @@ using Ark
         max_steps = 1000
         for step in 1:max_steps
             # Manual integration for this specific test
-            for (entities, pos_col, vel_col, params_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}))
+            for (entities, pos_col, vel_col, params_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}))
                 for i in eachindex(pos_col)
                     F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, params_col[i].v_pref, params_col[i].τ, params_col[i].mass)
                     force_col[i] = Force(F_drive)
