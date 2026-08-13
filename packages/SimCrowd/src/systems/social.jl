@@ -17,6 +17,7 @@ struct SocialForcesGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector, VGP
     cpu_As::SCPU                 # per-agent social repulsion strength A (N)
     cpu_Bs::SCPU                 # per-agent social repulsion decay length B (m)
     cpu_λs::SCPU                 # per-agent anisotropy factor λ
+    cpu_ηs::SCPU                 # §1.4 per-agent GCF factor η (s); 0.0 = Helbing
     cpu_velocities::VCPU     # pre-allocated: avoids Vector{SVector}(undef, N) per step
     cpu_forces::VCPU
     
@@ -27,6 +28,7 @@ struct SocialForcesGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector, VGP
     dev_As::SGPU                 # per-agent A on device
     dev_Bs::SGPU                 # per-agent B on device
     dev_λs::SGPU                 # per-agent λ on device
+    dev_ηs::SGPU                 # §1.4 per-agent η on device
     dev_velocities::VGPU     # pre-allocated: avoids KernelAbstractions.zeros per step
     dev_forces::VGPU
     
@@ -37,6 +39,7 @@ struct SocialForcesGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector, VGP
     sorted_dev_As::SGPU          # per-agent A, sorted
     sorted_dev_Bs::SGPU          # per-agent B, sorted
     sorted_dev_λs::SGPU          # per-agent λ, sorted
+    sorted_dev_ηs::SGPU          # §1.4 per-agent η, sorted
     sorted_dev_velocities::VGPU  # pre-allocated
     
     last_build_positions::VGPU
@@ -55,6 +58,7 @@ function SocialForcesGPUContext(backend, F, N::Int)
     cpu_As                = SCPU(undef, N)  # per-agent A
     cpu_Bs                = SCPU(undef, N)  # per-agent B
     cpu_λs                = SCPU(undef, N)  # per-agent λ
+    cpu_ηs                = SCPU(undef, N)  # §1.4 per-agent GCF factor η
     cpu_velocities        = VCPU(undef, N)  # pre-allocated
     cpu_forces            = VCPU(undef, N)
     
@@ -65,6 +69,7 @@ function SocialForcesGPUContext(backend, F, N::Int)
     dev_As                = KernelAbstractions.zeros(backend, F, N)  # per-agent A
     dev_Bs                = KernelAbstractions.zeros(backend, F, N)  # per-agent B
     dev_λs                = KernelAbstractions.zeros(backend, F, N)  # per-agent λ
+    dev_ηs                = KernelAbstractions.zeros(backend, F, N)  # §1.4 per-agent η
     dev_velocities        = KernelAbstractions.zeros(backend, SVector{2,F}, N)  # pre-allocated
     dev_forces            = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     
@@ -75,6 +80,7 @@ function SocialForcesGPUContext(backend, F, N::Int)
     sorted_dev_As              = KernelAbstractions.zeros(backend, F, N)  # per-agent A, sorted
     sorted_dev_Bs              = KernelAbstractions.zeros(backend, F, N)  # per-agent B, sorted
     sorted_dev_λs              = KernelAbstractions.zeros(backend, F, N)  # per-agent λ, sorted
+    sorted_dev_ηs              = KernelAbstractions.zeros(backend, F, N)  # §1.4 per-agent η, sorted
     sorted_dev_velocities      = KernelAbstractions.zeros(backend, SVector{2,F}, N)  # pre-allocated
     
     last_build_positions  = KernelAbstractions.zeros(backend, SVector{2,F}, N)
@@ -86,13 +92,13 @@ function SocialForcesGPUContext(backend, F, N::Int)
     
     return SocialForcesGPUContext{F, VCPU, SCPU, VGPU, SGPU}(
         N, cpu_positions, cpu_social_radii, cpu_collision_radii,
-        cpu_mus, cpu_As, cpu_Bs, cpu_λs,
+        cpu_mus, cpu_As, cpu_Bs, cpu_λs, cpu_ηs,
         cpu_velocities, cpu_forces,
         dev_positions, dev_social_radii, dev_collision_radii,
-        dev_mus, dev_As, dev_Bs, dev_λs,
+        dev_mus, dev_As, dev_Bs, dev_λs, dev_ηs,
         dev_velocities, dev_forces,
         sorted_dev_positions, sorted_dev_social_radii, sorted_dev_collision_radii,
-        sorted_dev_mus, sorted_dev_As, sorted_dev_Bs, sorted_dev_λs,
+        sorted_dev_mus, sorted_dev_As, sorted_dev_Bs, sorted_dev_λs, sorted_dev_ηs,
         sorted_dev_velocities,
         last_build_positions, sorted_last_positions, needs_rebuild
     )
@@ -147,6 +153,7 @@ function update_social_forces_system!(world::World, search::AbstractNeighborSear
             ctx.cpu_As[idx]       = sfm_col[i].A     # social repulsion strength
             ctx.cpu_Bs[idx]       = sfm_col[i].B     # social repulsion decay
             ctx.cpu_λs[idx]       = sfm_col[i].λ     # anisotropy factor
+            ctx.cpu_ηs[idx]       = sfm_col[i].η     # §1.4 GCF speed-adaptation factor
             velocities[idx]       = vel_col[i].v
             idx += 1
         end
@@ -268,7 +275,7 @@ to completion first, then launch this kernel for Phase 3.
 @kernel function compute_psych_forces_kernel!(
     psych_forces,
     @Const(positions), @Const(velocities), @Const(social_radii),
-    @Const(As), @Const(Bs), @Const(λs),
+    @Const(As), @Const(Bs), @Const(λs), @Const(ηs),
     cutoff_sq, N)
 
     i = @index(Global, Linear)
@@ -280,14 +287,21 @@ to completion first, then launch this kernel for Phase 3.
     A_i   = @inbounds As[i]    # per-agent social repulsion strength
     B_i   = @inbounds Bs[i]    # per-agent social repulsion decay
     λ_i   = @inbounds λs[i]   # per-agent anisotropy factor
+    η_i   = @inbounds ηs[i]   # §1.4 GCF factor; 0 = Helbing, >0 = Chraibi GCF
     f_i   = zero(SVector{2, F})
 
     @inbounds for j in 1:N
         j == i && continue
         d2 = sum(abs2.(pos_i - positions[j]))
         d2 > cutoff_sq && continue
-        f_i += psychological_force(pos_i, vel_i, s_r_i, positions[j], social_radii[j];
-                                   A=A_i, B=B_i, λ=λ_i)
+        # §1.4: dispatch to GCF when η > 0, else use Helbing psychological_force.
+        # Both functions are @inline — no runtime dispatch on GPU.
+        f_i += if η_i > zero(F)
+            gcf_force(pos_i, vel_i, s_r_i, positions[j], social_radii[j]; V₀=A_i, η=η_i)
+        else
+            psychological_force(pos_i, vel_i, s_r_i, positions[j], social_radii[j];
+                                A=A_i, B=B_i, λ=λ_i)
+        end
     end
 
     @inbounds psych_forces[i] = f_i
@@ -334,15 +348,17 @@ function _update_social_forces_impl!(world::World, search::RadixSpatialHash{AT,F
     kernel_reorder!(ctx.sorted_dev_positions,       dev_positions,           search.agent_indices, ndrange=N)
     kernel_reorder!(ctx.sorted_dev_social_radii,    dev_social_radii,        search.agent_indices, ndrange=N)
     kernel_reorder!(ctx.sorted_dev_collision_radii, dev_collision_radii,     search.agent_indices, ndrange=N)
-    # Upload and sort per-agent μ, A, B, λ (GPU parameter parity — §2.3)
+    # Upload and sort per-agent μ, A, B, λ, η (GPU parameter parity — §2.3 / §1.4)
     copyto!(ctx.dev_mus, ctx.cpu_mus)
     copyto!(ctx.dev_As,  ctx.cpu_As)
     copyto!(ctx.dev_Bs,  ctx.cpu_Bs)
     copyto!(ctx.dev_λs,  ctx.cpu_λs)
+    copyto!(ctx.dev_ηs,  ctx.cpu_ηs)   # §1.4 GCF factor
     kernel_reorder!(ctx.sorted_dev_mus,             ctx.dev_mus,             search.agent_indices, ndrange=N)
     kernel_reorder!(ctx.sorted_dev_As,              ctx.dev_As,              search.agent_indices, ndrange=N)
     kernel_reorder!(ctx.sorted_dev_Bs,              ctx.dev_Bs,              search.agent_indices, ndrange=N)
     kernel_reorder!(ctx.sorted_dev_λs,             ctx.dev_λs,             search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_ηs,             ctx.dev_ηs,             search.agent_indices, ndrange=N)  # §1.4
     # Use pre-allocated ctx buffers for velocities (Fix A: no per-step GPU malloc)
     copyto!(ctx.dev_velocities, velocities)
     kernel_reorder!(ctx.sorted_dev_velocities,      ctx.dev_velocities,      search.agent_indices, ndrange=N)
@@ -381,11 +397,13 @@ function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F},
     # ── Phase 1: Per-agent parameter extraction ────────────────────────────────────────────
     # μ: Coulomb friction cap is per-agent (scenarios differ: μ=0.5 walking, μ=10 panic).
     # A, B, λ: social force parameters for heterogeneous crowd support (§2.3 CPU parity).
+    # η: §1.4 GCF speed-adaptation factor; 0.0 = Helbing, >0 = Chraibi GCF.
     # These allocations are N×4 bytes each; negligible compared to CellListMap overhead.
     mus = Vector{F}(undef, N)
     As  = Vector{F}(undef, N)
     Bs  = Vector{F}(undef, N)
     λs  = Vector{F}(undef, N)
+    ηs  = Vector{F}(undef, N)   # §1.4 GCF
     p_idx = 1
     for (_, _, _, _, sfm_col) in Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}, SFMParams{F}))
         for i in eachindex(sfm_col)
@@ -393,6 +411,7 @@ function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F},
             As[p_idx]  = sfm_col[i].A
             Bs[p_idx]  = sfm_col[i].B
             λs[p_idx]  = sfm_col[i].λ
+            ηs[p_idx]  = sfm_col[i].η   # §1.4 GCF factor
             p_idx += 1
         end
     end
@@ -427,7 +446,7 @@ function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F},
     cutoff_sq    = search.cell_size * search.cell_size
 
     psych_kernel! = compute_psych_forces_kernel!(backend)
-    psych_kernel!(psych_forces, positions, velocities, social_radii, As, Bs, λs, cutoff_sq, N, ndrange=N)
+    psych_kernel!(psych_forces, positions, velocities, social_radii, As, Bs, λs, ηs, cutoff_sq, N, ndrange=N)
     KernelAbstractions.synchronize(backend)
 
     # ── Phase 4: Write combined forces back to ECS ────────────────────────────────

@@ -286,5 +286,134 @@ using Ark
 
         # Neither agent should penetrate the wall at y=0 (centre must stay above y=0)
         @test min_y >= 0f0
+    end   # §1.8 Non-Reciprocal ORCA Weights
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # §1.4 Chraibi GCF Tests
+    # ─────────────────────────────────────────────────────────────────────────
+    @testset "§1.4 Chraibi GCF force" begin
+        pos_i = SVector(0.0f0, 0.0f0)
+        vel_i = SVector(1.5f0, 0.0f0)   # moving right at 1.5 m/s
+        s_r_i = 0.25f0
+        pos_j = SVector(0.5f0, 0.0f0)   # j is ahead (to the right of i)
+        s_r_j = 0.25f0
+
+        # 1. Zero distance returns zero
+        @test gcf_force(pos_i, vel_i, s_r_i, pos_i, s_r_j; V₀=2000f0, η=0.5f0) == SVector(0f0,0f0)
+
+        # 2. Direction: repulsion from j pushes i left (negative x)
+        f = gcf_force(pos_i, vel_i, s_r_i, pos_j, s_r_j; V₀=2000f0, η=0.5f0)
+        @test f[1] < 0.0f0
+        @test abs(f[2]) < 1.0f0
+
+        # 3. Force magnitude is positive and finite
+        @test isfinite(norm(f)) && norm(f) > 0f0
+
+        # 4. Stationary agent (speed=0): η has no effect — D_i = s_r_i either way
+        vel_zero = SVector(0.0f0, 0.0f0)
+        f0 = gcf_force(pos_i, vel_zero, s_r_i, pos_j, s_r_j; V₀=2000f0, η=0.0f0)
+        f1 = gcf_force(pos_i, vel_zero, s_r_i, pos_j, s_r_j; V₀=2000f0, η=0.5f0)
+        @test norm(f0) ≈ norm(f1) rtol=1e-4
+
+        # 5. Directional consistency: gcf_force with η=0 and vel=0 should give negative-x force
+        #    (same direction as psychological_force, since n_ij points from j toward i = left)
+        vel_zero = SVector(0.0f0, 0.0f0)
+        f0 = gcf_force(pos_i, vel_zero, s_r_i, pos_j, s_r_j; V₀=2000f0, η=0.0f0)
+        @test f0[1] < 0.0f0   # repulsion: j is to the right, force pushes i left
+        @test norm(f0) > 0f0
     end
-end
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # §2.1 ForceModel Trait Tests
+    # ─────────────────────────────────────────────────────────────────────────
+    @testset "§2.1 ForceModel trait" begin
+        @test SFMModel()    isa ForceModel
+        @test ORCAModel()   isa ForceModel
+        @test HybridModel() isa ForceModel
+
+        tag_sfm  = AgentModel{SFMModel}()
+        tag_orca = AgentModel{ORCAModel}()
+        @test tag_sfm  isa AgentModel
+        @test tag_orca isa AgentModel
+        @test sizeof(AgentModel{SFMModel}) == 0   # zero-field struct
+    end
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # §1.4 SFMParams backward compatibility
+    # ─────────────────────────────────────────────────────────────────────────
+    @testset "§1.4 SFMParams η backward compat" begin
+        # 4-arg constructor: η defaults to 0.0
+        p4 = SFMParams(2000f0, 0.08f0, 0.5f0, 0.5f0)
+        @test p4.η == 0.0f0
+
+        # 1-arg convenience: η = 0.0
+        @test SFMParams(0.5f0).η == 0.0f0
+
+        # Default constructor: η = 0.0
+        @test SFMParams{Float32}().η == 0.0f0
+
+        # Explicit 5-arg
+        p5 = SFMParams(2000f0, 0.08f0, 0.5f0, 0.5f0, 0.4f0)
+        @test p5.η ≈ 0.4f0
+
+        # from_agent_params: η defaults to 0
+        ap = from_agent_params(0.3f0, 80f0, 1.3f0, 0.5f0)
+        @test ap[3].η == 0.0f0
+
+        # from_agent_params: η kwarg is threaded through
+        ap_gcf = from_agent_params(0.3f0, 80f0, 1.3f0, 0.5f0; η=0.5f0)
+        @test ap_gcf[3].η ≈ 0.5f0
+    end
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # §2.4 SimConfig + SimScene Tests
+    # ─────────────────────────────────────────────────────────────────────────
+    @testset "§2.4 SimConfig + SimScene" begin
+        cfg = SimConfig()
+        @test cfg.dt ≈ 0.05f0
+        @test cfg.max_speed ≈ 5.0f0
+
+        cfg2 = SimConfig(0.01f0, 3.0f0)
+        @test cfg2.dt ≈ 0.01f0
+
+        cfg3 = SimConfig(0.02f0)
+        @test cfg3.max_speed ≈ 5.0f0
+
+        # SimScene without nav_field (empty world — no entities needed for this sub-test)
+        w  = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32},
+                   MotionParams{Float32}, SFMParams{Float32}, Goal{Float32}, Force{Float32},
+                   WallSegment{Float32})
+        gr = SVector(0f0, 0f0)
+        gx = SVector(10f0, 10f0)
+        sr = CPUNeighborSearch(50, gr, gx, 1.5f0)   # N, grid_min, grid_max, cell_size
+        sc = SimScene(w, sr, cfg)
+        @test sc.nav_field === nothing
+        @test sc.config.dt ≈ 0.05f0
+
+        # run! on empty world completes and returns scene
+        @test run!(sc, 1.0f0) === sc
+
+        # step! advances agents
+        w2 = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32},
+                   MotionParams{Float32}, SFMParams{Float32}, Goal{Float32}, Force{Float32},
+                   WallSegment{Float32})
+        ap = from_agent_params(0.25f0, 80f0, 1.3f0, 0.5f0)
+        new_entity!(w2, (Position(SVector(1f0,5f0)), Velocity(SVector(0f0,0f0)),
+                         ap..., Goal(SVector(9f0,5f0)), Force(SVector(0f0,0f0))))
+        new_entity!(w2, (Position(SVector(3f0,5f0)), Velocity(SVector(0f0,0f0)),
+                         ap..., Goal(SVector(9f0,5f0)), Force(SVector(0f0,0f0))))
+        sr2 = CPUNeighborSearch(2, gr, gx, 1.5f0)
+        sc2 = SimScene(w2, sr2, cfg)
+
+        x_before = [pos_col[i].p[1]
+                    for (_, pos_col) in Query(w2, (Position{Float32},))
+                    for i in eachindex(pos_col)]
+        step!(sc2)
+        x_after  = [pos_col[i].p[1]
+                    for (_, pos_col) in Query(w2, (Position{Float32},))
+                    for i in eachindex(pos_col)]
+
+        @test any(x_after .!= x_before)   # agents moved
+    end
+
+end  # SimCrowd.jl
