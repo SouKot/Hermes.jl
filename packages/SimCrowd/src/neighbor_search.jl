@@ -104,11 +104,22 @@ end
 end
 
 # ── Sortperm backend dispatch ─────────────────────────────────────────────────
-# AK.merge_sortperm! requires GPU (uses static block-size KA kernels / shared memory).
-# Julia base sortperm! works on CPU Vector but not on GPU device arrays (CuArray).
-# Dispatch ensures correct implementation for each backend.
-_sortperm!(ix::AbstractArray, v::AbstractArray, ::CPU) = sortperm!(ix, v)
-_sortperm!(ix::AbstractArray, v::AbstractArray, backend) = AK.merge_sortperm!(ix, v, backend)
+# AK.sortperm!(ix, v, backend) is the unified API:
+#   CPU() → AK.sample_sortperm! (parallel sample sort, 24 Julia tasks)
+#            Falls back to Base.sort! for small N, parallel above threshold:
+#            threshold = oversampling_factor(16) × max_tasks(nthreads) → ~N>8000
+#   GPU   → merge_sortperm_lowmem! (GPU shared-memory merge sort, 1× temp)
+#
+# Benchmark (24 threads, 2026-08-13):
+#   N=   250: Base=2.3μs, AK=29.2μs (Base wins — AK threshold not reached)
+#   N=  8000: Base=193.9μs, AK=134.9μs  (AK 1.4× faster ← crossover)
+#   N= 64000: Base=1872μs, AK=552μs      (AK 3.4× faster)
+#   N=100000: Base=3019μs, AK=1250μs     (AK 2.4× faster)
+#
+# AK handles the crossover automatically via its internal threshold logic.
+# Pass temp=similar(ix) to reuse a buffer and avoid per-call allocation.
+_sortperm!(ix::AbstractArray, v::AbstractArray, backend::Backend; kw...) =
+    AK.sortperm!(ix, v, backend; kw...)
 
 function build_grid!(sh::RadixSpatialHash, positions::AbstractArray, backend::Backend)
     N = length(positions)
