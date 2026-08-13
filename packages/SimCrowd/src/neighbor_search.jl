@@ -230,40 +230,71 @@ function Base.iterate(iter::SortedNeighborIterator, state=(-1, -1, -1))
 end
 Base.IteratorSize(::Type{SortedNeighborIterator{AT, F}}) where {AT, F} = Base.SizeUnknown()
 Base.eltype(::Type{SortedNeighborIterator{AT, F}}) where {AT, F} = Int
-
-
 # ── 2. CPUNeighborSearch (CellListMap) ────────────────────────────────────────
 
 """
-    CPUNeighborSearch{F<:AbstractFloat}
+    CPUNeighborSearch{F<:AbstractFloat, Sys}
 
 A spatial hash specialized for the CPU, wrapping `CellListMap` for maximum performance.
+
+Two separate `ParticleSystem` objects are maintained:
+- `system`: contact forces (symmetric — Newton's 3rd law; each pair processed once)
+- `psych_system`: psychological forces (asymmetric — f_ij ≠ −f_ji; both directions
+  computed per pair in a single `pairwise!` pass at O(N×k) cost)
+
+Five parameter buffers (`cpu_mus`, `cpu_As`, `cpu_Bs`, `cpu_λs`, `cpu_ηs`) are
+pre-allocated in the struct and filled from ECS once per step, eliminating the
+5 × `Vector{F}(undef, N)` allocations that previously occurred per step.
 """
 mutable struct CPUNeighborSearch{F<:AbstractFloat, Sys} <: AbstractNeighborSearch{F}
     cell_size::F
     grid_min::SVector{2, F}
     grid_max::SVector{2, F}
-    system::Sys
-    psych_forces::Vector{SVector{2, F}}  # Pre-allocated: asymmetric psychological force accumulator (N agents)
+    system::Sys          # CellListMap ParticleSystem for contact forces (symmetric)
+    psych_system::Sys    # CellListMap ParticleSystem for psych forces (asymmetric, O(N×k))
+    # Pre-allocated per-agent parameter buffers — staged from ECS once per step.
+    # Eliminates 5 × Vector{F}(undef, N) allocations per step (§3.2 / Sprint 7).
+    cpu_mus::Vector{F}   # Coulomb friction cap μ
+    cpu_As::Vector{F}    # Social repulsion strength A
+    cpu_Bs::Vector{F}    # Social repulsion decay length B
+    cpu_λs::Vector{F}    # Anisotropy factor λ
+    cpu_ηs::Vector{F}    # §1.4 GCF speed-adaptation factor η (0 = Helbing)
 end
 
 function CPUNeighborSearch(N::Int, grid_min::SVector{2,F}, grid_max::SVector{2,F}, cell_size::F) where {F<:AbstractFloat}
     sides = grid_max - grid_min
-    
+
     # Initialize CellListMap ParticleSystem with dummy positions
     dummy_positions = [grid_min + SVector{2,F}(rand()*sides[1], rand()*sides[2]) for _ in 1:N]
     sys = CellListMap.ParticleSystem(
         positions = dummy_positions,
-        cutoff = cell_size,
-        output = zeros(SVector{2,F}, N)
+        cutoff    = cell_size,
+        output    = zeros(SVector{2,F}, N)
     )
-    
-    # Pre-allocate psychological force accumulator — avoids per-step heap allocation
-    psych_forces = zeros(SVector{2,F}, N)
+    # Dedicated system for asymmetric psych forces — same cutoff, separate output buffer.
+    # Both systems share positions and cutoff; cell lists are independent but equivalent.
+    psych_sys = CellListMap.ParticleSystem(
+        positions = copy(dummy_positions),
+        cutoff    = cell_size,
+        output    = zeros(SVector{2,F}, N)
+    )
 
-    return CPUNeighborSearch{F, typeof(sys)}(cell_size, grid_min, grid_max, sys, psych_forces)
+    # Pre-allocate parameter buffers (filled from ECS in _update_social_forces_impl!)
+    cpu_mus = Vector{F}(undef, N)
+    cpu_As  = Vector{F}(undef, N)
+    cpu_Bs  = Vector{F}(undef, N)
+    cpu_λs  = Vector{F}(undef, N)
+    cpu_ηs  = Vector{F}(undef, N)
+
+    return CPUNeighborSearch{F, typeof(sys)}(
+        cell_size, grid_min, grid_max,
+        sys, psych_sys,
+        cpu_mus, cpu_As, cpu_Bs, cpu_λs, cpu_ηs
+    )
 end
 
 function build_grid!(search::CPUNeighborSearch, positions::AbstractArray, backend::CPU)
-    CellListMap.update!(search.system; positions=positions)
+    # Update both cell lists (each call is O(N) — negligible vs force computation)
+    CellListMap.update!(search.system;       positions=positions)
+    CellListMap.update!(search.psych_system; positions=positions)
 end

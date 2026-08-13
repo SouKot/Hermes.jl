@@ -403,37 +403,35 @@ end
 function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F}, positions, social_radii, collision_radii, velocities, backend::CPU, ctx) where {F}
     N = length(positions)
 
-    # ── Phase 1: Per-agent parameter extraction ────────────────────────────────────────────
-    # μ: Coulomb friction cap is per-agent (scenarios differ: μ=0.5 walking, μ=10 panic).
-    # A, B, λ: social force parameters for heterogeneous crowd support (§2.3 CPU parity).
-    # η: §1.4 GCF speed-adaptation factor; 0.0 = Helbing, >0 = Chraibi GCF.
-    # These allocations are N×4 bytes each; negligible compared to CellListMap overhead.
-    mus = Vector{F}(undef, N)
-    As  = Vector{F}(undef, N)
-    Bs  = Vector{F}(undef, N)
-    λs  = Vector{F}(undef, N)
-    ηs  = Vector{F}(undef, N)   # §1.4 GCF
+    # ── Phase 1: Stage per-agent parameters into pre-allocated buffers ────────────
+    # Uses search.cpu_* (pre-allocated in CPUNeighborSearch) — zero per-step allocs.
+    # Sprint 7: replaces 5 × Vector{F}(undef, N) allocations per step.
+    cpu_mus = search.cpu_mus
+    cpu_As  = search.cpu_As
+    cpu_Bs  = search.cpu_Bs
+    cpu_λs  = search.cpu_λs
+    cpu_ηs  = search.cpu_ηs
     p_idx = 1
     for (_, _, _, _, sfm_col) in Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}, SFMParams{F}))
         for i in eachindex(sfm_col)
-            mus[p_idx] = sfm_col[i].μ
-            As[p_idx]  = sfm_col[i].A
-            Bs[p_idx]  = sfm_col[i].B
-            λs[p_idx]  = sfm_col[i].λ
-            ηs[p_idx]  = sfm_col[i].η   # §1.4 GCF factor
+            cpu_mus[p_idx] = sfm_col[i].μ
+            cpu_As[p_idx]  = sfm_col[i].A
+            cpu_Bs[p_idx]  = sfm_col[i].B
+            cpu_λs[p_idx]  = sfm_col[i].λ
+            cpu_ηs[p_idx]  = sfm_col[i].η
             p_idx += 1
         end
     end
 
     build_grid!(search, positions, backend)
 
-    # ── Phase 2: Contact forces via CellListMap (Newton's 3rd law) ──────────────────
+    # ── Phase 2: Contact forces via CellListMap (Newton's 3rd law) ───────────────
     # Body compression + viscous friction are physically SYMMETRIC (f_ij = −f_ji).
     # CellListMap processes each unique pair once — Newton's 3rd law is exact here.
     function compute_contact(pair, forces)
         (; i, j, d) = pair
         if d > F(1e-6)
-            mu_ij = min(mus[i], mus[j])
+            mu_ij = min(cpu_mus[i], cpu_mus[j])
             f = contact_force(positions[i], velocities[i], collision_radii[i],
                               positions[j], velocities[j], collision_radii[j]; μ=mu_ij)
             forces[i] += f
@@ -443,26 +441,55 @@ function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F},
     end
     contact_forces = CellListMap.pairwise!(compute_contact, search.system)
 
-    # ── Phase 3: Psychological forces via KA @kernel ──────────────────────────────
-    # The anisotropy weight w depends on each agent's own velocity direction, so
-    # f_ij ≠ −f_ji — must be computed per-agent. The KA kernel parallelises
-    # over agents (outer loop) while the inner j-loop stays serial per thread.
+    # ── Phase 3: Psychological forces via CellListMap O(N×k) ─────────────────────
+    # Sprint 7: replaces O(N²) compute_psych_forces_kernel! (CPU path only).
     #
-    # CPU() backend: uses Julia threads. No Polyester, no new dependencies.
-    # Any GPU backend: same kernel, zero code changes.
-    # Called AFTER Phase 2 (CellListMap) completes — no nested thread pool conflict.
-    psych_forces = search.psych_forces
-    cutoff_sq    = search.cell_size * search.cell_size
+    # Psychological forces are ASYMMETRIC (f_ij ≠ −f_ji) because the anisotropy
+    # weight w(λ, cos θ) depends on each agent's own velocity direction. We process
+    # each pair (i,j) once and compute both directions explicitly.
+    #
+    # Mathematical equivalence with old O(N²) kernel:
+    #   Old: for each i, accumulate f_ij for all j≠i within cutoff
+    #   New: for each pair (i,j) within cutoff (CellListMap ensures this), accumulate
+    #        f_ij into psych_out[i] AND f_ji into psych_out[j]
+    # Result per agent is identical up to floating-point summation order.
+    #
+    # Complexity: O(N×k) where k ≈ number of neighbors within cutoff (typically 5–15).
+    # At N=2000: ~14k force evaluations vs 4M for O(N²) — estimated 200–300× reduction.
+    #
+    # @simd note: The k≈5–15 inner pairs per agent are too few for SIMD to break even.
+    # The speedup comes entirely from doing 300× less work, not from vectorization.
+    function compute_psych(pair, psych_out)
+        (; i, j, d) = pair
+        d > F(1e-6) || return psych_out
 
-    psych_kernel! = compute_psych_forces_kernel!(backend)
-    psych_kernel!(psych_forces, positions, velocities, social_radii, As, Bs, λs, ηs, cutoff_sq, N, ndrange=N)
-    KernelAbstractions.synchronize(backend)
+        pos_i = positions[i]; vel_i = velocities[i]; s_r_i = social_radii[i]
+        pos_j = positions[j]; vel_j = velocities[j]; s_r_j = social_radii[j]
+
+        # Force on i from j — uses i's decay/anisotropy parameters
+        f_ij = cpu_ηs[i] > zero(F) ?
+            gcf_force(pos_i, vel_i, s_r_i, pos_j, s_r_j; V₀=cpu_As[i], η=cpu_ηs[i]) :
+            psychological_force(pos_i, vel_i, s_r_i, pos_j, s_r_j;
+                                A=cpu_As[i], B=cpu_Bs[i], λ=cpu_λs[i])
+
+        # Force on j from i — uses j's parameters (anisotropy depends on j's velocity direction)
+        f_ji = cpu_ηs[j] > zero(F) ?
+            gcf_force(pos_j, vel_j, s_r_j, pos_i, s_r_i; V₀=cpu_As[j], η=cpu_ηs[j]) :
+            psychological_force(pos_j, vel_j, s_r_j, pos_i, s_r_i;
+                                A=cpu_As[j], B=cpu_Bs[j], λ=cpu_λs[j])
+
+        psych_out[i] += f_ij
+        psych_out[j] += f_ji
+        return psych_out
+    end
+    CellListMap.pairwise!(compute_psych, search.psych_system)
 
     # ── Phase 4: Write combined forces back to ECS ────────────────────────────────
+    psych_out = search.psych_system.output
     contact_idx = 1
     for (entities, force_col) in Query(world, (Force{F},))
         for i in eachindex(force_col)
-            force_col[i] = Force(force_col[i].f + contact_forces[contact_idx] + psych_forces[contact_idx])
+            force_col[i] = Force(force_col[i].f + contact_forces[contact_idx] + psych_out[contact_idx])
             contact_idx += 1
         end
     end
