@@ -387,7 +387,7 @@ function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F},
     Bs  = Vector{F}(undef, N)
     λs  = Vector{F}(undef, N)
     p_idx = 1
-    for (_, _, _, sfm_col) in Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}, SFMParams{F}))
+    for (_, _, _, _, sfm_col) in Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}, SFMParams{F}))
         for i in eachindex(sfm_col)
             mus[p_idx] = sfm_col[i].μ
             As[p_idx]  = sfm_col[i].A
