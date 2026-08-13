@@ -4,6 +4,7 @@ using StaticArrays
 using LinearAlgebra
 using KernelAbstractions
 using Ark
+using CellListMap
 
 @testset "SimCrowd.jl" begin
     
@@ -458,6 +459,104 @@ using Ark
         # After step! integrate has consumed force — but position proves the force was applied.
         # The key test is x1 > x0 above.
         @test isfinite(x1)
+    end
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # §S7 Psych force accuracy: O(N×k) CellListMap == O(N²) kernel
+    # ─────────────────────────────────────────────────────────────────────────
+    @testset "§S7 CellListMap psych forces match O(N²) kernel" begin
+        # Directly compare per-agent psych force vectors between:
+        #   Old: compute_psych_forces_kernel! (O(N²) KA kernel, still in codebase for GPU path)
+        #   New: CellListMap.pairwise!(compute_psych, search.psych_system) (Sprint 7 CPU path)
+
+        F  = Float32
+        N  = 24   # small enough to be fast, large enough to have neighbors
+        cs = F(1.5)
+
+        gr = SVector(F(0), F(0))
+        gx = SVector(F(6), F(6))
+
+        # Place agents on a regular 4×6 grid at 1m spacing (well within cutoff)
+        positions     = [SVector(F(mod(i-1, 4)) + F(0.5), F(div(i-1, 4)) + F(0.5)) for i in 1:N]
+        velocities    = [SVector(F(cos(i*0.3f0)), F(sin(i*0.3f0))) for i in 1:N]
+        social_radii  = fill(F(0.3), N)
+        As = fill(F(2000), N); Bs = fill(F(0.08), N); λs = fill(F(0.5), N)
+
+        cutoff_sq = cs * cs
+
+        # ── Helper: run old O(N²) KA kernel ─────────────────────────────────
+        function run_old_kernel(ηs::Vector{F})
+            out = zeros(SVector{2,F}, N)
+            k! = SimCrowd.compute_psych_forces_kernel!(CPU())
+            k!(out, positions, velocities, social_radii, As, Bs, λs, ηs, cutoff_sq, N, ndrange=N)
+            KernelAbstractions.synchronize(CPU())
+            return out
+        end
+
+        # ── Helper: run new CellListMap approach ─────────────────────────────
+        function run_new_clm(ηs::Vector{F})
+            search = CPUNeighborSearch(N, gr, gx, cs)
+            # Fill pre-allocated buffers manually (normally done by _update_social_forces_impl!)
+            search.cpu_As  .= As
+            search.cpu_Bs  .= Bs
+            search.cpu_λs  .= λs
+            search.cpu_ηs  .= ηs
+            search.cpu_mus .= F(0.5)  # not used by psych, but must be initialised
+
+            # Update psych_system with actual positions
+            CellListMap.update!(search.psych_system; positions=positions)
+
+            # Replicate compute_psych closure from _update_social_forces_impl!
+            cpu_As = search.cpu_As; cpu_Bs = search.cpu_Bs
+            cpu_λs = search.cpu_λs; cpu_ηs = search.cpu_ηs
+
+            function compute_psych(pair, psych_out)
+                (; i, j, d) = pair
+                d > F(1e-6) || return psych_out
+                pos_i = positions[i]; vel_i = velocities[i]; s_r_i = social_radii[i]
+                pos_j = positions[j]; vel_j = velocities[j]; s_r_j = social_radii[j]
+                f_ij = cpu_ηs[i] > zero(F) ?
+                    SimCrowd.gcf_force(pos_i, vel_i, s_r_i, pos_j, s_r_j; V₀=cpu_As[i], η=cpu_ηs[i]) :
+                    SimCrowd.psychological_force(pos_i, vel_i, s_r_i, pos_j, s_r_j;
+                                        A=cpu_As[i], B=cpu_Bs[i], λ=cpu_λs[i])
+                f_ji = cpu_ηs[j] > zero(F) ?
+                    SimCrowd.gcf_force(pos_j, vel_j, s_r_j, pos_i, s_r_i; V₀=cpu_As[j], η=cpu_ηs[j]) :
+                    SimCrowd.psychological_force(pos_j, vel_j, s_r_j, pos_i, s_r_i;
+                                        A=cpu_As[j], B=cpu_Bs[j], λ=cpu_λs[j])
+                psych_out[i] += f_ij
+                psych_out[j] += f_ji
+                return psych_out
+            end
+            CellListMap.pairwise!(compute_psych, search.psych_system)
+            return copy(search.psych_system.output)
+        end
+
+        rtol = 1f-3   # allow FP rounding differences from parallel reduction order
+
+        # ── Scenario A: Helbing (η = 0 for all) ─────────────────────────────
+        ηs_A = zeros(F, N)
+        old_A = run_old_kernel(ηs_A)
+        new_A = run_new_clm(ηs_A)
+        relerr_A = norm(old_A .- new_A) / max(norm(old_A), F(1e-10))
+        @test relerr_A < rtol
+
+        # ── Scenario B: GCF (η = 0.5 for all) ───────────────────────────────
+        ηs_B = fill(F(0.5), N)
+        old_B = run_old_kernel(ηs_B)
+        new_B = run_new_clm(ηs_B)
+        relerr_B = norm(old_B .- new_B) / max(norm(old_B), F(1e-10))
+        @test relerr_B < rtol
+
+        # ── Scenario C: Heterogeneous (half Helbing, half GCF) ───────────────
+        ηs_C = [isodd(i) ? F(0.0) : F(0.5) for i in 1:N]
+        old_C = run_old_kernel(ηs_C)
+        new_C = run_new_clm(ηs_C)
+        relerr_C = norm(old_C .- new_C) / max(norm(old_C), F(1e-10))
+        @test relerr_C < rtol
+
+        # ── Sanity: forces are non-zero (agents are within cutoff) ───────────
+        @test norm(old_A) > F(0)
+        @test norm(new_A) > F(0)
     end
 
 end  # SimCrowd.jl
