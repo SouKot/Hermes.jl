@@ -3,7 +3,7 @@ using StaticArrays
 using LinearAlgebra
 
 function debug_corridor()
-    world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+    world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
     R = 10.0f0
     width = 3.0f0
     dt = 0.001f0
@@ -11,7 +11,7 @@ function debug_corridor()
     # 1 agent
     N = 1
     pos = SVector(10.0f0, 0.0f0)
-    new_entity!(world, (Position(pos), Velocity(SVector(0.0f0,0.0f0)), AgentParams(0.3f0, 80.0f0, 1.3f0, 0.5f0), Goal(SVector(0.0f0,0.0f0)), Force(SVector(0.0f0,0.0f0))))
+    new_entity!(world, (Position(pos), Velocity(SVector(0.0f0,0.0f0)), from_agent_params(0.3f0, 80.0f0, 1.3f0, 0.5f0)..., Goal(SVector(0.0f0,0.0f0)), Force(SVector(0.0f0,0.0f0))))
     
     # Inner and outer walls
     num_segs = 32
@@ -28,13 +28,13 @@ function debug_corridor()
     sh = CPUNeighborSearch(N, SVector(-grid_size, -grid_size), SVector(grid_size, grid_size), 4.0f0)
     
     for step in 1:20000
-        for (entities, pos_col, vel_col, params_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}))
+        for (entities, pos_col, vel_col, motion_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, MotionParams{Float32}, Goal{Float32}, Force{Float32}))
             for i in eachindex(pos_col)
                 pos = pos_col[i].p
                 theta = atan(pos[2], pos[1])
                 dir = SVector(-sin(theta), cos(theta))
                 goal = pos + dir * 5.0f0
-                F_drive = goal_seeking_force(pos, vel_col[i].v, goal, params_col[i].v_pref, params_col[i].τ)
+                F_drive = goal_seeking_force(pos, vel_col[i].v, goal, motion_col[i].v_pref, motion_col[i].τ)
                 force_col[i] = Force(F_drive)
             end
         end

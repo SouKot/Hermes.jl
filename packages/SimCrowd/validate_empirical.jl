@@ -33,7 +33,7 @@ function run_bottleneck_scenario(door_width::Float32)
     goal_pos = SVector(25.0f0, 10.0f0)
     nav = build_navigation_field(grid_min, grid_max, cell_size, goal_pos, zeros(Bool, dims[1], dims[2]))
     
-    world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32})
+    world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32}, Goal{Float32}, Force{Float32})
     
     for i in 1:N
         # Spawn densely near the door
@@ -41,7 +41,7 @@ function run_bottleneck_scenario(door_width::Float32)
         new_entity!(world, (
             Position(pos),
             Velocity(SVector(0.0f0, 0.0f0)),
-            AgentParams(0.3f0, 80.0f0, 1.5f0, 0.5f0),
+            from_agent_params(0.3f0, 80.0f0, 1.5f0, 0.5f0)...,
             Goal(goal_pos),
             Force(SVector(0.0f0, 0.0f0))
         ))

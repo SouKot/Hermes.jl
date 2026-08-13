@@ -138,15 +138,15 @@ function update_social_forces_system!(world::World, search::AbstractNeighborSear
     velocities = ctx.cpu_velocities
     
     idx = 1
-    for (entities, pos_col, vel_col, params_col) in Query(world, (Position{F}, Velocity{F}, AgentParams{F}))
+    for (entities, pos_col, vel_col, geom_col, sfm_col) in Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}, SFMParams{F}))
         for i in eachindex(pos_col)
             positions[idx]        = pos_col[i].p
-            social_radii[idx]     = params_col[i].social_radius
-            collision_radii[idx]  = params_col[i].collision_radius
-            ctx.cpu_mus[idx]      = params_col[i].μ     # ContactModel discriminant
-            ctx.cpu_As[idx]       = params_col[i].A     # social repulsion strength
-            ctx.cpu_Bs[idx]       = params_col[i].B     # social repulsion decay
-            ctx.cpu_λs[idx]       = params_col[i].λ     # anisotropy factor
+            social_radii[idx]     = geom_col[i].social_radius
+            collision_radii[idx]  = geom_col[i].collision_radius
+            ctx.cpu_mus[idx]      = sfm_col[i].μ     # ContactModel discriminant
+            ctx.cpu_As[idx]       = sfm_col[i].A     # social repulsion strength
+            ctx.cpu_Bs[idx]       = sfm_col[i].B     # social repulsion decay
+            ctx.cpu_λs[idx]       = sfm_col[i].λ     # anisotropy factor
             velocities[idx]       = vel_col[i].v
             idx += 1
         end
@@ -165,15 +165,15 @@ function update_social_forces_system!(world::World, search::AbstractNeighborSear
     end
     
     if !isempty(walls)
-        for (entities, pos_col, vel_col, params_col, force_col) in Query(world, (Position{F}, Velocity{F}, AgentParams{F}, Force{F}))
+        for (entities, pos_col, vel_col, geom_col, sfm_col, force_col) in Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}, SFMParams{F}, Force{F}))
             for i in eachindex(pos_col)
                 p = pos_col[i].p
                 v = vel_col[i].v
-                s_r = params_col[i].social_radius
-                c_r = params_col[i].collision_radius
+                s_r = geom_col[i].social_radius
+                c_r = geom_col[i].collision_radius
                 F_wall = zero(SVector{2,F})
                 for w in walls
-                    F_wall += wall_repulsion(p, v, s_r, c_r, w; μ=params_col[i].μ)
+                    F_wall += wall_repulsion(p, v, s_r, c_r, w; μ=sfm_col[i].μ)
                 end
                 # BUG-SFM-01 FIX: Removed spurious F_noise here.
                 # The Helbing SDE fluctuation belongs only in physics.jl (the integrator),
@@ -387,12 +387,12 @@ function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F},
     Bs  = Vector{F}(undef, N)
     λs  = Vector{F}(undef, N)
     p_idx = 1
-    for (_, _, _, params_col) in Query(world, (Position{F}, Velocity{F}, AgentParams{F}))
-        for i in eachindex(params_col)
-            mus[p_idx] = params_col[i].μ
-            As[p_idx]  = params_col[i].A
-            Bs[p_idx]  = params_col[i].B
-            λs[p_idx]  = params_col[i].λ
+    for (_, _, _, sfm_col) in Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}, SFMParams{F}))
+        for i in eachindex(sfm_col)
+            mus[p_idx] = sfm_col[i].μ
+            As[p_idx]  = sfm_col[i].A
+            Bs[p_idx]  = sfm_col[i].B
+            λs[p_idx]  = sfm_col[i].λ
             p_idx += 1
         end
     end

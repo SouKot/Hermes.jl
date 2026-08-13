@@ -8,7 +8,8 @@ using Ark
 
 using SimCore
 
-export Position, Velocity, AgentParams, Goal, Force, WallSegment
+export Position, Velocity, AgentGeometry, MotionParams, SFMParams, Goal, Force, WallSegment
+export from_agent_params
 export goal_seeking_force, agent_repulsion, wall_repulsion
 export AbstractNeighborSearch, RadixSpatialHash, CPUNeighborSearch, build_grid!, get_neighbors
 export NavigationField, build_navigation_field, get_desired_direction
@@ -29,82 +30,84 @@ struct Force{F<:AbstractFloat}
     f::SVector{2,F}
 end
 
-struct AgentParams{F<:AbstractFloat}
+"""
+    AgentGeometry{F<:AbstractFloat}
+
+Physical geometry of an agent: personal space and body collision radii.
+
+Used by:
+- Social force kernel (SFM agent-agent + wall repulsion)
+- Wall navigation
+
+Fields:
+- `social_radius`:    personal space radius (m). Agents start repelling each other at 2×r.
+- `collision_radius`: body radius (m). Physical contact forces activate at r_i + r_j ≥ d.
+                      Standard: `2/3 × social_radius` (Helbing 2000). Set 0 for NoContact.
+"""
+struct AgentGeometry{F<:AbstractFloat}
     social_radius::F
     collision_radius::F
-    mass::F
-    v_pref::F
-    τ::F
-    μ::F
-    σ::F      # velocity diffusion (Helbing SDE noise, m/s).
-              # 0.10 m/s — Helbing 2000 evacuation calibration (arch-break in ~1.5 s)
-              # 0.05 m/s — Helbing 1995 normal pedestrian flow
-              # 0.00     — deterministic (disable stochastic fluctuation term)
-    A::F      # social repulsion strength (N) — Helbing 2000: 2000 N
-    B::F      # social repulsion decay length (m) — Helbing 2000: 0.08 m
-    λ::F      # anisotropy: attention behind vs. ahead — Helbing 2000: 0.5
-              # λ=1 → isotropic; λ=0.5 → agents pay half-attention to threats from behind
 end
 
+# Convenience: auto collision_radius = 2/3 × social_radius (Helbing 2000 standard body ratio)
+AgentGeometry(sr::F) where {F<:AbstractFloat} = AgentGeometry(sr, sr * F(2/3))
+
 """
-    AgentParams(sr, cr, m, vp, τ, μ, σ, A, B, λ) → 10-arg full struct literal
-    AgentParams(sr, cr, m, vp, τ, μ, σ)           → 7-arg  (A=2000, B=0.08, λ=0.5)
-    AgentParams(sr, m, vp, τ, μ, σ)               → 6-arg  (auto cr, A=2000, B=0.08, λ=0.5)
-    AgentParams(sr, m, vp, τ, μ)                  → 5-arg  (auto cr, σ=0.1, A=2000, B=0.08, λ=0.5)
-    AgentParams(sr, m, vp, τ)                     → 4-arg  (all defaults)
+    MotionParams{F<:AbstractFloat}
 
-Outer constructors for ergonomic construction.
+Locomotion parameters of an agent: mass, preferred speed, relaxation time, and velocity noise.
 
-`collision_radius = social_radius × 2/3` is the standard Helbing body/personal-space ratio.
-
-`μ = 0.5` is the Coulomb friction cap for normal pedestrian walking (Helbing 2000, Table I).
-For panic/evacuation scenarios using Helbing's pure viscous friction set `μ = Inf` or use
-the `ContactModel` constructor.
-
-`σ = 0.1 m/s` (Helbing 2000 evacuation default). For normal low-density flow use 0.05 m/s.
-Set to 0 for deterministic simulations.
-
-`A = 2000 N`, `B = 0.08 m`, `λ = 0.5` are Helbing 2000 calibrated social force parameters.
-Vary for heterogeneous crowds: Johansson 2007 found 2× variation across countries/cultures.
-
-**BUG NOTE (historical):** 4-arg constructor previously defaulted `μ = F(1.2e5)` (body
-stiffness constant `k`, not friction coefficient). Fixed 2026-08-12.
+Used by:
+- Physics integrator (`mass` → acceleration, `σ` → SDE fluctuation term)
+- Goal-seeking and navigation forces (computes `mass × (v_pref⋅ê − v) / τ`)
+- ORCA force conversion (mass, v_pref, τ for velocity → force)
 """
-# 7-arg: (sr, cr, m, vp, τ, μ, σ) — fills in Helbing defaults for A, B, λ.
-# Catches the common full-constructor pattern where cr is specified explicitly.
-AgentParams(sr::F, cr::F, m::F, vp::F, τ::F, μ::F, σ::F) where {F<:AbstractFloat} =
-    AgentParams(sr, cr, m, vp, τ, μ, σ, F(2000), F(0.08), F(0.5))
+struct MotionParams{F<:AbstractFloat}
+    mass::F    # body mass (kg). Typical pedestrian: 80 kg.
+    v_pref::F  # preferred walking speed (m/s). Normal: 1.2–1.4 m/s; panic: 3–4 m/s.
+    τ::F       # relaxation time (s). Helbing 2000: 0.5 s.
+    σ::F       # velocity diffusion (m/s). 0.10 evacuation, 0.05 normal, 0.0 deterministic.
+end
 
-# 6-arg: (sr, m, vp, τ, μ, σ) — auto collision_radius = 2/3 × social_radius
-AgentParams(sr::F, m::F, vp::F, τ::F, μ::F, σ::F) where {F<:AbstractFloat} =
-    AgentParams(sr, sr * F(2/3), m, vp, τ, μ, σ, F(2000), F(0.08), F(0.5))
+# Convenience: σ defaults to 0.1 m/s (Helbing 2000 evacuation calibration)
+MotionParams(mass::F, v_pref::F, τ::F) where {F<:AbstractFloat} = MotionParams(mass, v_pref, τ, F(0.1))
 
-# 5-arg: (sr, m, vp, τ, μ) — σ defaults to 0.1 m/s (Helbing 2000 evacuation)
-AgentParams(sr::F, m::F, vp::F, τ::F, μ::F) where {F<:AbstractFloat} =
-    AgentParams(sr, sr * F(2/3), m, vp, τ, μ, F(0.1), F(2000), F(0.08), F(0.5))
+"""
+    SFMParams{F<:AbstractFloat}
 
-# 4-arg: (sr, m, vp, τ) — all defaults: μ=0.5, σ=0.1, A=2000, B=0.08, λ=0.5
-AgentParams(sr::F, m::F, vp::F, τ::F) where {F<:AbstractFloat} =
-    AgentParams(sr, sr * F(2/3), m, vp, τ, F(0.5), F(0.1), F(2000), F(0.08), F(0.5))
+Social Force Model (Helbing & Molnár 1995 / Helbing, Farkas & Vicsek 2000) parameters.
+
+Used only by the SFM force kernel. Agents using purely ORCA do not need this component.
+
+Fields:
+- `A`: social repulsion strength (N).  Helbing 2000: 2000 N.
+- `B`: repulsion decay length (m).     Helbing 2000: 0.08 m.
+- `λ`: anisotropy factor ∈ [0,1].     Helbing 2000: 0.5. λ=1 isotropic; λ=0.5 half attention behind.
+- `μ`: Coulomb friction cap. 0=NoContact, Inf=Viscous (exact Helbing), 0.5=normal walking.
+"""
+struct SFMParams{F<:AbstractFloat}
+    A::F
+    B::F
+    λ::F
+    μ::F
+end
+
+# Convenience: supply only μ, use Helbing 2000 defaults for A, B, λ
+SFMParams(μ::F) where {F<:AbstractFloat} = SFMParams(F(2000), F(0.08), F(0.5), μ)
+# All Helbing 2000 defaults (A=2000, B=0.08, λ=0.5, μ=0.5)
+SFMParams{F}() where {F<:AbstractFloat} = SFMParams(F(2000), F(0.08), F(0.5), F(0.5))
 
 """
     ContactModel
 
 Specifies how body-contact forces are modeled in the Helbing SFM.
-The model is encoded in `AgentParams.μ` at construction time:
+The model is encoded in `SFMParams.μ` and `AgentGeometry.collision_radius` at construction time:
 
 | ContactModel | `collision_radius`  | `μ` value | Physical meaning |
 |--------------|---------------------|-----------|------------------|
-| `NoContact`  | 0 (disabled)        | 0.0       | Social force only — low-density normal walking (svenkreiss approach) |
+| `NoContact`  | 0 (disabled)        | 0.0       | Social force only — low-density normal walking |
 | `Coulomb`    | `2/3 × social_r`   | supplied  | Coulomb-capped viscous friction — default, good for lane formation |
-| `Viscous`    | `2/3 × social_r`   | Inf       | Pure viscous κ×g×Δv_t — Helbing 2000 exact; enables Faster-is-Slower effect |
-
-Usage:
-```julia
-p = AgentParams(0.25f0, 80f0, 1.4f0, 0.5f0, NoContact)          # social force only
-p = AgentParams(0.25f0, 80f0, 4.0f0, 0.5f0, Viscous)             # FiS-capable
-p = AgentParams(0.25f0, 80f0, 1.4f0, 0.5f0, Coulomb, 0.3f0)      # custom μ
-```
+| `Viscous`    | `2/3 × social_r`   | Inf       | Pure viscous κ×g×Δv_t — Helbing 2000 exact; enables Faster-is-Slower |
 """
 @enum ContactModel::Int32 begin
     NoContact   # collision_radius = 0; μ = 0  → no body contact forces
@@ -113,20 +116,39 @@ p = AgentParams(0.25f0, 80f0, 1.4f0, 0.5f0, Coulomb, 0.3f0)      # custom μ
 end
 
 """
-    AgentParams(social_radius, mass, v_pref, τ, model::ContactModel [, μ=0.5f0 [, σ=0.1f0]])
+    from_agent_params(social_radius, mass, v_pref, τ [, μ=0.5 [, σ=0.1]]) → (AgentGeometry, MotionParams, SFMParams)
+    from_agent_params(social_radius, collision_radius, mass, v_pref, τ, μ, σ)  → (AgentGeometry, MotionParams, SFMParams)
 
-Convenience constructor that sets both `collision_radius` and `μ` from a `ContactModel`.
-A, B, λ default to Helbing 2000 calibrated values.
+# DEPRECATED migration helper for §2.2
+
+Converts old `AgentParams(…)` call patterns to the 3 ECS components introduced in §2.2.
+Use by splatting the result directly into `new_entity!`:
+
+```julia
+new_entity!(world, (pos, vel, from_agent_params(r, 80f0, v0, τ, 0.5f0)…, goal, force))
+```
+
+This helper exists to ease migration. When all call sites use explicit `AgentGeometry`,
+`MotionParams`, and `SFMParams` constructors, this helper can be removed.
+
+See: §2.2 in `simcrowd_improvement_plan.md`.
 """
-function AgentParams(social_radius::F, mass::F, v_pref::F, τ::F,
-                     model::ContactModel, μ::F=F(0.5), σ::F=F(0.1)) where {F<:AbstractFloat}
-    if model == NoContact
-        return AgentParams(social_radius, zero(F), mass, v_pref, τ, zero(F), σ, F(2000), F(0.08), F(0.5))
-    elseif model == Viscous
-        return AgentParams(social_radius, social_radius * F(2/3), mass, v_pref, τ, F(Inf), σ, F(2000), F(0.08), F(0.5))
-    else  # Coulomb
-        return AgentParams(social_radius, social_radius * F(2/3), mass, v_pref, τ, μ, σ, F(2000), F(0.08), F(0.5))
-    end
+# 4/5-arg: auto cr = sr×2/3, σ = 0.1 default
+function from_agent_params(sr::F, mass::F, v_pref::F, τ::F, μ::F=F(0.5);
+                            σ::F=F(0.1), A::F=F(2000), B::F=F(0.08), λ::F=F(0.5)) where {F<:AbstractFloat}
+    return (AgentGeometry(sr, sr * F(2/3)), MotionParams(mass, v_pref, τ, σ), SFMParams(A, B, λ, μ))
+end
+
+# 6-arg positional: auto cr = sr×2/3, explicit σ
+function from_agent_params(sr::F, mass::F, v_pref::F, τ::F, μ::F, σ::F;
+                            A::F=F(2000), B::F=F(0.08), λ::F=F(0.5)) where {F<:AbstractFloat}
+    return (AgentGeometry(sr, sr * F(2/3)), MotionParams(mass, v_pref, τ, σ), SFMParams(A, B, λ, μ))
+end
+
+# 7-arg: explicit collision_radius and σ
+function from_agent_params(sr::F, cr::F, mass::F, v_pref::F, τ::F, μ::F, σ::F;
+                            A::F=F(2000), B::F=F(0.08), λ::F=F(0.5)) where {F<:AbstractFloat}
+    return (AgentGeometry(sr, cr), MotionParams(mass, v_pref, τ, σ), SFMParams(A, B, λ, μ))
 end
 
 struct ORCAParams{F<:AbstractFloat}

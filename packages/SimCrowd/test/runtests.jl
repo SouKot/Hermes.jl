@@ -98,14 +98,14 @@ using Ark
         τ = 0.5f0
         dt = 0.05f0
         
-        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32})
+        world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32})
         e = new_entity!(world, (
             Position(SVector(0.0f0, 0.0f0)),
             Velocity(SVector(0.0f0, 0.0f0)),
             # σ=0.0 → deterministic: this test checks goal-seeking convergence, not SDE noise.
             # With σ=0.1 (default), the instantaneous speed at t=3s has ~0.07 m/s variance
             # from the stochastic term, which exceeds the atol=0.05 → spurious failures ~60%.
-            AgentParams(0.3f0, 80.0f0, v0, τ, 0.5f0, 0.0f0),
+            from_agent_params(0.3f0, 80.0f0, v0, τ, 0.5f0, 0.0f0)...,
             Goal(SVector(10.0f0, 0.0f0)),
             Force(SVector(0.0f0, 0.0f0))
         ))
@@ -117,9 +117,9 @@ using Ark
         max_steps = 1000
         for step in 1:max_steps
             # Manual integration for this specific test
-            for (entities, pos_col, vel_col, params_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}))
+            for (entities, pos_col, vel_col, motion_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, MotionParams{Float32}, Goal{Float32}, Force{Float32}))
                 for i in eachindex(pos_col)
-                    F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, params_col[i].v_pref, params_col[i].τ, params_col[i].mass)
+                    F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, motion_col[i].v_pref, motion_col[i].τ, motion_col[i].mass)
                     force_col[i] = Force(F_drive)
                 end
             end
@@ -154,11 +154,11 @@ using Ark
         τ = 0.5f0
         dt = 0.05f0
         
-        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32})
+        world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32})
         e = new_entity!(world, (
             Position(SVector(0.0f0, 0.01f0)),
             Velocity(SVector(0.0f0, 0.0f0)),
-            AgentParams(0.3f0, 80.0f0, v0, τ),
+            from_agent_params(0.3f0, 80.0f0, v0, τ)...,
             Goal(SVector(10.0f0, 0.0f0)),
             Force(SVector(0.0f0, 0.0f0))
         ))
@@ -214,7 +214,7 @@ using Ark
         # respected, not a target to pass through — ORCA has no pathfinding around walls).
         dt    = 0.05f0
         r     = 0.2f0
-        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32},
+        world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32},
                       ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
 
         # Wall at x=5m (vertical, y from 0 to 10)
@@ -225,7 +225,7 @@ using Ark
         new_entity!(world, (
             Position(SVector(1f0, 5f0)),
             Velocity(SVector(0f0, 0f0)),
-            AgentParams(r, 80f0, 1.4f0, 0.5f0, 0.5f0, 0.0f0),
+            from_agent_params(r, 80f0, 1.4f0, 0.5f0, 0.5f0, 0.0f0)...,
             ORCAParams(2f0, 0.5f0, 5, 5f0, r, 2f0, 0.5f0, 80f0),
             Goal(SVector(4.5f0, 8f0)),
             Force(SVector(0f0, 0f0))
@@ -256,20 +256,20 @@ using Ark
         # ORCA should guide both agents around each other without hitting the wall.
         dt  = 0.05f0
         r   = 0.2f0
-        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32},
+        world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32},
                       ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
 
         # Wall at y=0 (horizontal boundary)
         new_entity!(world, (WallSegment(SVector(-2f0, 0f0), SVector(12f0, 0f0)),))
 
         orca_p = ORCAParams(3f0, 0.5f0, 5, 5f0, r, 2f0, 0.5f0, 80f0)
-        ap     = AgentParams(r, 80f0, 1.4f0, 0.5f0, 0.5f0, 0.0f0)
+        ap     = from_agent_params(r, 80f0, 1.4f0, 0.5f0, 0.5f0, 0.0f0)
 
         # Agent A: (0, 1) → (10, 1)  Agent B: (10, 1) → (0, 1)
         new_entity!(world, (Position(SVector(0f0, 1f0)), Velocity(SVector(0f0,0f0)),
-                             ap, orca_p, Goal(SVector(10f0, 1f0)), Force(SVector(0f0,0f0))))
+                             ap..., orca_p, Goal(SVector(10f0, 1f0)), Force(SVector(0f0,0f0))))
         new_entity!(world, (Position(SVector(10f0, 1f0)), Velocity(SVector(0f0,0f0)),
-                             ap, orca_p, Goal(SVector(0f0, 1f0)), Force(SVector(0f0,0f0))))
+                             ap..., orca_p, Goal(SVector(0f0, 1f0)), Force(SVector(0f0,0f0))))
 
         min_y = Inf32
         t = 0f0; t_max = 15f0

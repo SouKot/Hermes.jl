@@ -102,7 +102,7 @@ end
         max_speed = 2.0f0;  time_h = 10.0f0; nb_dist = 15.0f0; max_nb = 10
         τ = 0.5f0; mass = 80.0f0
 
-        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32},
+        world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32},
                       ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
         for i in 0:(N-1)
             θ    = Float32(i) * 2f0 * Float32(π) / N
@@ -110,7 +110,7 @@ end
             goal = -pos
             new_entity!(world, (
                 Position(pos), Velocity(SVector(0f0,0f0)),
-                AgentParams(r, mass, max_speed, τ, 0.5f0),
+                from_agent_params(r, mass, max_speed, τ, 0.5f0)...,
                 ORCAParams(time_h, 0.5f0, max_nb, nb_dist, r, max_speed, τ, mass),
                 Goal(goal), Force(SVector(0f0,0f0))
             ))
@@ -158,7 +158,7 @@ end
         τ = 0.5f0; mass = 80.0f0
         rng3h = MersenneTwister(42)
 
-        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32},
+        world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32},
                       ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
         for i in 0:(N-1)
             θ     = Float32(i) * 2f0 * Float32(π) / N
@@ -168,7 +168,7 @@ end
             goal  = -SVector(R*cos(θ), R*sin(θ))
             new_entity!(world, (
                 Position(pos), Velocity(SVector(0f0,0f0)),
-                AgentParams(r, mass, max_speed, τ, 0.5f0),
+                from_agent_params(r, mass, max_speed, τ, 0.5f0)...,
                 ORCAParams(time_h, 0.5f0, max_nb, nb_dist, r, max_speed, τ, mass),
                 Goal(goal), Force(SVector(0f0,0f0))
             ))
@@ -211,7 +211,7 @@ end
         door_hi    = door_y + door_width/2f0  # 3.5
         goal_x     = 9.0f0
 
-        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32},
+        world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32},
                       ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
 
         # Fully enclosed 6×6m room matching Helbing 2000. 1m door at x=6.
@@ -230,7 +230,7 @@ end
             new_entity!(world, (
                 Position(pos),
                 Velocity(SVector(0f0, 0f0)),
-                AgentParams(0.25f0, 80f0, 1.0f0, 0.5f0, 0.5f0),  # 5-arg: social force only
+                from_agent_params(0.25f0, 80f0, 1.0f0, 0.5f0, 0.5f0)...,  # 5-arg: social force only
                 Goal(SVector(6f0, door_y)),                         # all aim at door center
                 Force(SVector(0f0, 0f0))
             ))
@@ -256,14 +256,14 @@ end
         last_np     = 0    # last observed count of passed agents
 
         while count_passed_door(world) < N && t < t_max
-            for (_, pos_col, vel_col, params_col, goal_col, force_col) in
-                    Query(world, (Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}))
+            for (_, pos_col, vel_col, motion_col, goal_col, force_col) in
+                    Query(world, (Position{Float32}, Velocity{Float32}, MotionParams{Float32}, Goal{Float32}, Force{Float32}))
                 for i in eachindex(pos_col)
                     px = pos_col[i].p[1]
                     goal_col[i] = px > 6.0f0 ? Goal(SVector(goal_x, door_y)) :
                                                Goal(SVector(6f0, door_y))
                     F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g,
-                                                  params_col[i].v_pref, params_col[i].τ, params_col[i].mass)
+                                                  motion_col[i].v_pref, motion_col[i].τ, motion_col[i].mass)
                     force_col[i] = Force(F_drive)
                 end
             end
@@ -332,7 +332,7 @@ end
             door_hi    = door_y + door_width/2f0  # 3.5m
             goal_x     = 9f0
 
-            world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32},
+            world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32},
                           ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
 
             new_entity!(world, (WallSegment(SVector(0f0, 0f0),     SVector(room_W, 0f0)),))          # bottom
@@ -349,8 +349,8 @@ end
                     Position(pos),
                     Velocity(SVector(0f0, 0f0)),
                     # Helbing 2000 exact: r=0.25m body+collision, m=80kg, τ=0.5, μ=0.5, σ=0.1 m/s
-                    # 7-arg AgentParams: enables body contact (k, κ) needed for arch formation
-                    AgentParams(0.25f0, 0.25f0, 80f0, v0, 0.5f0, 0.5f0, 0.1f0),
+                    # 7-arg: explicit collision_radius=0.25 enables body contact (k, κ) for arch formation
+                    from_agent_params(0.25f0, 0.25f0, 80f0, v0, 0.5f0, 0.5f0, 0.1f0)...,
                     Goal(SVector(room_W, door_y)),
                     Force(SVector(0f0, 0f0))
                 ))
@@ -370,14 +370,14 @@ end
 
             t = 0f0; t_max = 500f0  # Weidmann: 50/1.44 ≈ 35s normal; 500s gives 14× headroom
             while count_evacuated() < N && t < t_max
-                for (_, pos_col, vel_col, params_col, goal_col, force_col) in
-                        Query(world, (Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}))
+                for (_, pos_col, vel_col, motion_col, goal_col, force_col) in
+                        Query(world, (Position{Float32}, Velocity{Float32}, MotionParams{Float32}, Goal{Float32}, Force{Float32}))
                     for i in eachindex(pos_col)
                         px = pos_col[i].p[1]
                         goal_col[i] = px > room_W ? Goal(SVector(goal_x, door_y)) :
                                                     Goal(SVector(room_W, door_y))
                         F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g,
-                                                      params_col[i].v_pref, params_col[i].τ, params_col[i].mass)
+                                                      motion_col[i].v_pref, motion_col[i].τ, motion_col[i].mass)
                         force_col[i] = Force(F_drive)
                     end
                 end

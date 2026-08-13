@@ -29,7 +29,7 @@ end
 function update_orca_system_cpu!(world, dt::F) where {F<:AbstractFloat}
     # Count agents that have ORCA components (ignore non-ORCA entities like SFM-only agents)
     N = 0
-    for (entities, pos_col, vel_col, params_col, orca_col, goal_col) in Query(world, (Position{F}, Velocity{F}, AgentParams{F}, ORCAParams{F}, Goal{F}))
+    for (entities, pos_col, vel_col, params_col, orca_col, goal_col) in Query(world, (Position{F}, Velocity{F}, MotionParams{F}, ORCAParams{F}, Goal{F}))
         N += length(pos_col)
     end
     if N == 0
@@ -50,7 +50,7 @@ function update_orca_system_cpu!(world, dt::F) where {F<:AbstractFloat}
     responsibilities    = Vector{F}(undef, N)   # §1.8: ORCA velocity-change responsibility
     
     idx = 1
-    for (entities, pos_col, vel_col, params_col, orca_col, goal_col) in Query(world, (Position{F}, Velocity{F}, AgentParams{F}, ORCAParams{F}, Goal{F}))
+    for (entities, pos_col, vel_col, params_col, orca_col, goal_col) in Query(world, (Position{F}, Velocity{F}, MotionParams{F}, ORCAParams{F}, Goal{F}))
         for i in eachindex(pos_col)
             positions[idx]          = pos_col[i].p
             velocities[idx]         = vel_col[i].v

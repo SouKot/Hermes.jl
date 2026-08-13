@@ -63,18 +63,18 @@ end
 @testset "Phase 3C Empirical Validations" begin
     
     @testset "CRW-S-03: Two Agents Head-On Avoidance" begin
-        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+        world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
         v0 = 1.4f0
         τ = 0.5f0
         dt = 0.01f0
         
         # Agent A: left to right
         eA = new_entity!(world, (
-            Position(SVector(0.0f0, -0.0f0)), Velocity(SVector(v0, 0.0f0)), AgentParams(0.2f0, 80.0f0, v0, τ, 0.5f0), Goal(SVector(10.0f0, -0.0f0)), Force(SVector(0.0f0, 0.0f0))
+            Position(SVector(0.0f0, -0.0f0)), Velocity(SVector(v0, 0.0f0)), from_agent_params(0.2f0, 80.0f0, v0, τ, 0.5f0)..., Goal(SVector(10.0f0, -0.0f0)), Force(SVector(0.0f0, 0.0f0))
         ))
         # Agent B: right to left
         eB = new_entity!(world, (
-            Position(SVector(10.0f0, 0.0f0)), Velocity(SVector(-v0, 0.0f0)), AgentParams(0.2f0, 80.0f0, v0, τ, 0.5f0), Goal(SVector(0.0f0, 0.0f0)), Force(SVector(0.0f0, 0.0f0))
+            Position(SVector(10.0f0, 0.0f0)), Velocity(SVector(-v0, 0.0f0)), from_agent_params(0.2f0, 80.0f0, v0, τ, 0.5f0)..., Goal(SVector(0.0f0, 0.0f0)), Force(SVector(0.0f0, 0.0f0))
         ))
         
         # Corridor walls (width = 2m, y from -1 to 1)
@@ -88,9 +88,9 @@ end
         min_dist = 100.0f0
         for _ in 1:max_steps
             # Navigation field is simple straight lines to goal
-            for (entities, pos_col, vel_col, params_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}))
+            for (entities, pos_col, vel_col, motion_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, MotionParams{Float32}, Goal{Float32}, Force{Float32}))
                 for i in eachindex(pos_col)
-                    F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, params_col[i].v_pref, params_col[i].τ, params_col[i].mass)
+                    F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, motion_col[i].v_pref, motion_col[i].τ, motion_col[i].mass)
                     force_col[i] = Force(F_drive)
                 end
             end
@@ -115,7 +115,7 @@ end
     end
     
     @testset "CRW-S-04: 10-Agent Bottleneck (1.2m door)" begin
-        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+        world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
         N = 10
         dt = 0.001f0
         v0 = 1.4f0
@@ -129,7 +129,7 @@ end
         for i in 1:N
             pos = SVector(1.0f0 + rand(Float32)*3.0f0, 1.0f0 + rand(Float32)*3.0f0)
             goal_door = SVector(5.0f0, clamp(pos[2], 2.1f0, 2.9f0))
-            new_entity!(world, (Position(pos), Velocity(SVector(0.0f0,0.0f0)), AgentParams(0.2f0, 80.0f0, v0, 0.5f0, 0.5f0), Goal(goal_door), Force(SVector(0.0f0,0.0f0))))
+            new_entity!(world, (Position(pos), Velocity(SVector(0.0f0,0.0f0)), from_agent_params(0.2f0, 80.0f0, v0, 0.5f0, 0.5f0)..., Goal(goal_door), Force(SVector(0.0f0,0.0f0))))
         end
         
         sh = CPUNeighborSearch(N, SVector(0.0f0, 0.0f0), SVector(12.0f0, 5.0f0), 4.0f0)
@@ -148,14 +148,14 @@ end
         
         t = 0.0f0
         while count_passed_x(world, 9.0f0) < N && t < 30.0f0
-            for (entities, pos_col, vel_col, params_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}))
+            for (entities, pos_col, vel_col, motion_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, MotionParams{Float32}, Goal{Float32}, Force{Float32}))
                 for i in eachindex(pos_col)
                     if pos_col[i].p[1] > 5.0f0
                         goal_col[i] = Goal(goal_final)
                     else
                         goal_col[i] = Goal(SVector(5.0f0, clamp(pos_col[i].p[2], 2.1f0, 2.9f0)))
                     end
-                    F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, params_col[i].v_pref, params_col[i].τ, params_col[i].mass)
+                    F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, motion_col[i].v_pref, motion_col[i].τ, motion_col[i].mass)
                     force_col[i] = Force(F_drive)
                 end
             end
@@ -174,7 +174,7 @@ end
     end
     
     @testset "ORCA: 10-Agent Bottleneck (1.2m door)" begin
-        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+        world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
         N = 10
         dt = 0.01f0 # ORCA can use larger dt safely
         v0 = 1.4f0
@@ -188,10 +188,10 @@ end
             pos = SVector(1.0f0 + rand(Float32)*3.0f0, 1.0f0 + rand(Float32)*3.0f0)
             goal_door = SVector(5.0f0, clamp(pos[2], 2.1f0, 2.9f0))
             # 2.0s time_horizon, 0.5s obst, 10 max neighbors, 15m radius
-            # Include AgentParams with tiny radius (0.1m) for wall repulsion without strong agent-agent SFM repulsions
+            # Include AgentGeometry+MotionParams with tiny social radius (0.1m) for wall repulsion without strong agent-agent SFM repulsions
             new_entity!(world, (
                 Position(pos), Velocity(SVector(0.0f0,0.0f0)), 
-                AgentParams(0.1f0, 80.0f0, v0, 0.5f0, 0.5f0),
+                from_agent_params(0.1f0, 80.0f0, v0, 0.5f0, 0.5f0)...,
                 ORCAParams(2.0f0, 0.5f0, 10, 15.0f0, 0.2f0, v0, 0.5f0, 80.0f0), 
                 Goal(goal_door), Force(SVector(0.0f0,0.0f0))
             ))
@@ -265,7 +265,7 @@ end
     
     @testset "CRW-S-05: Faster-is-slower (20 agents, multiple v0)" begin
         function run_panic_scenario(v_pref)
-            world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+            world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
             N = 20
             dt = 0.001f0
             
@@ -278,7 +278,7 @@ end
             for i in 1:N
                 pos = SVector(1.0f0 + rand(Float32)*3.0f0, 1.0f0 + rand(Float32)*3.0f0)
                 goal_door = SVector(5.0f0, clamp(pos[2], 2.1f0, 2.9f0))
-                new_entity!(world, (Position(pos), Velocity(SVector(0.0f0,0.0f0)), AgentParams(0.2f0, 80.0f0, v_pref, 0.5f0, 0.5f0), Goal(goal_door), Force(SVector(0.0f0,0.0f0))))
+                new_entity!(world, (Position(pos), Velocity(SVector(0.0f0,0.0f0)), from_agent_params(0.2f0, 80.0f0, v_pref, 0.5f0, 0.5f0)..., Goal(goal_door), Force(SVector(0.0f0,0.0f0))))
             end
             
             sh = CPUNeighborSearch(N, SVector(0.0f0, 0.0f0), SVector(12.0f0, 5.0f0), 4.0f0)
@@ -297,14 +297,14 @@ end
             
             t = 0.0f0
             while count_passed_x(world, 9.0f0) < N && t < 100.0f0
-                for (entities, pos_col, vel_col, params_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}))
+                for (entities, pos_col, vel_col, motion_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, MotionParams{Float32}, Goal{Float32}, Force{Float32}))
                     for i in eachindex(pos_col)
                         if pos_col[i].p[1] > 5.0f0
                             goal_col[i] = Goal(goal_final)
                         else
                             goal_col[i] = Goal(SVector(5.0f0, clamp(pos_col[i].p[2], 2.1f0, 2.9f0)))
                         end
-                        F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, params_col[i].v_pref, params_col[i].τ, params_col[i].mass)
+                        F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, motion_col[i].v_pref, motion_col[i].τ, motion_col[i].mass)
                         force_col[i] = Force(F_drive)
                     end
                 end
@@ -329,7 +329,7 @@ end
     
     @testset "ORCA: Faster-is-slower Elimination" begin
         function run_orca_panic_scenario(v_pref)
-            world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+            world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
             N = 20
             dt = 0.01f0
             
@@ -343,7 +343,7 @@ end
                 goal_door = SVector(5.0f0, clamp(pos[2], 2.1f0, 2.9f0))
                 new_entity!(world, (
                     Position(pos), Velocity(SVector(0.0f0,0.0f0)), 
-                    AgentParams(0.1f0, 80.0f0, v_pref, 0.5f0, 0.5f0),
+                    from_agent_params(0.1f0, 80.0f0, v_pref, 0.5f0, 0.5f0)...,
                     ORCAParams(2.0f0, 0.5f0, 10, 15.0f0, 0.2f0, v_pref, 0.5f0, 80.0f0), 
                     Goal(goal_door), Force(SVector(0.0f0,0.0f0))
                 ))
@@ -392,7 +392,7 @@ end
     end
     
     @testset "CRW-M-01: Bidirectional Lane Formation" begin
-        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+        world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
         # Reduced density: 40+40=80 agents in 30×4m corridor
         # High density (100+100) causes deadlock with μ=0.5 friction.
         # Lane formation is observable at moderate density.
@@ -413,14 +413,14 @@ end
         pos_lr = place_with_min_sep(rng_lane, N_half, 0.0f0, 5.0f0, 0.0f0, 4.0f0, 0.6f0)
         for i in 1:N_half
             pos = pos_lr[i]
-            new_entity!(world, (Position(pos), Velocity(SVector(v0,0.0f0)), AgentParams(0.2f0, 80.0f0, v0, 0.5f0, 0.5f0), Goal(SVector(30.0f0, pos[2])), Force(SVector(0.0f0,0.0f0))))
+            new_entity!(world, (Position(pos), Velocity(SVector(v0,0.0f0)), from_agent_params(0.2f0, 80.0f0, v0, 0.5f0, 0.5f0)..., Goal(SVector(30.0f0, pos[2])), Force(SVector(0.0f0,0.0f0))))
         end
         
         # Right -> Left: place in x∈[25,30], y∈[0,4] with min_sep=0.6m
         pos_rl = place_with_min_sep(rng_lane, N_half, 25.0f0, 30.0f0, 0.0f0, 4.0f0, 0.6f0)
         for i in 1:N_half
             pos = pos_rl[i]
-            new_entity!(world, (Position(pos), Velocity(SVector(-v0,0.0f0)), AgentParams(0.2f0, 80.0f0, v0, 0.5f0, 0.5f0), Goal(SVector(0.0f0, pos[2])), Force(SVector(0.0f0,0.0f0))))
+            new_entity!(world, (Position(pos), Velocity(SVector(-v0,0.0f0)), from_agent_params(0.2f0, 80.0f0, v0, 0.5f0, 0.5f0)..., Goal(SVector(0.0f0, pos[2])), Force(SVector(0.0f0,0.0f0))))
         end
         
         sh = CPUNeighborSearch(N, SVector(0.0f0, 0.0f0), SVector(30.0f0, 4.0f0), 4.0f0)
@@ -428,9 +428,9 @@ end
         # Run for 15 seconds to allow lanes to form
         for _ in 1:15000
             # Straight-line navigation for simplicity
-            for (entities, pos_col, vel_col, params_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}))
+            for (entities, pos_col, vel_col, motion_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, MotionParams{Float32}, Goal{Float32}, Force{Float32}))
                 for i in eachindex(pos_col)
-                    F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, params_col[i].v_pref, params_col[i].τ, params_col[i].mass)
+                    F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, motion_col[i].v_pref, motion_col[i].τ, motion_col[i].mass)
                     force_col[i] = Force(F_drive)
                 end
             end
@@ -462,7 +462,7 @@ end
         # Counterflow: left→right agents VS right←left agents create genuine competition
         # for space at higher densities.
         function run_counterflow_density(target_density)
-            world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+            world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
             
             L = 20.0f0; W = 3.0f0; dt = 0.001f0
             Area = L * W  # 60 m²
@@ -477,22 +477,22 @@ end
             for i in 1:N_half
                 pos = SVector(rand(Float32)*L, 0.3f0 + rand(Float32)*(W-0.6f0))
                 new_entity!(world, (Position(pos), Velocity(SVector(0.0f0,0.0f0)),
-                    AgentParams(0.2f0, 80.0f0, 1.3f0, 0.5f0, 0.5f0),
+                    from_agent_params(0.2f0, 80.0f0, 1.3f0, 0.5f0, 0.5f0)...,
                     Goal(SVector(L+5.0f0, pos[2])), Force(SVector(0.0f0,0.0f0))))
             end
             for i in 1:N_half
                 pos = SVector(rand(Float32)*L, 0.3f0 + rand(Float32)*(W-0.6f0))
                 new_entity!(world, (Position(pos), Velocity(SVector(0.0f0,0.0f0)),
-                    AgentParams(0.2f0, 80.0f0, 1.3f0, 0.5f0, 0.5f0),
+                    from_agent_params(0.2f0, 80.0f0, 1.3f0, 0.5f0, 0.5f0)...,
                     Goal(SVector(-5.0f0, pos[2])), Force(SVector(0.0f0,0.0f0))))
             end
             
             sh = CPUNeighborSearch(N, SVector(-1.0f0, -1.0f0), SVector(L+1.0f0, W+1.0f0), 4.0f0)
             
             for step in 1:10000
-                for (entities, pos_col, vel_col, params_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}))
+                for (entities, pos_col, vel_col, motion_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, MotionParams{Float32}, Goal{Float32}, Force{Float32}))
                     for i in eachindex(pos_col)
-                        F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, params_col[i].v_pref, params_col[i].τ, params_col[i].mass)
+                        F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, motion_col[i].v_pref, motion_col[i].τ, motion_col[i].mass)
                         force_col[i] = Force(F_drive)
                     end
                 end
@@ -530,7 +530,7 @@ end
     end
     
     @testset "CRW-M-03: Room Evacuation with Multiple Exits (500 agents)" begin
-        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+        world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32}, ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
         N = 500
         dt = 0.01f0
         
@@ -556,7 +556,7 @@ end
             dist2 = norm(pos - SVector(30.0f0, 10.0f0))
             goal = dist1 < dist2 ? SVector(-5.0f0, 10.0f0) : SVector(35.0f0, 10.0f0)
             
-            new_entity!(world, (Position(pos), Velocity(SVector(0.0f0,0.0f0)), AgentParams(0.2f0, 80.0f0, 1.4f0, 0.5f0, 0.5f0), Goal(goal), Force(SVector(0.0f0,0.0f0))))
+            new_entity!(world, (Position(pos), Velocity(SVector(0.0f0,0.0f0)), from_agent_params(0.2f0, 80.0f0, 1.4f0, 0.5f0, 0.5f0)..., Goal(goal), Force(SVector(0.0f0,0.0f0))))
         end
         
         sh = CPUNeighborSearch(N, SVector(-10.0f0, -5.0f0), SVector(40.0f0, 25.0f0), 4.0f0)
@@ -576,9 +576,9 @@ end
         
         t = 0.0f0
         while count_evacuated(world) < N && t < 150.0f0
-            for (entities, pos_col, vel_col, params_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}))
+            for (entities, pos_col, vel_col, motion_col, goal_col, force_col) in Query(world, (Position{Float32}, Velocity{Float32}, MotionParams{Float32}, Goal{Float32}, Force{Float32}))
                 for i in eachindex(pos_col)
-                    F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, params_col[i].v_pref, params_col[i].τ, params_col[i].mass)
+                    F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g, motion_col[i].v_pref, motion_col[i].τ, motion_col[i].mass)
                     force_col[i] = Force(F_drive)
                 end
             end

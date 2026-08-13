@@ -11,14 +11,14 @@ Updates agent velocities and positions using a Symplectic Euler integrator.
 """
 function integrate_physics_system!(world::World, dt::F) where {F<:AbstractFloat}
     # Parameterized over the float type of dt
-    for (entities, pos_col, vel_col, params_col, force_col) in Query(world, (Position{F}, Velocity{F}, AgentParams{F}, Force{F}))
+    for (entities, pos_col, vel_col, params_col, force_col) in Query(world, (Position{F}, Velocity{F}, MotionParams{F}, Force{F}))
         Threads.@threads for i in eachindex(pos_col)
             mass = params_col[i].mass
             acc = force_col[i].f / mass
             
             # Helbing Fluctuation Term — SDE noise breaks symmetrical friction locking.
             # Correct SDE scaling: velocity diffusion = σ × sqrt(dt) × Z → acc_noise = σ/sqrt(dt) × Z.
-            # σ is per-agent (AgentParams.σ): 0.10 evacuation, 0.05 normal flow, 0.0 deterministic.
+            # σ is per-agent (MotionParams.σ): 0.10 evacuation, 0.05 normal flow, 0.0 deterministic.
             acc += SVector(randn(F), randn(F)) * (params_col[i].σ / sqrt(dt))
             
 

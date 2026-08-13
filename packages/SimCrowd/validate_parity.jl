@@ -11,15 +11,17 @@ using Random
 using LinearAlgebra
 
 function clone_world(orig_world)
-    w = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32})
-    for (entities, pos_col, vel_col, ap_col, goal_col, f_col) in Query(orig_world, (Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}))
+    w = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32}, Goal{Float32}, Force{Float32})
+    for (entities, pos_col, vel_col, geom_col, motion_col, sfm_col, goal_col, f_col) in Query(orig_world, (Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32}, Goal{Float32}, Force{Float32}))
         for i in 1:length(entities)
             pos = pos_col[i]
             vel = vel_col[i]
-            ap = ap_col[i]
+            geom = geom_col[i]
+            motion = motion_col[i]
+            sfm = sfm_col[i]
             goal = goal_col[i]
             f = f_col[i]
-            new_entity!(w, (Position(pos.p), Velocity(vel.v), AgentParams(ap.social_radius, ap.mass, ap.v_pref, ap.τ), Goal(goal.g), Force(f.f)))
+            new_entity!(w, (Position(pos.p), Velocity(vel.v), AgentGeometry(geom.social_radius, geom.collision_radius), MotionParams(motion.mass, motion.v_pref, motion.τ, motion.σ), SFMParams(sfm.A, sfm.B, sfm.λ, sfm.μ), Goal(goal.g), Force(f.f)))
         end
     end
     return w
@@ -40,14 +42,14 @@ function run_parity_check()
     
     # 1. Initialize Deterministic World
     Random.seed!(42)
-    base_world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32})
+    base_world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32}, Goal{Float32}, Force{Float32})
     for i in 1:N
         pos = SVector{2,Float32}(rand()*100.0f0, rand()*100.0f0)
         # Agents want to go to the center (50, 50)
         new_entity!(base_world, (
             Position(pos),
             Velocity(SVector(0.0f0, 0.0f0)),
-            AgentParams(0.3f0, 80.0f0, 1.4f0, 1.5f0),
+            from_agent_params(0.3f0, 80.0f0, 1.4f0, 1.5f0)...,
             Goal(SVector(50.0f0, 50.0f0)),
             Force(SVector(0.0f0, 0.0f0))
         ))

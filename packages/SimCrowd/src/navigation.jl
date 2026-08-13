@@ -104,7 +104,7 @@ end
 Updates the driving forces for all agents based on the navigation field.
 """
 function update_navigation_system!(world::World, nav::NavigationField{F}) where {F}
-    for (entities, pos_col, vel_col, params_col, force_col) in Query(world, (Position{F}, Velocity{F}, AgentParams{F}, Force{F}))
+    for (entities, pos_col, vel_col, params_col, force_col) in Query(world, (Position{F}, Velocity{F}, MotionParams{F}, Force{F}))
         Threads.@threads for i in eachindex(pos_col)
             pos = pos_col[i].p
             vel = vel_col[i].v

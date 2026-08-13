@@ -21,14 +21,14 @@ function run_bench(N, steps)
     dims = ceil.(Int, (grid_max - grid_min) / cell_size)
     nav = build_navigation_field(grid_min, grid_max, cell_size, SVector(50.0f0, 50.0f0), zeros(Bool, dims[1], dims[2]))
     
-    world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32})
+    world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32}, Goal{Float32}, Force{Float32})
     
     for i in 1:N
         pos = SVector{2,Float32}(rand()*100.0f0, rand()*100.0f0)
         new_entity!(world, (
             Position(pos),
             Velocity(SVector(0.0f0, 0.0f0)),
-            AgentParams(0.3f0, 80.0f0, 1.4f0, 0.5f0),
+            from_agent_params(0.3f0, 80.0f0, 1.4f0, 0.5f0)...,
             Goal(SVector(50.0f0, 50.0f0)),
             Force(SVector(0.0f0, 0.0f0))
         ))
@@ -63,14 +63,14 @@ function run_bench_gpu(N, steps)
     dims = ceil.(Int, (grid_max - grid_min) / cell_size)
     nav = build_navigation_field(grid_min, grid_max, cell_size, SVector(50.0f0, 50.0f0), zeros(Bool, dims[1], dims[2]))
     
-    world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32})
+    world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32}, Goal{Float32}, Force{Float32})
     
     for i in 1:N
         pos = SVector{2,Float32}(rand()*100.0f0, rand()*100.0f0)
         new_entity!(world, (
             Position(pos),
             Velocity(SVector(0.0f0, 0.0f0)),
-            AgentParams(0.3f0, 80.0f0, 1.4f0, 0.5f0),
+            from_agent_params(0.3f0, 80.0f0, 1.4f0, 0.5f0)...,
             Goal(SVector(50.0f0, 50.0f0)),
             Force(SVector(0.0f0, 0.0f0))
         ))

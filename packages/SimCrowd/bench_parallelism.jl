@@ -18,7 +18,7 @@ println("="^60)
 # ── Setup helpers ─────────────────────────────────────────────────────────
 
 function make_sfm_world(N, scenario_width, scenario_height)
-    world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32},
+    world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32},
                   ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
     for i in 1:N
         pos  = SVector(rand(Float32) * scenario_width, rand(Float32) * scenario_height)
@@ -26,7 +26,7 @@ function make_sfm_world(N, scenario_width, scenario_height)
         new_entity!(world, (
             Position(pos),
             Velocity(SVector(0.0f0, 0.0f0)),
-            AgentParams(0.25f0, 80.0f0, 1.34f0, 0.5f0, 0.5f0),
+            from_agent_params(0.25f0, 80.0f0, 1.34f0, 0.5f0, 0.5f0)...,
             Goal(goal),
             Force(SVector(0.0f0, 0.0f0))
         ))
@@ -35,7 +35,7 @@ function make_sfm_world(N, scenario_width, scenario_height)
 end
 
 function make_orca_world(N, scenario_width, scenario_height)
-    world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32},
+    world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32}, MotionParams{Float32}, SFMParams{Float32},
                   ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
     for i in 1:N
         pos  = SVector(rand(Float32) * scenario_width, rand(Float32) * scenario_height)
@@ -43,7 +43,7 @@ function make_orca_world(N, scenario_width, scenario_height)
         new_entity!(world, (
             Position(pos),
             Velocity(SVector(0.0f0, 0.0f0)),
-            AgentParams(0.25f0, 80.0f0, 1.34f0, 0.5f0, 0.5f0),
+            from_agent_params(0.25f0, 80.0f0, 1.34f0, 0.5f0, 0.5f0)...,
             ORCAParams(2.0f0, 0.5f0, 10, 15.0f0, 0.2f0, 1.34f0, 0.5f0, 80.0f0),
             Goal(goal),
             Force(SVector(0.0f0, 0.0f0))
@@ -53,11 +53,11 @@ function make_orca_world(N, scenario_width, scenario_height)
 end
 
 function sfm_step!(world, sh)
-    for (entities, pos_col, vel_col, params_col, goal_col, force_col) in
-            Query(world, (Position{Float32}, Velocity{Float32}, AgentParams{Float32}, Goal{Float32}, Force{Float32}))
+    for (entities, pos_col, vel_col, motion_col, goal_col, force_col) in
+            Query(world, (Position{Float32}, Velocity{Float32}, MotionParams{Float32}, Goal{Float32}, Force{Float32}))
         for i in eachindex(pos_col)
             F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g,
-                                         params_col[i].v_pref, params_col[i].τ, params_col[i].mass)
+                                         motion_col[i].v_pref, motion_col[i].τ, motion_col[i].mass)
             force_col[i] = Force(F_drive)
         end
     end
