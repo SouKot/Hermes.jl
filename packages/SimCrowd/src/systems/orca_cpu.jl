@@ -1,10 +1,13 @@
 using KernelAbstractions
 using StaticArrays
 using LinearAlgebra
+import AcceleratedKernels as AK
 
-# Fix C: Per-thread pre-allocated neighbor buffers — eliminates per-agent heap allocation
-# inside the @threads loop. Initialized lazily on first call, reused every step.
+# Per-thread pre-allocated neighbor buffers — eliminates per-agent heap allocation
+# inside the parallel loop. Initialized lazily on first call, reused every step.
 # This removes ~4MB/step of GC pressure at N=1000.
+# NOTE: Indexed by Threads.threadid() which is stable within AK.foreachindex tasks
+# (Julia tasks don't migrate threads once started — no race condition risk).
 const _ORCA_NEIGHBOR_BUFS = Ref{Vector{Vector{Tuple{Float32, Int}}}}()
 
 function _get_neighbor_bufs()
@@ -87,8 +90,15 @@ function update_orca_system_cpu!(world, dt::F) where {F<:AbstractFloat}
     # LP3 is the 3D fallback when LP2 is infeasible (over-constrained crowd).
     lp3_count = Threads.Atomic{Int}(0)
     
-    # O(N²) LP solve — each agent's computation is fully independent (safe for @threads)
-    Threads.@threads for i in 1:N
+    # O(N²) LP solve — each agent's computation is fully independent.
+    # AK.foreachindex(CPU()) uses Julia tasks (same threading model as @threads),
+    # but routes through the KA/AK abstraction layer — consistent with our
+    # "KA/AK for all threading" convention (no bare Base.Threads usage).
+    #
+    # NOTE: Base.Threads.@threads was previously used here — replaced per §§Opp-A.
+    # TODO [deprecated]: Remove _ORCA_NEIGHBOR_BUFS + Threads.threadid() call when
+    # a clean per-task scratch API is available in AK (tracked: AK issue #TBD).
+    AK.foreachindex(1:N, CPU()) do i
         pos_i         = positions[i]
         vel_i         = velocities[i]
         r_i           = radii[i]
