@@ -297,9 +297,11 @@ end
 SimScene(world::World, search::S, config::SimConfig{F}) where {F, S<:AbstractNeighborSearch} =
     SimScene{F, S, Nothing}(world, search, nothing, config)
 
-# Constructor with nav field (SFM worlds with automatic Eikonal-based goal updates)
-SimScene(world::World, search::S, nav_field::NavigationField{F}, config::SimConfig{F}) where {F, S<:AbstractNeighborSearch} =
-    SimScene{F, S, NavigationField{F}}(world, search, nav_field, config)
+# Constructor with nav field (SFM worlds with automatic Eikonal-based goal updates).
+# N<:NavigationField{F} constraint needed to disambiguate from the struct's
+# auto-generated outer constructor (which leaves N unconstrained).
+SimScene(world::World, search::S, nav_field::N, config::SimConfig{F}) where {F<:AbstractFloat, S<:AbstractNeighborSearch, N<:NavigationField{F}} =
+    SimScene{F, S, N}(world, search, nav_field, config)
 
 """
     step!(scene::SimScene)
@@ -314,10 +316,6 @@ System order:
 """
 function step!(scene::SimScene{F}) where {F}
     dt = scene.config.dt
-    # 1. Navigation: update Goal components from Eikonal field (if present)
-    if scene.nav_field !== nothing
-        update_navigation_system!(scene.world, scene.nav_field)
-    end
     # Guard: Ark.Query throws ArgumentError if a component type was never registered
     # (i.e. the world has no entities). Return early rather than crashing.
     local n_force::Int
@@ -328,11 +326,17 @@ function step!(scene::SimScene{F}) where {F}
         rethrow()
     end
     n_force == 0 && return scene
-    # 2. Reset Force components to zero before accumulation
+    # 1. Reset Force components to zero — must happen BEFORE any force accumulation.
+    #    §2.5 FIX: nav was called before reset, which silently wiped the driving force.
     for (_, force_col) in Query(scene.world, (Force{F},))
         for i in eachindex(force_col)
             force_col[i] = Force(zero(SVector{2,F}))
         end
+    end
+    # 2. Navigation: ADD F_drive from Eikonal field (if present)
+    #    Runs after reset so the driving force is preserved through the rest of the step.
+    if scene.nav_field !== nothing
+        update_navigation_system!(scene.world, scene.nav_field)
     end
     # 3. SFM agent-agent + wall forces (only for agents with SFMParams)
     local n_sfm::Int

@@ -102,6 +102,15 @@ end
     update_navigation_system!(world, nav)
 
 Updates the driving forces for all agents based on the navigation field.
+
+Sets `Force` to `F_drive` computed from the Eikonal potential gradient (replaces
+any prior force value). For `SimScene`-managed simulations, `step!` resets Force
+to zero before calling this function, so the SET here is equivalent to ADD.
+For manual simulation loops, `Force` is reset by each call to this function.
+
+**Caller contract**: when combining with social forces, call in this order:
+  1. `update_navigation_system!`  — sets F_drive
+  2. `update_social_forces_system!` — adds F_repulsion on top
 """
 function update_navigation_system!(world::World, nav::NavigationField{F}) where {F}
     for (entities, pos_col, vel_col, params_col, force_col) in Query(world, (Position{F}, Velocity{F}, MotionParams{F}, Force{F}))
@@ -109,9 +118,9 @@ function update_navigation_system!(world::World, nav::NavigationField{F}) where 
             pos = pos_col[i].p
             vel = vel_col[i].v
             params = params_col[i]
-            
+
             dir = get_desired_direction(nav, pos)
-            
+
             # F_drive = mass × (v0 × e_i − v_i) / τ   [Newtons]
             # Matches goal_seeking_force() in forces.jl.
             # BUG FIX (2026-08-12): previously missing params.mass, making effective

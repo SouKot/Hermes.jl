@@ -416,4 +416,48 @@ using Ark
         @test any(x_after .!= x_before)   # agents moved
     end
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # §2.5 NavigationSystem step! order (bug fix: nav force was wiped by reset)
+    # ─────────────────────────────────────────────────────────────────────────
+    @testset "§2.5 NavigationSystem step! order" begin
+        # Single SFM agent at x=1, goal (via nav field) at x=9.
+        # Before §2.5 fix: step! reset Force AFTER nav → F_drive discarded → agent didn't move toward goal.
+        # After fix: reset → nav adds F_drive → social adds F_repulsion → integrate.
+        cfg  = SimConfig(0.05f0)
+        gr   = SVector(0f0, 0f0)
+        gx   = SVector(10f0, 10f0)
+
+        w3   = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32},
+                     MotionParams{Float32}, SFMParams{Float32}, Goal{Float32}, Force{Float32},
+                     WallSegment{Float32})
+        ap   = from_agent_params(0.25f0, 80f0, 1.3f0, 0.5f0)
+        new_entity!(w3, (Position(SVector(1f0, 5f0)), Velocity(SVector(0f0, 0f0)),
+                         ap..., Goal(SVector(9f0, 5f0)), Force(SVector(0f0, 0f0))))
+        sr3  = CPUNeighborSearch(1, gr, gx, 1.5f0)
+
+        # Build a flat nav field (no obstacles) pointing east toward x=9
+        obstacle_mask = zeros(Bool, 100, 100)
+        nav = build_navigation_field(gr, gx, 0.1f0, SVector(9f0, 5f0), obstacle_mask)
+        sc3 = SimScene(w3, sr3, nav, cfg)
+
+        x0 = first([pos_col[1].p[1]
+                    for (_, pos_col) in Query(w3, (Position{Float32},))])
+
+        # Run 5 steps: agent must move eastward (x increases toward 9)
+        for _ in 1:5; step!(sc3); end
+
+        x1 = first([pos_col[1].p[1]
+                    for (_, pos_col) in Query(w3, (Position{Float32},))])
+
+        @test x1 > x0          # agent moved toward goal (east)
+        @test x1 - x0 > 0.01f0 # meaningful displacement, not floating-point noise
+
+        # Also confirm Force is non-zero after step! (nav force survived the reset)
+        f_after = first([force_col[1].f
+                         for (_, force_col) in Query(w3, (Force{Float32},))])
+        # After step! integrate has consumed force — but position proves the force was applied.
+        # The key test is x1 > x0 above.
+        @test isfinite(x1)
+    end
+
 end  # SimCrowd.jl

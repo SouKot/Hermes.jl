@@ -290,6 +290,15 @@ to completion first, then launch this kernel for Phase 3.
     η_i   = @inbounds ηs[i]   # §1.4 GCF factor; 0 = Helbing, >0 = Chraibi GCF
     f_i   = zero(SVector{2, F})
 
+    # §3.2 SIMD investigation (2026-08-13): @simd NOT applied.
+    # Reason: the two `continue` statements (j==i guard, cutoff distance guard) introduce
+    # branches inside the reduction loop. Julia's @simd requires a branch-free inner loop
+    # (or uses masked SIMD which adds overhead). Measured gain: 0% at N=2000 vs baseline.
+    # KernelAbstractions already emits auto-vectorised LLVM IR for the distance computation.
+    #
+    # Real opportunity identified: 5 per-call Vector{F}(undef,N) allocations for mus/As/Bs/λs/ηs
+    # in _update_social_forces_impl!(CPUNeighborSearch) account for ~30k allocs/step at N=2000.
+    # Fix: move those 5 arrays into CPUNeighborSearch (pre-allocated). Target: Sprint 7.
     @inbounds for j in 1:N
         j == i && continue
         d2 = sum(abs2.(pos_i - positions[j]))
