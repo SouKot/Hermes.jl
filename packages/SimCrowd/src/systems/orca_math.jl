@@ -111,7 +111,12 @@ end
 
     for i in begin_line:length(lines)
         if det(lines[i].dir, lines[i].point - result) > distance
-            proj_lines = Vector{Line{F}}(undef, i - 1)
+            # Allocate proj_lines large enough to hold:
+            #   - The first num_obst_lines obstacle lines (copied verbatim below)
+            #   - Projected agent-agent lines from j=num_obst_lines+1 to i-1
+            # When begin_line ≤ num_obst_lines and i=begin_line, i-1 < num_obst_lines.
+            # Using only i-1 would cause a BoundsError on the obstacle-copy loop.
+            proj_lines = Vector{Line{F}}(undef, max(i - 1, num_obst_lines))
 
             for j in 1:num_obst_lines
                 proj_lines[j] = lines[j]
@@ -207,9 +212,10 @@ end
 
                 dir = normalize(lines[j].dir - lines[i].dir)
                 num_proj_lines += 1
-                if num_proj_lines <= 25
-                    proj_lines[num_proj_lines] = Line(point, dir)
-                end
+                # Bounds check: num_proj_lines ≤ K-1 by construction (j loops to i-1, i ≤ K).
+                # The previous hardcoded `<= 25` was wrong for K=250 (CPU path) and
+                # would silently drop proj_lines, degrading LP3 quality at high density.
+                proj_lines[num_proj_lines] = Line(point, dir)
             end
 
             temp_result = result
@@ -287,4 +293,85 @@ end
     dot_w_dir = dot(relative_vel, dir)
     u = dot_w_dir * dir - relative_vel
     return Line(vel_i + u * F(0.5), dir)
+end
+
+"""
+    compute_orca_line_wall(pos_i, vel_i, r_i, p1, p2, time_horizon_obst, dt)
+
+Compute the ORCA half-plane constraint imposed by the static wall segment [p1, p2]
+on agent i.
+
+Static obstacles have zero velocity and infinite mass, so the agent takes **full
+responsibility** for the velocity change (no 1/2 factor, unlike agent-agent ORCA).
+Nearest-point projection is used for finite wall segments.
+
+Returns the constraint as a `Line{F}` with:
+- `line.point`: a point on the ORCA half-plane boundary
+- `line.dir`: the direction along the half-plane boundary
+
+The half-plane {v : det(dir, point - v) ≤ 0} contains the set of safe velocities.
+
+Algorithm follows van den Berg 2011 (ORCA) §3.1 with obstacle responsibility = 1.0.
+"""
+@inline function compute_orca_line_wall(
+    pos_i::SVector{2,F}, vel_i::SVector{2,F}, r_i::F,
+    p1::SVector{2,F}, p2::SVector{2,F},
+    time_horizon_obst::F, dt::F
+) where {F<:AbstractFloat}
+    # ── 1. Nearest point on wall segment to agent i ──────────────────────────────
+    seg = p2 - p1
+    l2  = dot(seg, seg)
+    t   = l2 < F(1e-10) ? zero(F) : clamp(dot(pos_i - p1, seg) / l2, zero(F), one(F))
+    q   = p1 + t * seg           # nearest wall point
+
+    relative_pos    = q - pos_i  # vector from agent to wall
+    dist_sq         = sum(abs2, relative_pos)
+    combined_radius = r_i        # wall has zero physical radius
+
+    # ── 2. Collision right now (agent overlaps wall) ──────────────────────────────
+    if dist_sq <= combined_radius^2
+        dist = sqrt(dist_sq)
+        unit_w = if dist < F(1e-6)
+            SVector{2,F}(one(F), zero(F))  # degenerate: push right
+        else
+            -relative_pos / dist           # outward (away from wall)
+        end
+        dir = SVector(unit_w[2], -unit_w[1])
+        u   = (combined_radius / dt - dist) * unit_w
+        # Full responsibility: no 0.5 factor (wall cannot adapt velocity)
+        return Line(vel_i + u, dir)
+    end
+
+    # ── 3. No current collision — truncated velocity obstacle ──────────────────────
+    # Velocity of wall is zero, so relative_vel = vel_i - 0 = vel_i.
+    # VO apex is at relative_pos / time_horizon_obst; w = vel_i - apex.
+    w        = vel_i - relative_pos / time_horizon_obst
+    w_len_sq = sum(abs2, w)
+    dot_wp   = dot(w, relative_pos)
+
+    if dot_wp < zero(F) && dot_wp^2 > combined_radius^2 * w_len_sq
+        # Project on cut-off circle (inside VO cone)
+        w_len  = sqrt(max(w_len_sq, F(1e-12)))
+        unit_w = w / w_len
+        dir    = SVector(unit_w[2], -unit_w[1])
+        u      = (combined_radius / time_horizon_obst - w_len) * unit_w
+        return Line(vel_i + u, dir)  # full responsibility
+    end
+
+    # Project on VO cone legs
+    leg = sqrt(max(zero(F), dist_sq - combined_radius^2))
+    if det(relative_pos, w) > zero(F)
+        dir = SVector(
+             relative_pos[1]*leg - relative_pos[2]*combined_radius,
+             relative_pos[1]*combined_radius + relative_pos[2]*leg
+        ) / dist_sq
+    else
+        dir = -SVector(
+              relative_pos[1]*leg + relative_pos[2]*combined_radius,
+             -relative_pos[1]*combined_radius + relative_pos[2]*leg
+        ) / dist_sq
+    end
+    dot_w_dir = dot(vel_i, dir)
+    u         = dot_w_dir * dir - vel_i
+    return Line(vel_i + u, dir)  # full responsibility
 end

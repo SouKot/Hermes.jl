@@ -116,9 +116,9 @@ end
             ))
         end
 
-        t = 0f0; t_max = 80f0; min_sep = Inf32; step = 0
+        t = 0f0; t_max = 80f0; min_sep = Inf32; step = 0; lp3_total = 0
         while count_reached_tol(world, 2f0*r) < N && t < t_max
-            SimCrowd.update_orca_system_cpu!(world, dt)
+            lp3_total += SimCrowd.update_orca_system_cpu!(world, dt)
             integrate_physics_system!(world, dt)
             t += dt; step += 1
             step % 20 == 0 && (min_sep = min(min_sep, min_agent_separation(world)))
@@ -126,6 +126,8 @@ end
         min_sep = min(min_sep, min_agent_separation(world))
         reached = count_reached_tol(world, 2f0*r)
         @printf("3A-easy: reached=%d/%d, min_sep=%.4f m, t=%.1f s\n", reached, N, min_sep, t)
+        @printf("  → LP3 invocations: %d over %.0f steps (rate: %.1f%%/step/agent)\n",
+                lp3_total, t/dt, 100*lp3_total/(N * t/dt))
 
         @test reached == N          # All 30 reach antipodal — RVO2 liveness guarantee
         @test min_sep >= 0f0        # No body penetration — ORCA collision-freedom guarantee
@@ -173,26 +175,31 @@ end
         end
 
         # Run for 30 simulation-seconds (enough to cross center and disperse)
-        t = 0f0; t_run = 30f0; min_sep = Inf32; step = 0
+        t = 0f0; t_run = 30f0; min_sep = Inf32; step = 0; lp3_total = 0
         while t < t_run
-            SimCrowd.update_orca_system_cpu!(world, dt)
+            lp3_total += SimCrowd.update_orca_system_cpu!(world, dt)
             integrate_physics_system!(world, dt)
             t += dt; step += 1
             step % 20 == 0 && (min_sep = min(min_sep, min_agent_separation(world)))
         end
         min_sep = min(min_sep, min_agent_separation(world))
         reached = count_reached_tol(world, 2f0*r)
+        total_steps = round(Int, t_run / dt)
         @printf("3A-hard: reached=%d/%d after 30s, min_sep=%.4f m\n", reached, N, min_sep)
         @printf("  → Spacing at center convergence is %.2f×r — LP feasibility not guaranteed\n",
                 2f0*Float32(π)*R/N / (2f0*r))
-        @printf("  → Collision avoidance metric: min_sep=%.4f (threshold ≥ -%.3f)\n",
-                min_sep, r/2f0)
+        @printf("  → LP3 invocations: %d / %d agent-steps (rate: %.1f%%)\n",
+                lp3_total, N*total_steps, 100*lp3_total/(N*total_steps))
+        @printf("  → Collision metric: min center-to-center = %.4f m (2r = %.3f m)\n",
+                min_sep, 2f0*r)
 
-        # PRIMARY: collision avoidance (ORCA's core guarantee). Allow ≤r/2 penetration.
-        @test min_sep >= -r/2f0
+        # PRIMARY: collision avoidance (ORCA's core guarantee).
+        # min_sep is minimum center-to-center distance — must be ≥ 0 (no nan/overlap with physics).
+        @test min_sep >= 0f0
         # LIVENESS: accept ≥60% at N=250 (LP over-constrained at center convergence)
         @test reached >= round(Int, 0.6 * N)
     end
+
 
     # ─────────────────────────────────────────────────────────────────────────
     @testset "3B: SFM Bottleneck Flow — N=50, 6×6m (Helbing 2000 exact setup)" begin

@@ -206,4 +206,85 @@ using Ark
         @test reached_goal
         @test min_dist_to_obs > 0.5f0
     end
+
+    @testset "Validation: CRW-O-01 (ORCA Agent vs Static Wall)" begin
+        # Setup: One ORCA agent moving toward a wall.
+        # With static obstacle ORCA lines (§1.7), the agent deflects before penetrating.
+        # Goal is placed on the SAME side as the agent (wall acts as barrier that must be
+        # respected, not a target to pass through — ORCA has no pathfinding around walls).
+        dt    = 0.05f0
+        r     = 0.2f0
+        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32},
+                      ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+
+        # Wall at x=5m (vertical, y from 0 to 10)
+        new_entity!(world, (WallSegment(SVector(5f0, 0f0), SVector(5f0, 10f0)),))
+
+        # Agent at (1, 5), goal at (4.5, 8) — reachable without crossing wall.
+        # Agent heads diagonally toward the wall; ORCA wall line must keep it clear.
+        new_entity!(world, (
+            Position(SVector(1f0, 5f0)),
+            Velocity(SVector(0f0, 0f0)),
+            AgentParams(r, 80f0, 1.4f0, 0.5f0, 0.5f0, 0.0f0),
+            ORCAParams(2f0, 0.5f0, 5, 5f0, r, 2f0, 0.5f0, 80f0),
+            Goal(SVector(4.5f0, 8f0)),
+            Force(SVector(0f0, 0f0))
+        ))
+
+        min_dist_to_wall = Inf32
+        t = 0f0; t_max = 15f0
+        while t < t_max
+            SimCrowd.update_orca_system_cpu!(world, dt)
+            integrate_physics_system!(world, dt)
+            t += dt
+            for (_, pos_col) in Query(world, (Position{Float32},))
+                for i in eachindex(pos_col)
+                    p = pos_col[i].p
+                    d = 5f0 - p[1]   # distance to wall at x=5 (agent stays at x<5)
+                    min_dist_to_wall = min(min_dist_to_wall, d)
+                end
+            end
+        end
+
+        # Agent must maintain clearance ≥ 0 from wall (no penetration beyond agent centre)
+        # ORCA guarantees: agent centre stays to the left of x=5.
+        @test min_dist_to_wall >= 0f0
+    end
+
+    @testset "Validation: CRW-O-02 (ORCA: two agents, one wall)" begin
+        # Two agents heading toward each other with a wall on one side.
+        # ORCA should guide both agents around each other without hitting the wall.
+        dt  = 0.05f0
+        r   = 0.2f0
+        world = World(Position{Float32}, Velocity{Float32}, AgentParams{Float32},
+                      ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+
+        # Wall at y=0 (horizontal boundary)
+        new_entity!(world, (WallSegment(SVector(-2f0, 0f0), SVector(12f0, 0f0)),))
+
+        orca_p = ORCAParams(3f0, 0.5f0, 5, 5f0, r, 2f0, 0.5f0, 80f0)
+        ap     = AgentParams(r, 80f0, 1.4f0, 0.5f0, 0.5f0, 0.0f0)
+
+        # Agent A: (0, 1) → (10, 1)  Agent B: (10, 1) → (0, 1)
+        new_entity!(world, (Position(SVector(0f0, 1f0)), Velocity(SVector(0f0,0f0)),
+                             ap, orca_p, Goal(SVector(10f0, 1f0)), Force(SVector(0f0,0f0))))
+        new_entity!(world, (Position(SVector(10f0, 1f0)), Velocity(SVector(0f0,0f0)),
+                             ap, orca_p, Goal(SVector(0f0, 1f0)), Force(SVector(0f0,0f0))))
+
+        min_y = Inf32
+        t = 0f0; t_max = 15f0
+        while t < t_max
+            SimCrowd.update_orca_system_cpu!(world, dt)
+            integrate_physics_system!(world, dt)
+            t += dt
+            for (_, pos_col) in Query(world, (Position{Float32},))
+                for i in eachindex(pos_col)
+                    min_y = min(min_y, pos_col[i].p[2])
+                end
+            end
+        end
+
+        # Neither agent should penetrate the wall at y=0 (centre must stay above y=0)
+        @test min_y >= 0f0
+    end
 end
