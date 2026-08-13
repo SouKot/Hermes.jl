@@ -138,7 +138,23 @@ struct ORCAParams{F<:AbstractFloat}
     v_pref::F
     τ::F
     mass::F
+    responsibility::F  # §1.8: fraction of ORCA velocity-change taken by agent i ∈ [0,1]
+                       # 0.5 = reciprocal ORCA (standard — both agents share equally)
+                       # 1.0 = full (use for walls or when j is known non-cooperative)
+                       # values ∈ (0.5, 1.0] make agent i more conservative (safer under uncertainty)
 end
+
+"""
+    ORCAParams(time_horizon, time_horizon_obst, max_neighbors, neighbor_dist,
+               radius, v_pref, τ, mass [, responsibility=0.5])
+
+Constructors for `ORCAParams`. The 8-arg form defaults `responsibility = 0.5` (standard
+reciprocal ORCA). Pass `responsibility = 1.0` for agents that cannot rely on neighbours
+to cooperate (e.g., robot in a pedestrian crowd, or agent approaching a wall boundary).
+"""
+# 8-arg backward-compatible: defaults responsibility = 0.5 (reciprocal ORCA)
+ORCAParams(th::F, tho::F, mn::Int, nd::F, r::F, vp::F, τ::F, m::F) where {F<:AbstractFloat} =
+    ORCAParams(th, tho, mn, nd, r, vp, τ, m, F(0.5))
 
 struct WallSegment{F<:AbstractFloat}
     p1::SVector{2,F}

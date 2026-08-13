@@ -236,11 +236,20 @@ end
     return result
 end
 
-# Compute the Velocity Obstacle Half-Plane for an agent-agent interaction
+# Compute the Velocity Obstacle Half-Plane for an agent-agent interaction.
+#
+# §1.8 Non-reciprocal ORCA weights:
+#   resp_i  — fraction of the velocity change `u` that agent i absorbs [0, 1].
+#   0.5  = standard reciprocal ORCA (van den Berg 2011): both agents take half.
+#   1.0  = full responsibility: use when j is non-cooperative (unaware robot,
+#          wall-adjacent agent that has no room to manoeuvre, etc.).
+#   Values > 0.5 make agent i more conservative: it moves further from the VO
+#   boundary, reducing near-miss probability at the cost of a larger detour.
 @inline function compute_orca_line(
     pos_i, vel_i, r_i,
     pos_j, vel_j, r_j,
-    time_horizon, dt
+    time_horizon, dt,
+    resp_i = typeof(r_i)(0.5)  # §1.8: default 0.5 = reciprocal ORCA
 )
     F = typeof(r_i)
     relative_pos = pos_j - pos_i
@@ -261,7 +270,7 @@ end
         unit_w = w / w_len
         dir = SVector(unit_w[2], -unit_w[1])
         u = (combined_radius / dt - w_len) * unit_w
-        return Line(vel_i + u * F(0.5), dir)
+        return Line(vel_i + u * resp_i, dir)  # §1.8: resp_i fraction
     end
     
     # No immediate collision. Compute VO truncated by time_horizon.
@@ -279,7 +288,7 @@ end
         unit_w = w / w_len
         dir = SVector(unit_w[2], -unit_w[1])
         u = (combined_radius / time_horizon - w_len) * unit_w
-        return Line(vel_i + u * F(0.5), dir)
+        return Line(vel_i + u * resp_i, dir)  # §1.8
     end
     
     # Project on legs of VO cone
@@ -292,7 +301,7 @@ end
     
     dot_w_dir = dot(relative_vel, dir)
     u = dot_w_dir * dir - relative_vel
-    return Line(vel_i + u * F(0.5), dir)
+    return Line(vel_i + u * resp_i, dir)  # §1.8
 end
 
 """

@@ -44,6 +44,7 @@ function update_orca_system_cpu!(world, dt::F) where {F<:AbstractFloat}
     neighbor_dists      = Vector{F}(undef, N)   # per-agent neighbor search radius (RVO2: 15m)
     goals               = Vector{SVector{2,F}}(undef, N)
     masses              = Vector{F}(undef, N)
+    responsibilities    = Vector{F}(undef, N)   # §1.8: ORCA velocity-change responsibility
     
     idx = 1
     for (entities, pos_col, vel_col, params_col, orca_col, goal_col) in Query(world, (Position{F}, Velocity{F}, AgentParams{F}, ORCAParams{F}, Goal{F}))
@@ -59,6 +60,7 @@ function update_orca_system_cpu!(world, dt::F) where {F<:AbstractFloat}
             neighbor_dists[idx]     = orca_col[i].neighbor_dist
             goals[idx]              = goal_col[i].g
             masses[idx]             = params_col[i].mass
+            responsibilities[idx]   = orca_col[i].responsibility  # §1.8: non-reciprocal weight
             idx += 1
         end
     end
@@ -97,6 +99,7 @@ function update_orca_system_cpu!(world, dt::F) where {F<:AbstractFloat}
         time_h_obst_i = time_horizon_obsts[i]  # §1.7: wall time horizon
         max_nb_i      = max_neighbors[i]        # per-agent neighbor cap (e.g. 10 for RVO2 benchmark)
         nb_dist_i     = neighbor_dists[i]       # per-agent search radius  (e.g. 15m for RVO2 benchmark)
+        resp_i        = responsibilities[i]     # §1.8: velocity-change fraction
         
         # Preferred velocity direction
         dir  = goal_i - pos_i
@@ -150,7 +153,7 @@ function update_orca_system_cpu!(world, dt::F) where {F<:AbstractFloat}
             vel_j = velocities[n_idx]
             r_j   = radii[n_idx]
             # BUG-ORCA-01 FIX: use per-agent time_horizon
-            push!(all_lines, compute_orca_line(pos_i, vel_i, r_i, pos_j, vel_j, r_j, time_h_i, dt))
+            push!(all_lines, compute_orca_line(pos_i, vel_i, r_i, pos_j, vel_j, r_j, time_h_i, dt, resp_i))
         end
         total_lines = length(all_lines)
         
