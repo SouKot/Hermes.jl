@@ -215,8 +215,6 @@ end
                       ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
 
         # Fully enclosed 6×6m room matching Helbing 2000. 1m door at x=6.
-        # Note: with sigma=0.1 (corrected Helbing 2000 noise), stochastic arch-breaking
-        # prevents corner deadlocks at the door-wall junction — no open-room workaround needed.
         new_entity!(world, (WallSegment(SVector(0f0, 0f0),     SVector(6f0, 0f0)),))   # bottom
         new_entity!(world, (WallSegment(SVector(0f0, 6f0),     SVector(6f0, 6f0)),))   # top
         new_entity!(world, (WallSegment(SVector(0f0, 0f0),     SVector(0f0, 6f0)),))   # left
@@ -230,8 +228,14 @@ end
             new_entity!(world, (
                 Position(pos),
                 Velocity(SVector(0f0, 0f0)),
-                from_agent_params(0.25f0, 80f0, 1.0f0, 0.5f0, 0.5f0)...,  # 5-arg: social force only
-                Goal(SVector(6f0, door_y)),                         # all aim at door center
+                # 7-arg: explicit cr=0.25m so body contact forces (k, κ) activate at d<0.5m.
+                # Sprint 8B: contact forces are REQUIRED for Weidmann-rate queuing.
+                # With 5-arg (cr=sr×2/3=0.167m), contact threshold is 0.333m — but social
+                # radius 0.25m keeps agents ~0.5m apart → contact NEVER activates → 0.17 ped/s trickle.
+                # With 7-arg (cr=0.25m), contact threshold = 0.5m → body contact queue forms.
+                # μ=0.5 Coulomb, σ=0.1 noise (Helbing 2000 exact).
+                from_agent_params(0.25f0, 0.25f0, 80f0, 1.0f0, 0.5f0, 0.5f0, 0.1f0)...,
+                Goal(SVector(6.5f0, door_y)),  # 0.5m past door wall (same fix as 3C Sprint 8A)
                 Force(SVector(0f0, 0f0))
             ))
         end
@@ -242,7 +246,7 @@ end
             c = 0
             for (_, pos_col) in Query(world, (Position{Float32},))
                 for i in eachindex(pos_col)
-                    pos_col[i].p[1] > 6.5f0 && (c += 1)
+                    pos_col[i].p[1] > 6.1f0 && (c += 1)  # 0.1m past wall = evacuated
                 end
             end
             return c
@@ -250,18 +254,24 @@ end
 
         t           = 0f0
         t_max       = 200f0
-        n_passed_10 = 0
-        t_10        = 0f0
-        t_last      = 0f0  # time when the last agent (of those that DO pass) passed
-        last_np     = 0    # last observed count of passed agents
+        n_passed_10 = 0; t_10 = 0f0
+        n_passed_50 = 0; t_50 = 0f0  # crowd-phase boundary: when 50% evacuate
+        t_last      = 0f0
+        last_np     = 0
+        # Diagnostic: sample evacuation count every 10s for time-series output
+        diag_times  = Float32[]
+        diag_counts = Int[]
+        next_diag_t = 10f0
 
         while count_passed_door(world) < N && t < t_max
             for (_, pos_col, vel_col, motion_col, goal_col, force_col) in
                     Query(world, (Position{Float32}, Velocity{Float32}, MotionParams{Float32}, Goal{Float32}, Force{Float32}))
                 for i in eachindex(pos_col)
                     px = pos_col[i].p[1]
+                    # Once past wall, aim far right to clear the door completely.
+                    # Pre-door goal is also 0.5m past wall face to avoid equilibrium trap.
                     goal_col[i] = px > 6.0f0 ? Goal(SVector(goal_x, door_y)) :
-                                               Goal(SVector(6f0, door_y))
+                                               Goal(SVector(6.5f0, door_y))
                     F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g,
                                                   motion_col[i].v_pref, motion_col[i].τ, motion_col[i].mass)
                     force_col[i] = Force(F_drive)
@@ -275,35 +285,66 @@ end
             if n_passed_10 == 0 && np >= round(Int, N * 0.1)
                 n_passed_10 = np; t_10 = t
             end
-            if np > last_np   # track when the last agent actually crosses
+            if n_passed_50 == 0 && np >= round(Int, N * 0.5)
+                n_passed_50 = np; t_50 = t
+            end
+            if np > last_np
                 t_last = t; last_np = np
+            end
+            # Sample count every 10s for time-series diagnostic
+            if t >= next_diag_t
+                push!(diag_times, t); push!(diag_counts, np)
+                next_diag_t += 10f0
             end
         end
 
         total_passed = count_passed_door(world)
-        # Active-period flow: agents that pass AFTER the first 10% (t_10) and BEFORE
-        # the last crossing (t_last). This excludes the initial acceleration transient
-        # and the long tail of agents stuck at door corners (social-force-only model).
-        # With 39/50 passing in a ~35s active window: avg_flow ≈ 34/35 ≈ 0.97/s (Weidmann).
-        avg_flow = (n_passed_10 > 0 && t_last > t_10 + 1f0) ?
-                    Float32(total_passed - n_passed_10) / (t_last - t_10) : 0f0
+        # Crowd-phase flow: agents exiting from t_10 (10% threshold) to t_50 (50% threshold).
+        # Weidmann (1993) measured bottleneck flow at SUSTAINED crowd density.
+        # With N=50, once ~25 agents exit the room density drops below the crowd regime
+        # and remaining agents trickle slowly without crowd pressure. This tail (t>t_50)
+        # is NOT comparable to Weidmann's measurement conditions.
+        # Crowd-phase expected: (25-5)/(65-18) ≈ 0.43 ped/s > 0.3 threshold.
+        crowd_flow = (n_passed_10 > 0 && t_50 > t_10 + 1f0) ?
+                      Float32(n_passed_50 - n_passed_10) / (t_50 - t_10) : 0f0
+        # Legacy full-period metric (for reference only — includes sparse tail)
+        avg_flow_full = (n_passed_10 > 0 && t_last > t_10 + 1f0) ?
+                         Float32(total_passed - n_passed_10) / (t_last - t_10) : 0f0
 
         @printf("3B SFM Bottleneck (N=50, 6×6m, 1m door, v₀=1.0):\n")
-        @printf("  passed=%d/%d, t_last=%.1f s, avg_flow=%.3f ped/s\n", total_passed, N, t_last, avg_flow)
-        @printf("  Weidmann: 1.44 ped/s (1m door); active-period flow should be ∈ [0.3, 3.0]\n")
-        @printf("  Note: corner-trapped agents (social-only model) excluded from flow calc\n")
+        @printf("  passed=%d/%d, t_last=%.1f s\n", total_passed, N, t_last)
+        @printf("  crowd_flow (t_10→t_50)=%.3f ped/s, full_flow=%.3f ped/s\n", crowd_flow, avg_flow_full)
+        @printf("  Weidmann: 1.44 ped/s (1m door); crowd-phase flow target ≥0.3 ped/s\n")
+        # Time-series diagnostic: evacuation count every 10s
+        @printf("  Evacuation time series (t → count/50):\n")
+        for k in eachindex(diag_times)
+            @printf("    t=%5.1f s → %d/50\n", diag_times[k], diag_counts[k])
+        end
+        # Stuck-agent position dump
+        stuck_3b = SVector{2,Float32}[]
+        for (_, pos_col) in Query(world, (Position{Float32},))
+            for p in pos_col
+                p.p[1] <= 6.1f0 && push!(stuck_3b, p.p)
+            end
+        end
+        if !isempty(stuck_3b)
+            @printf("  Stuck agents (%d): ", length(stuck_3b))
+            for pos in stuck_3b; @printf("(%.2f,%.2f) ", pos[1], pos[2]); end
+            @printf("\n")
+        end
 
-        # LIVENESS: At least 55% of agents evacuate through the door.
-        # Social-force-only (5-arg) in an enclosed room: some agents (10-20%) get stuck at
-        # door-wall corners via slow viscous-corner sliding. 55% is consistently achievable
-        # (observed minimum: 30/50 = 60%).
-        # NOTE: The active-period flow rate (avg_flow ≈ 0.17 ped/s, 1/8 of Weidmann 1.44/s)
-        # is NOT tested here. Social-force-only agents navigate corners at ~1 agent per 6s
-        # rather than per 0.7s (Weidmann), because there are no hard contact forces to create
-        # orderly queue spacing. Body contact forces (6-arg AgentParams, as used in 3C) are
-        # required for proper Weidmann-rate queuing. This is a physics model limitation, not a bug.
-        @test total_passed >= round(Int, 0.55 * N)
+        # LIVENESS: ≥70% must evacuate.
+        # Sprint 8B: raised from 55% because body contact forces (cr=0.25m) reduce corner-trapping.
+        @test total_passed >= round(Int, 0.70 * N)    # ≥35/50 evacuate
+
+        # FLOW RATE: crowd-phase flow (t_10→t_50) must be ≥0.3 ped/s.
+        # Weidmann (1993): 1.44 ped/s for 1m door at sustained crowd density.
+        # We measure only the crowd-density phase (50%+ agents still in room) to
+        # match Weidmann's conditions. N=50 variance is large; 0.3 is the lower bound
+        # of the [0.3, 3.0] range expected from any realistic SFM crowd simulation.
+        @test crowd_flow >= 0.3f0
     end
+
 
      # ─────────────────────────────────────────────────────────────────────────
     # TEST 3C: SFM Arch Formation + Faster-is-Slower (FiS) context, N=50
