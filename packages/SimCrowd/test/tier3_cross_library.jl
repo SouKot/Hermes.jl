@@ -10,6 +10,8 @@ using Random
 using Test
 using Printf
 
+include("crowd_test_helpers.jl")  # ReservoirConfig, run_reservoir_bottleneck!, print_reservoir_result
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -343,6 +345,131 @@ end
         # match Weidmann's conditions. N=50 variance is large; 0.3 is the lower bound
         # of the [0.3, 3.0] range expected from any realistic SFM crowd simulation.
         @test crowd_flow >= 0.3f0
+    end
+
+     # ─────────────────────────────────────────────────────────────────────────
+    # TEST 3B-res: SFM Bottleneck — Reservoir Setup (Weidmann-comparable)
+    # Source: Weidmann (1993) "Transporttechnik der Fussgänger", ETH Zürich
+    #
+    # WHAT THIS TEST VALIDATES:
+    #   - Steady-state bottleneck flow rate under sustained crowd pressure
+    #   - Weidmann's 1.44 ped/s benchmark requires continuous replenishment
+    #     from a large queue — not a finite depletion scenario (3B above).
+    #
+    # WHY RESERVOIR IS REQUIRED:
+    #   The standard 3B (N=50, closed room) is a DEPLETION scenario.
+    #   After ~25 agents exit (~65s), crowd pressure drops and the remaining
+    #   agents trickle slowly. Weidmann measured at SUSTAINED crowd density.
+    #   The reservoir re-injects each exiting agent at the upstream end,
+    #   maintaining constant density throughout the measurement window.
+    #
+    # DESIGN (modularity, flexibility, maintainability):
+    #   - ReservoirConfig{F} holds all tuning parameters explicitly.
+    #   - run_reservoir_bottleneck! is a reusable function (crowd_test_helpers.jl).
+    #   - Test body only sets up geometry + config, then calls the helper.
+    #
+    # SETUP:
+    #   Corridor: 10×4m, door at x=10m, width=1m (y ∈ [1.5, 2.5])
+    #   N=80 agents at ρ≈2.0 ped/m², 7-arg from_agent_params (cr=0.25m)
+    #   Warmup: 20s (flow establishes). Measurement: 60s.
+    #   Expected flow at ρ=2.0: ~0.5–1.0 ped/s (SFM ~35–70% of Weidmann)
+    @testset "3B-res: SFM Bottleneck — Reservoir, N=80 (Weidmann-comparable)" begin
+        N          = 80
+        dt         = 0.001f0
+        door_width = 1.0f0
+        corridor_l = 10.0f0
+        corridor_w = 4.0f0
+        door_y     = corridor_w / 2f0          # 2.0 (center of corridor)
+        door_lo    = door_y - door_width/2f0   # 1.5
+        door_hi    = door_y + door_width/2f0   # 2.5
+        wall_margin = 0.3f0                    # minimum agent-to-wall clearance
+
+        world = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32},
+                      MotionParams{Float32}, SFMParams{Float32},
+                      ORCAParams{Float32}, Goal{Float32}, Force{Float32}, WallSegment{Float32})
+
+        # ── Walls: corridor with door on right wall ──────────────────────────
+        # All four walls: bottom, top, left, right-below-door, right-above-door.
+        # No door on the left wall — agents re-injected there by the reservoir.
+        new_entity!(world, (WallSegment(SVector(0f0, 0f0),        SVector(corridor_l, 0f0)),))   # bottom
+        new_entity!(world, (WallSegment(SVector(0f0, corridor_w), SVector(corridor_l, corridor_w)),)) # top
+        new_entity!(world, (WallSegment(SVector(0f0, 0f0),        SVector(0f0, corridor_w)),))   # left
+        new_entity!(world, (WallSegment(SVector(corridor_l, 0f0),      SVector(corridor_l, door_lo)),)) # right below door
+        new_entity!(world, (WallSegment(SVector(corridor_l, door_hi),  SVector(corridor_l, corridor_w)),)) # right above door
+
+        # ── Agents: grid-placed at ρ≈2.0 ped/m² (N=80 in 10×4m = 80/40) ───
+        # Grid placement avoids rejection-sampling jamming at high density.
+        rng     = MersenneTwister(42)
+        pos_3br = place_on_grid(rng, N, 0.5f0, corridor_l - 0.5f0, wall_margin, corridor_w - wall_margin)
+        for i in 1:N
+            new_entity!(world, (
+                Position(pos_3br[i]),
+                Velocity(SVector(0f0, 0f0)),
+                # 7-arg: cr=sr=0.25m so body contact forces activate at d<0.5m.
+                # Matches 3B (Sprint 8B) and 3C parameters for consistency.
+                from_agent_params(0.25f0, 0.25f0, 80f0, 1.0f0, 0.5f0, 0.5f0, 0.1f0)...,
+                Goal(SVector(corridor_l + 0.5f0, door_y)),   # 0.5m past door
+                Force(SVector(0f0, 0f0))
+            ))
+        end
+
+        sh = CPUNeighborSearch(N,
+                               SVector(-1f0, -1f0),
+                               SVector(corridor_l + 2f0, corridor_w + 1f0),
+                               3f0)
+
+        # ── Reservoir config ─────────────────────────────────────────────────
+        cfg = ReservoirConfig{Float32}(
+            dt            = dt,
+            t_warmup      = 20f0,        # 20s: flow establishes in 10m corridor (v≈0.5→L/v=20s)
+            t_measure     = 60f0,        # 60s: ≥18 crossings at 0.3 ped/s — statistically meaningful
+            door_x        = corridor_l,
+            door_lo       = door_lo,
+            door_hi       = door_hi,
+            exit_thresh   = corridor_l + 0.1f0,  # 0.1m past wall = confirmed crossing
+            inject_x_lo   = 0.3f0,       # re-inject in leftmost 2m of corridor (low local density)
+            inject_x_hi   = 2.0f0,
+            corridor_y_lo = wall_margin,
+            corridor_y_hi = corridor_w - wall_margin,
+            goal          = SVector(corridor_l + 0.5f0, door_y),
+            diag_interval = 10f0         # snapshot every 10s for rate stability check
+        )
+
+        # ── Run simulation ───────────────────────────────────────────────────
+        result = run_reservoir_bottleneck!(world, sh, cfg, rng)
+
+        # ── Report ───────────────────────────────────────────────────────────
+        @printf("\n3B-res SFM Reservoir Bottleneck (N=80, 10×4m, 1m door, v₀=1.0):\n")
+        print_reservoir_result(result, cfg;
+                               label   = "3B-res",
+                               weidmann_ref = 1.44f0)
+
+        # ── Assertions ───────────────────────────────────────────────────────
+        # FLOW RATE: ≥0.3 ped/s lower bound.
+        # SFM produces ~35–70% of Weidmann in the literature (Chraibi 2010 survey).
+        # At ρ=2.0 ped/m², Weidmann fundamental diagram gives v≈0.55 m/s →
+        # approach flow = 2.0 × 0.55 × 1.0m door ≈ 1.1 ped/s.
+        # SFM conservative factor 0.3–0.7 → expected 0.33–0.77 ped/s.
+        # Lower bound 0.3 is consistent with the most conservative SFM estimates.
+        @test result.flow_rate >= 0.3f0
+
+        # PHYSICAL UPPER BOUND: no mechanism can exceed doorway physical capacity.
+        # At 1m door with agent radius 0.25m: max 1/0.5m × v_max = 2/s × 1.2m/s ≈ 2.4 ped/s.
+        @test result.flow_rate <= 3.0f0
+
+        # NOTE: mean_speed is NOT asserted.
+        # In a reservoir/queuing setup, mean_speed across ALL agents at ALL timesteps
+        # is dominated by agents waiting in queue (near-zero speed by SFM design) and
+        # re-injected agents starting from rest. Measured 0.054 m/s is physically
+        # correct — NOT a deadlock signal. Deadlock is excluded by:
+        #   (a) flow_rate >= 0.3 — agents ARE crossing the door
+        #   (b) crossings >= 18 — statistically significant count
+        # A meaningful speed metric would measure only agents in the free-flow zone;
+        # requires per-agent zone tracking. Deferred to future improvement.
+
+        # MINIMUM CROSSINGS: at least 18 crossings = 0.3 ped/s × 60s.
+        # Guards against the case where flow_rate passes but crossings is suspiciously low.
+        @test result.crossings >= 18
     end
 
 
