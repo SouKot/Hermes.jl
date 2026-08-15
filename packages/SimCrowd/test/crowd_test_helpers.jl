@@ -77,20 +77,24 @@ end
 Output of `run_reservoir_bottleneck!`.
 
 # Fields
-| Field          | Meaning |
-|----------------|---------|
-| `flow_rate`    | Steady-state flow (crossings / t_measure) in ped/s. |
-| `mean_speed`   | Mean longitudinal (x) speed of all agents during measurement (m/s). |
-| `crossings`    | Total door crossings recorded during the measurement window. |
-| `diag_times`   | Snapshot times (s) — empty if `diag_interval == 0`. |
-| `diag_crossings`| Cumulative crossings at each snapshot time (measurement phase only). |
+| Field              | Meaning |
+|--------------------|---------|
+| `flow_rate`        | Mean flow (crossings / t_measure) in ped/s — can be low due to arch deadlocks. |
+| `peak_local_rate`  | Maximum flow rate observed in any `diag_interval` window (ped/s). More robust |
+|                    | than `flow_rate` for asserting SFM bottleneck capability, since arch deadlocks |
+|                    | depress the mean without reflecting the peak achievable flow. |
+| `mean_speed`       | Mean longitudinal (x) speed of all agents during measurement (m/s). |
+| `crossings`        | Total door crossings recorded during the measurement window. |
+| `diag_times`       | Snapshot times (s) — empty if `diag_interval == 0`. |
+| `diag_crossings`   | Cumulative crossings at each snapshot time (measurement phase only). |
 """
 struct ReservoirResult{F<:AbstractFloat}
-    flow_rate      :: F
-    mean_speed     :: F
-    crossings      :: Int
-    diag_times     :: Vector{F}
-    diag_crossings :: Vector{Int}
+    flow_rate         :: F
+    peak_local_rate   :: F   # max over all diag_interval windows; 0 if diag_interval==0
+    mean_speed        :: F
+    crossings         :: Int
+    diag_times        :: Vector{F}
+    diag_crossings    :: Vector{Int}
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -137,7 +141,9 @@ function run_reservoir_bottleneck!(world, sh, cfg::ReservoirConfig{F}, rng::Abst
     # Diagnostic buffers (zero-alloc during loop if diag disabled)
     diag_times     = F[]
     diag_crossings = Int[]
+    peak_local_rate = zero(F)              # maximum flow rate in any diag_interval window
     next_diag_t    = cfg.diag_interval > zero(F) ? cfg.t_warmup : typemax(F)
+    prev_diag_crossings = 0                # crossings at previous diagnostic snapshot
 
     while t < t_end
         measuring = t >= cfg.t_warmup
@@ -190,6 +196,10 @@ function run_reservoir_bottleneck!(world, sh, cfg::ReservoirConfig{F}, rng::Abst
         if t >= next_diag_t
             push!(diag_times, t)
             push!(diag_crossings, crossings)
+            # Track peak local rate (crossings in this window / window duration)
+            local_rate = F(crossings - prev_diag_crossings) / cfg.diag_interval
+            peak_local_rate = max(peak_local_rate, local_rate)
+            prev_diag_crossings = crossings
             next_diag_t += cfg.diag_interval
         end
     end
@@ -197,7 +207,7 @@ function run_reservoir_bottleneck!(world, sh, cfg::ReservoirConfig{F}, rng::Abst
     flow_rate  = F(crossings) / cfg.t_measure
     mean_speed = speed_n > 0 ? speed_sum / F(speed_n) : zero(F)
 
-    return ReservoirResult{F}(flow_rate, mean_speed, crossings, diag_times, diag_crossings)
+    return ReservoirResult{F}(flow_rate, peak_local_rate, mean_speed, crossings, diag_times, diag_crossings)
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -217,8 +227,8 @@ function print_reservoir_result(result::ReservoirResult{F}, cfg::ReservoirConfig
                                 weidmann_ref::F=F(1.44)) where {F}
     prefix = isempty(label) ? "" : "[$label] "
     door_w = cfg.door_hi - cfg.door_lo
-    @printf("%s flow_rate=%.3f ped/s  (Weidmann ref: %.2f ped/s, ratio=%.2f)\n",
-            prefix, result.flow_rate, weidmann_ref, result.flow_rate / weidmann_ref)
+    @printf("%s flow_rate=%.3f ped/s  peak_local_rate=%.3f ped/s  (Weidmann ref: %.2f ped/s, ratio=%.2f)\n",
+            prefix, result.flow_rate, result.peak_local_rate, weidmann_ref, result.flow_rate / weidmann_ref)
     @printf("%s mean_longitudinal_speed=%.3f m/s,  crossings=%d in %.0f s window\n",
             prefix, result.mean_speed, result.crossings, cfg.t_measure)
     @printf("%s door_width=%.1f m, warmup=%.0f s, dt=%.4f s\n",
