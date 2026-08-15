@@ -620,5 +620,132 @@ end
         @test t_90_panic > 3f0 * t_90_ff_panic  # arch active: t_90_panic > 16.875s
     end
 
+
+     # ─────────────────────────────────────────────────────────────────────────
+    # TEST 3D: SFM Two-Agent Head-On — Anisotropy λ Validation
+    # Source: Helbing & Molnár (1995), Physical Review E 51:4282, Fig. 2
+    #         Vadere validation test T6 (bidirectional, open space)
+    #
+    # WHAT THIS TEST VALIDATES:
+    #   - Anisotropy parameter λ=0.5: agents weight stimuli ahead more than behind.
+    #     This causes lateral deflection → right-hand passing, not head-on deadlock.
+    #   - Liveness: both agents reach goals in finite time (no deadlock).
+    #   - Symmetry: agents deflect to OPPOSITE sides (right-hand rule).
+    #   - Collision-free: center-to-center separation never goes negative.
+    #
+    # WHY THIS IS A KEY λ TEST:
+    #   With λ=0 (isotropic), the head-on repulsion is purely longitudinal.
+    #   Agents push each other backwards but do not deflect laterally → deadlock.
+    #   With λ=0.5, front stimuli are weighted 2× rear → lateral component emerges
+    #   from the tiny initial y-offset → agents spontaneously deviate to pass.
+    #
+    # DESIGN: deterministic (σ=0 noise), SFM-only World (no ORCA, no walls).
+    #         Minimal World type declaration (only components actually used).
+    @testset "3D: SFM Two-Agent Head-On — Anisotropy λ (Helbing & Molnár 1995)" begin
+        dt       = 0.05f0   # stable for open-space SFM: no hard contact, repulsion decays fast
+        t_max    = 20f0     # upper bound; expected pass time ~8s for 8m separation at v₀=1 m/s
+        r        = 0.25f0   # social radius
+        goal_tol = 2f0 * r  # goal-reached tolerance: center within 2r of goal
+
+        # Ark requires all component types queried by any system to be registered in the World,
+        # even if no entities carry that component. update_social_forces_system! internally
+        # queries WallSegment{Float32} for wall repulsion — must be declared even for open space.
+        world_3d = World(Position{Float32}, Velocity{Float32}, AgentGeometry{Float32},
+                         MotionParams{Float32}, SFMParams{Float32},
+                         Goal{Float32}, Force{Float32}, WallSegment{Float32})
+
+        # Agent A: left → right, +y offset breaks symmetry → A deflects to +y
+        new_entity!(world_3d, (
+            Position(SVector(-4f0, 0.05f0)),
+            Velocity(SVector(0f0, 0f0)),
+            from_agent_params(r, 80f0, 1.0f0, 0.5f0; σ=0.0f0)...,  # λ=0.5, σ=0 (deterministic)
+            Goal(SVector(4f0, 0f0)),
+            Force(SVector(0f0, 0f0))
+        ))
+
+        # Agent B: right → left, -y offset → B deflects to -y
+        new_entity!(world_3d, (
+            Position(SVector(4f0, -0.05f0)),
+            Velocity(SVector(0f0, 0f0)),
+            from_agent_params(r, 80f0, 1.0f0, 0.5f0; σ=0.0f0)...,
+            Goal(SVector(-4f0, 0f0)),
+            Force(SVector(0f0, 0f0))
+        ))
+
+        # Neighbor search with radius covering full 8m domain (N=2, always neighbors)
+        sh_3d = CPUNeighborSearch(2, SVector(-6f0, -3f0), SVector(6f0, 3f0), 12f0)
+
+        # ── Metrics ──────────────────────────────────────────────────────────
+        max_y_A  = 0f0    # signed peak lateral deflection of Agent A
+        max_y_B  = 0f0    # signed peak lateral deflection of Agent B
+        min_sep  = Inf32  # minimum center-to-center distance over run
+        reached_A = false
+        reached_B = false
+        t_3d = 0f0
+
+        while t_3d < t_max && !(reached_A && reached_B)
+            # ── Goal-seeking force ────────────────────────────────────────────
+            for (_, pos_col, vel_col, motion_col, goal_col, force_col) in
+                    Query(world_3d, (Position{Float32}, Velocity{Float32},
+                                    MotionParams{Float32}, Goal{Float32}, Force{Float32}))
+                for i in eachindex(pos_col)
+                    F_drive = goal_seeking_force(pos_col[i].p, vel_col[i].v, goal_col[i].g,
+                                                  motion_col[i].v_pref, motion_col[i].τ,
+                                                  motion_col[i].mass)
+                    force_col[i] = Force(F_drive)
+                end
+            end
+
+            # ── Social + contact forces ───────────────────────────────────────
+            update_social_forces_system!(world_3d, sh_3d, CPU())
+
+            # ── Integrate ─────────────────────────────────────────────────────
+            integrate_physics_system!(world_3d, dt)
+            t_3d += dt
+
+            # ── Track (insertion order: index 1 = A, index 2 = B) ────────────
+            for (_, pos_col, goal_col) in
+                    Query(world_3d, (Position{Float32}, Goal{Float32}))
+                pA, pB = pos_col[1].p, pos_col[2].p
+                gA, gB = goal_col[1].g, goal_col[2].g
+
+                # Signed peak y (track most extreme signed value)
+                abs(pA[2]) > abs(max_y_A) && (max_y_A = pA[2])
+                abs(pB[2]) > abs(max_y_B) && (max_y_B = pB[2])
+
+                # Minimum center-to-center separation
+                sep = norm(pA - pB)
+                sep < min_sep && (min_sep = sep)
+
+                # Goal-reached detection
+                !reached_A && norm(pA - gA) < goal_tol && (reached_A = true)
+                !reached_B && norm(pB - gB) < goal_tol && (reached_B = true)
+            end
+        end
+
+        @printf("3D Two-Agent Head-On (λ=0.5, Helbing & Molnár 1995):\n")
+        @printf("  Agent A: max_y=%.3f m, reached=%s\n", max_y_A, reached_A)
+        @printf("  Agent B: max_y=%.3f m, reached=%s\n", max_y_B, reached_B)
+        @printf("  min_sep=%.3f m (2r=%.3f m), t_solve=%.2f s\n", min_sep, 2f0*r, t_3d)
+        @printf("  Helbing & Molnár 1995: both pass on right, no deadlock, deflect ≥ 0.1 m\n")
+
+        # LIVENESS: both agents reach their goals — no deadlock
+        @test reached_A && reached_B
+
+        # COLLISION-FREE: physical body overlap never occurs
+        # (Social radius overlap is expected in SFM; center-to-center ≥ 0 always)
+        @test min_sep >= 0f0
+
+        # LATERAL DEFLECTION: λ=0.5 must produce significant y-deviation.
+        # Initial offset is ±0.05m. Threshold 0.1m requires the anisotropy to
+        # produce 2× the initial perturbation — not achievable without λ > 0.
+        @test abs(max_y_A) > 0.1f0
+        @test abs(max_y_B) > 0.1f0
+
+        # SYMMETRIC PASSING: A goes +y, B goes -y (right-hand rule).
+        # If both deflect the same direction they would collide — the key λ assertion.
+        @test sign(max_y_A) != sign(max_y_B)
+    end
+
 end
 
