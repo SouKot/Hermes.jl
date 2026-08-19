@@ -660,6 +660,90 @@ julia --startup-file=no --project=. -t auto test/tier3_cross_library.jl
 
 ---
 
+### Planned Phase 3 Sprints — RiMEA Compliance Roadmap
+
+> These sprints are **planned but not yet started**. Detailed `implementation_plan.md` artifacts are written at the start of each sprint for review. Once complete, each sprint gets a full section here (matching the Sprint 3E pattern).  
+> **Source**: "Path to RiMEA" section in [implementation_plan.md](file:///home/sourabh/.gemini/antigravity-ide/brain/78616c9e-3fd6-407c-bebd-abc1d7c4255f/implementation_plan.md) · [Validation Caveats §7](./2026-08-19_validation_caveats.md)
+
+---
+
+#### Sprint 3F — CRW-M-01 Lane Formation from Disorder `[ ]` NOT STARTED
+
+**Goal**: Validate that bidirectional counter-flow agents spontaneously form lanes from a *disordered* initial placement (not pre-separated as in Sprint 3E). This is the harder RiMEA T14 test.
+
+**Why now**: Sprint 3E's periodic BC (`unitcell` in `CPUNeighborSearch`) is the prerequisite — lane formation needs a periodic corridor to reach steady state.
+
+**Acceptance criteria**:
+- Start: N=160 (80 east + 80 west) placed randomly in 20×4m corridor
+- After t=60s: `lane_score ≥ 0.65` (less strict than maintenance — formation from disorder is harder)
+- Monotonic score increase: score at t=60s > score at t=10s (formation happening)
+
+**Key difficulty**: Lane formation is slower and more parameter-sensitive than lane maintenance. May require longer warmup or slightly different λ than maintenance test.
+
+---
+
+#### Sprint 3G — RiMEA T2 Calibration: Tighten Fundamental Diagram Tolerance `[ ]` NOT STARTED
+
+**Goal**: Reduce Weidmann deviation at ρ=1.0 (currently +24.7%) and eliminate ρ=3.0 artifact (currently ratio=2.18). Target: all asserted densities within ±20%, then ±15% (RiMEA T2 pass threshold).
+
+**Two-stage approach**:
+1. **Calibration**: Tune SFM parameters (A, B, τ) for better Weidmann match at ρ=1.0
+2. **GCF fallback** (if SFM calibration insufficient): Enable η≠0 in `AgentParams` — GCF adds a speed-adaptation term that prevents the ρ=3.0 forward-repulsion artifact. η parameter already exists in `CPUNeighborSearch` and all force kernels.
+
+**Acceptance criteria**:
+- All 4 density points (ρ ∈ {0.5, 1.0, 2.0, 3.0}) within ±20% of Weidmann
+- Monotonic v(ρ) at all 4 points (including ρ=3.0)
+- Stretch: achieve RiMEA ±15% at all 4 points
+
+**Why GCF matters**: JuPedSim uses GCF (Chraibi 2010) specifically because SFM fails at high density. η parameter is already implemented — enabling it is a one-line change per test. See [Validation Caveats §2](./2026-08-19_validation_caveats.md) for measured gaps.
+
+---
+
+#### Sprint 3H — RiMEA T4: Speed Distribution (σ=0.26 m/s population) `[ ]` NOT STARTED
+
+**Goal**: Validate that agent speed variability matches the empirical Normal distribution from Weidmann (μ=1.34 m/s, σ=0.26 m/s). Currently all tests use σ=0 (deterministic) or a fixed σ per agent.
+
+**What needs to change**: `AgentParams` already has `v_pref` per agent. Need to add per-agent speed sampling from `Normal(1.34, 0.26)` at world creation time.
+
+**Acceptance criteria**:
+- In a free-flow corridor (ρ=0.1 ped/m²), measured speed distribution satisfies KS-test vs Normal(1.34, 0.26) at p > 0.05
+- Or: mean speed ≈ 1.34±0.05 m/s, std ≈ 0.26±0.05 m/s over N≥100 agents
+
+---
+
+#### Sprint 3I — RiMEA T7: Bottleneck Flow ±15% of Weidmann `[ ]` NOT STARTED
+
+**Goal**: Close the factor-of-5 gap in `3B-res` (current `peak_local_rate = 0.9 ped/s` vs Weidmann 1.44 ped/s). Tighten reservoir bottleneck assertion to within ±15%.
+
+**Root cause of gap**: `3B-res` uses a 10×4m corridor and 80 agents; arch deadlocks mean peak flow of 0.9 ped/s only occurs in a 10s burst. The mean over 60s is 0.23 ped/s.
+
+**Approach options**:
+1. Stochastic noise (σ > 0) to break arch deadlocks more frequently
+2. Smaller dt for better arch dynamics
+3. GCF (from Sprint 3G) reduces arch persistence
+
+**Acceptance criteria**: Mean flow rate ≥ 1.22 ped/s (≥85% of Weidmann 1.44 ped/s) over 60s measurement window.
+
+---
+
+#### Sprint 3J — RiMEA T15: Staircase Speed Reduction `[ ]` NOT STARTED
+
+**Goal**: Validate that agents on a staircase move at ≈60% of flat-floor speed (Weidmann 1993: staircase factor 0.6×).
+
+**What needs to change**: Requires navigation potential field on gradient terrain — currently not implemented. Significant new infrastructure.
+
+**Acceptance criteria**: Mean speed on staircase section ≤ 0.60 × mean speed on flat floor, same agent population.
+
+**Note**: This is the most infrastructure-heavy of the planned sprints. Likely Sprint 3J is the last Phase 3 sprint before Phase 4 (SimViz).
+
+---
+
+#### RiMEA Compliance Checkpoint (after Sprint 3J)
+
+After Sprint 3J, run a full RiMEA T1–T15 compliance audit against [validation_test_cases.md](./2026-08-07_validation_test_cases.md). Target: pass T1, T2, T4, T7, T12, T14 (minimum viable certification for airport/stadium evacuation use cases).
+
+---
+
 ## Phase 4 — SimViz: GLMakie Desktop Prototype
 
 > **Goal**: Real-time visualization of simulation state. Phase 1 desktop = no editor, hardcoded layout.  
