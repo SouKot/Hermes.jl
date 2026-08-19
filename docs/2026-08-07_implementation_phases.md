@@ -630,37 +630,6 @@ julia --startup-file=no --project=. -t auto test/tier3_cross_library.jl
 
 ---
 
-### Sprint 3F — CRW-M-01 Lane Formation from Disorder (Periodic BC) `[x]` COMPLETE
-
-> **Status**: All tier-3 tests passing · commit `14978e4` · 2026-08-19  
-> **Testset**: `3G` in code (3F already taken by FD testset from Sprint 3E)  
-> **Caveats**: Score plateaus at ~0.585; full segregation requires GCF (Sprint 3G)  
-> **RiMEA path**: T14 partially validated; ±50% above random demonstrated
-
-**Key results** (N=100+100=200, 20×5m, ρ=2.0 ped/m², periodic x-BC, seed=42):
-
-| t (s) | lane_score | Δ from random |
-|-------|------------|---------------|
-| 0 | 0.515 | +3% (grid artifact) |
-| 30 | 0.575 | +15% |
-| 60 | 0.590 | +18% |
-| 90 | 0.585 | +17% |
-| 120 | **0.585** | **+17%** ← plateau |
-
-> **Plateau at 0.585**: SFM with λ=0.5 reaches a quasi-stable mixed state rather than full segregation. Agents accumulate in partial lanes (score ≈ 0.58) but the isotropic contact repulsion prevents complete y-segregation. Compare: 3E maintenance (pre-separated) holds 0.913. Gap to RiMEA T14 threshold (full visual lane separation) requires Sprint 3G (GCF η≠0) or stochastic noise.
-
-**Assertions passed**:
-- `final_score (0.585) > initial_score (0.515)` — lanes actively forming ✅
-- `final_score (0.585) ≥ 0.58` — meaningful departure from random ✅
-- `final_score ≥ score_at_30s (0.575)` — net upward trend ✅
-
-**Run**:
-```bash
-julia --startup-file=no --project=. -t auto test/tier3_cross_library.jl
-```
-
----
-
 ### Sprint 3E — CRW-M-02 Fundamental Diagram (Periodic BCs + Weidmann) `[x]` COMPLETE
 
 > **Status**: All tier-3 tests passing · commit `14519cd` · 2026-08-19  
@@ -684,6 +653,37 @@ julia --startup-file=no --project=. -t auto test/tier3_cross_library.jl
 | 3.0 | 240 | 0.721 | 0.331 | 2.180 | ⚠️ diagnostic only — SFM artifact |
 
 > **ρ=3.0 note**: At extreme density, SFM back-neighbor repulsion pushes agents forward in the periodic corridor, artificially raising speed above ρ=2.0. This is non-monotonic and non-physical. Root cause: SFM has no compression limit at contact. Fix: enable GCF (η≠0, already in `AgentParams`) in Sprint 3G.
+
+**Run**:
+```bash
+julia --startup-file=no --project=. -t auto test/tier3_cross_library.jl
+```
+
+---
+
+### Sprint 3F — CRW-M-01 Lane Formation from Disorder (Periodic BC) `[x]` COMPLETE
+
+> **Status**: All tier-3 tests passing · commit `14978e4` · 2026-08-19  
+> **Testset**: `3G` in code (3F already taken by FD testset from Sprint 3E)  
+> **Caveats**: Score plateaus at ~0.585; full segregation requires GCF (Sprint 3G)  
+> **RiMEA path**: T14 partially validated; ±50% above random demonstrated
+
+**Key results** (N=100+100=200, 20×5m, ρ=2.0 ped/m², periodic x-BC, seed=42):
+
+| t (s) | lane_score | Δ from random |
+|-------|------------|---------------|
+| 0 | 0.515 | +3% (grid artifact) |
+| 30 | 0.575 | +15% |
+| 60 | 0.590 | +18% |
+| 90 | 0.585 | +17% |
+| 120 | **0.585** | **+17%** ← plateau |
+
+> **Plateau at 0.585**: SFM with λ=0.5 reaches a quasi-stable mixed state rather than full segregation. Agents accumulate in partial lanes (score ≈ 0.58) but the isotropic contact repulsion prevents complete y-segregation. Compare: 3E maintenance (pre-separated) holds 0.913. Gap to RiMEA T14 threshold (full visual lane separation) requires Sprint 3G (GCF η≠0) or stochastic noise.
+
+**Assertions passed**:
+- `final_score (0.585) > initial_score (0.515)` — lanes actively forming ✅
+- `final_score (0.585) ≥ 0.58` — meaningful departure from random ✅
+- `final_score ≥ score_at_30s (0.575)` — net upward trend ✅
 
 **Run**:
 ```bash
