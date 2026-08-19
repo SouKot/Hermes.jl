@@ -699,21 +699,6 @@ julia --startup-file=no --project=. -t auto test/tier3_cross_library.jl
 
 ---
 
-#### Sprint 3F — CRW-M-01 Lane Formation from Disorder `[x]` COMPLETE — see section above
-
-**Goal**: Validate that bidirectional counter-flow agents spontaneously form lanes from a *disordered* initial placement (not pre-separated as in Sprint 3E). This is the harder RiMEA T14 test.
-
-**Why now**: Sprint 3E's periodic BC (`unitcell` in `CPUNeighborSearch`) is the prerequisite — lane formation needs a periodic corridor to reach steady state.
-
-**Acceptance criteria**:
-- Start: N=160 (80 east + 80 west) placed randomly in 20×4m corridor
-- After t=60s: `lane_score ≥ 0.65` (less strict than maintenance — formation from disorder is harder)
-- Monotonic score increase: score at t=60s > score at t=10s (formation happening)
-
-**Key difficulty**: Lane formation is slower and more parameter-sensitive than lane maintenance. May require longer warmup or slightly different λ than maintenance test.
-
----
-
 #### Sprint 3G — RiMEA T2 Calibration: Tighten Fundamental Diagram Tolerance `[ ]` NOT STARTED
 
 **Goal**: Reduce Weidmann deviation at ρ=1.0 (currently +24.7%) and eliminate ρ=3.0 artifact (currently ratio=2.18). Target: all asserted densities within ±20%, then ±15% (RiMEA T2 pass threshold).
