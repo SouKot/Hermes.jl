@@ -250,6 +250,7 @@ mutable struct CPUNeighborSearch{F<:AbstractFloat, Sys} <: AbstractNeighborSearc
     cell_size::F
     grid_min::SVector{2, F}
     grid_max::SVector{2, F}
+    unitcell::Union{Nothing, SVector{2, F}}  # nothing = non-periodic (default); SVector = periodic box
     system::Sys          # CellListMap ParticleSystem for contact forces (symmetric)
     psych_system::Sys    # CellListMap ParticleSystem for psych forces (asymmetric, O(N×k))
     # Pre-allocated per-agent parameter buffers — staged from ECS once per step.
@@ -261,23 +262,43 @@ mutable struct CPUNeighborSearch{F<:AbstractFloat, Sys} <: AbstractNeighborSearc
     cpu_ηs::Vector{F}    # §1.4 GCF speed-adaptation factor η (0 = Helbing)
 end
 
-function CPUNeighborSearch(N::Int, grid_min::SVector{2,F}, grid_max::SVector{2,F}, cell_size::F) where {F<:AbstractFloat}
+function CPUNeighborSearch(N::Int, grid_min::SVector{2,F}, grid_max::SVector{2,F}, cell_size::F;
+                            unitcell::Union{Nothing, SVector{2,F}} = nothing) where {F<:AbstractFloat}
     sides = grid_max - grid_min
 
     # Initialize CellListMap ParticleSystem with dummy positions
     dummy_positions = [grid_min + SVector{2,F}(rand()*sides[1], rand()*sides[2]) for _ in 1:N]
-    sys = CellListMap.ParticleSystem(
-        positions = dummy_positions,
-        cutoff    = cell_size,
-        output    = zeros(SVector{2,F}, N)
-    )
-    # Dedicated system for asymmetric psych forces — same cutoff, separate output buffer.
-    # Both systems share positions and cutoff; cell lists are independent but equivalent.
-    psych_sys = CellListMap.ParticleSystem(
-        positions = copy(dummy_positions),
-        cutoff    = cell_size,
-        output    = zeros(SVector{2,F}, N)
-    )
+
+    # Conditionally enable periodic boundary conditions.
+    # Non-periodic (unitcell=nothing): CellListMap uses NonPeriodicCellList — identical to previous behaviour.
+    # Periodic (unitcell provided): CellListMap uses PeriodicCellList; positions must be in [0, Lx]×[0, Ly].
+    # Both ParticleSystems must use the same boundary type so that `Sys` is a concrete type.
+    if isnothing(unitcell)
+        sys = CellListMap.ParticleSystem(
+            positions = dummy_positions,
+            cutoff    = cell_size,
+            output    = zeros(SVector{2,F}, N)
+        )
+        psych_sys = CellListMap.ParticleSystem(
+            positions = copy(dummy_positions),
+            cutoff    = cell_size,
+            output    = zeros(SVector{2,F}, N)
+        )
+    else
+        uc = collect(unitcell)  # CellListMap expects AbstractVector, not SVector
+        sys = CellListMap.ParticleSystem(
+            positions = dummy_positions,
+            unitcell  = uc,
+            cutoff    = cell_size,
+            output    = zeros(SVector{2,F}, N)
+        )
+        psych_sys = CellListMap.ParticleSystem(
+            positions = copy(dummy_positions),
+            unitcell  = uc,
+            cutoff    = cell_size,
+            output    = zeros(SVector{2,F}, N)
+        )
+    end
 
     # Pre-allocate parameter buffers (filled from ECS in _update_social_forces_impl!)
     cpu_mus = Vector{F}(undef, N)
@@ -287,7 +308,7 @@ function CPUNeighborSearch(N::Int, grid_min::SVector{2,F}, grid_max::SVector{2,F
     cpu_ηs  = Vector{F}(undef, N)
 
     return CPUNeighborSearch{F, typeof(sys)}(
-        cell_size, grid_min, grid_max,
+        cell_size, grid_min, grid_max, unitcell,
         sys, psych_sys,
         cpu_mus, cpu_As, cpu_Bs, cpu_λs, cpu_ηs
     )
