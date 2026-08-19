@@ -276,6 +276,8 @@ described in Weidmann (1993) and used by JuPedSim's RiMEA T2 suite.
 | `v_pref`          | Preferred speed = Weidmann free-flow speed (m/s). |
 | `wall_margin`     | Clear distance from walls for initial agent placement (m). |
 | `agent_radius`    | Social and collision radius for SFM agents (m). |
+| `η`               | GCF speed-adaptation factor (s). 0.0 = Helbing SFM (default). Chraibi 2010: 0.5 s. |
+| `V₀_gcf`          | GCF potential amplitude (N). Ignored when η=0. Replaces SFM A=2000 when η>0. Calibrated per sweep. |
 """
 Base.@kwdef struct FundamentalDiagramConfig{F<:AbstractFloat}
     corridor_length :: F = F(20)
@@ -286,6 +288,8 @@ Base.@kwdef struct FundamentalDiagramConfig{F<:AbstractFloat}
     v_pref          :: F = F(1.34)   # Weidmann free-flow speed
     wall_margin     :: F = F(0.3)    # clear of walls for placement
     agent_radius    :: F = F(0.25)   # social = collision radius (Helbing 1995)
+    η               :: F = F(0)      # GCF speed-adaptation factor; 0 = Helbing (default)
+    V₀_gcf          :: F = F(0)      # GCF potential (N); used as SFMParams.A when η>0
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -430,13 +434,21 @@ function run_fundamental_diagram!(ρ::F,
                                     cfg.agent_radius)
     goal = SVector(F(1000), cfg.corridor_width / 2)   # always far ahead (no wrapping effect)
 
+    # ── GCF dispatch ─────────────────────────────────────────────────────────
+    # When η>0, enable Chraibi 2010 GCF: speed-adaptive personal space D_i = s_r + η×‖v‖.
+    # GCF uses SFMParams.A as its V₀ potential — must be calibrated separately from
+    # SFM's A=2000N (GCF range D_i≈1m vs SFM B=0.08m → need V₀≈100–200N).
+    # When η=0 (default): pure Helbing SFM with A=2000N.
+    A_sfm = cfg.η > zero(F) ? cfg.V₀_gcf : F(2000)
+
     for i in 1:N
         new_entity!(world, (
             Position(positions_init[i]),
             Velocity(SVector(zero(F), zero(F))),
-            # Standard walking: Coulomb μ=0.5, σ=0 deterministic
+            # Standard walking: Coulomb μ=0.5, σ=0 deterministic; GCF via η kwarg
             from_agent_params(cfg.agent_radius, cfg.agent_radius,
-                              F(80), cfg.v_pref, F(0.5), F(0.5), zero(F))...,
+                              F(80), cfg.v_pref, F(0.5), F(0.5), zero(F);
+                              A=A_sfm, η=cfg.η)...,
             Goal(goal),
             Force(SVector(zero(F), zero(F)))
         ))
@@ -514,13 +526,16 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    print_fd_result(result; label="")
+    print_fd_result(result; label="", tol=0.40)
 
 Print a single-line formatted summary of a `FundamentalDiagramResult`.
+`tol` controls the pass/fail threshold (default 0.40 = ±40%; use 0.20 for Sprint 3G ±20%).
 """
-function print_fd_result(r::FundamentalDiagramResult{F}; label::String="") where {F}
+function print_fd_result(r::FundamentalDiagramResult{F}; label::String="", tol::Real=0.40) where {F}
     prefix = isempty(label) ? "" : "[$label] "
-    within = abs(r.ratio - one(F)) <= F(0.40) ? "✅ within ±40%" : "❌ outside ±40%"
+    tol_F  = F(tol)
+    pct    = round(Int, tol * 100)
+    within = abs(r.ratio - one(F)) <= tol_F ? "✅ within ±$(pct)%" : "❌ outside ±$(pct)%"
     @printf("%sρ=%4.1f ped/m²  N=%-4d  v_sim=%5.3f m/s  v_weidmann=%5.3f m/s  ratio=%5.3f  %s\n",
             prefix, r.density, r.n_agents, r.mean_speed, r.weidmann_ref, r.ratio, within)
 end
