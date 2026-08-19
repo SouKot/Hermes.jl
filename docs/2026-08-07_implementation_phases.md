@@ -694,7 +694,7 @@ julia --startup-file=no --project=. -t auto test/tier3_cross_library.jl
 
 ### Sprint 3G — RiMEA T2: GCF Calibration + Tighten Fundamental Diagram `[x]` COMPLETE
 
-> **Status**: All 30 tier-3 tests passing · 2026-08-19  
+> **Status**: All 30 tier-3 tests passing · commit `eac101d` · 2026-08-19  
 > **Testset**: `3F` in code (Fundamental Diagram testset, now GCF-enabled)  
 > **Caveats**: ρ=3.0 ratio=1.796 (jam-density physics not modeled) — see §8 of Validation Caveats  
 > **RiMEA path**: T2 **fully compliant** for ρ∈{0.5, 1.0, 2.0} (all within ±15% of Weidmann)

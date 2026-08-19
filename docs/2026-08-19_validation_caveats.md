@@ -95,7 +95,7 @@ A reviewed external discussion ([crowd_simulation_discussion.md](file:///home/so
 
 | What the spec says | What we assert | Gap |
 |--------------------|----------------|-----|
-| CRW-M-01: Spontaneous lane FORMATION from disorder | `lane_score ≥ 0.58` at t=120s from disordered initial state; score rises monotonically | **Partial match.** Score plateaus at 0.585 (vs 0.913 maintenance). Full visual separation requires GCF (Sprint 3G). |
+| CRW-M-01: Spontaneous lane FORMATION from disorder | `lane_score ≥ 0.58` at t=120s from disordered initial state; score rises monotonically | **Partial match.** Score plateaus at 0.585. GCF attempted (Sprint 3G) but failed (isotropic bypass of λ). Full visual separation deferred to future sprint (GCF+λ). |
 
 **Results**: initial=0.515 → t=30s:0.575 → t=60s:0.590 → t=120s:0.585. Periodic x-BC, ρ=2.0 ped/m², seed=42.
 
@@ -117,8 +117,8 @@ These are **honest** passes — the assertion matches the physics claim:
 | 3C (liveness) | Both normal and panic scenarios fully evacuate |
 | 3D (anisotropy λ) | λ=0.5 deflects agents ≥0.1m laterally in head-on; right-hand passing; no deadlock |
 | 3E (lane maintenance) | λ=0.5 prevents lane mixing (score ≥ 0.70 after 30s counter-flow) |
-| 3F (FD, testset 3F) | SFM speed decreases monotonically with density; within ±40% of Weidmann for ρ ∈ {0.5,1.0,2.0} |
-| 3F (lane formation, testset 3G) | λ=0.5 drives measurable lane formation from disorder (score 0.515→0.585 in 120s) |
+| 3F (FD, testset 3F) | **GCF** (η=0.5, V₀=50N) speeds within **±15% of Weidmann** for ρ∈{0.5,1.0,2.0}; ρ=3.0 speed monotonic | **Sprint 3G complete** |
+| 3F (lane formation, testset 3G) | λ=0.5 drives measurable lane formation from disorder (score 0.515→0.585 in 120s) | SFM (GCF isotropic — bypasses λ) |
 
 ---
 
@@ -130,9 +130,11 @@ To move from "regression tests" to "validated against published benchmarks":
 |---|---|---|---|---|
 | 1 | ~~Periodic BCs in `CPUNeighborSearch`~~ | Sprint 3E | ✅ DONE | FD + lane formation |
 | 2 | ~~CRW-M-01: Lane formation from disorder~~ | Sprint 3F | ✅ DONE (score 0.585) | RiMEA T14 partial |
-| 3 | CRW-M-02: Tighten FD to ±15% (GCF) | Sprint 3G | 🔜 next | RiMEA T2 full pass |
-| 4 | CRW-M-03: FiS at N=200, 4×4m, 0.8m door | Sprint 3I | later | FiS demonstration |
-| 5 | Reservoir steady-state flow assertion | Sprint 3I | later | Weidmann flow rate |
+| 3 | ~~CRW-M-02: Tighten FD to ±15% (GCF)~~ | Sprint 3G | ✅ DONE (η=0.5, V₀=50N) | **RiMEA T2 full pass** ρ∈{0.5,1.0,2.0} |
+| 4 | GCF+λ anisotropy for lane formation | Future sprint | ⏳ deferred | RiMEA T14 full visual sep |
+| 5 | Jam-density cohesion forces (ρ>2.5) | Future sprint | ⏳ deferred | ρ=3.0 Weidmann compliance |
+| 6 | CRW-M-03: FiS at N=200, 4×4m, 0.8m door | Sprint 3I | later | FiS demonstration |
+| 7 | Reservoir steady-state flow assertion | Sprint 3I | later | Weidmann flow rate |
 
 See [Future Directions](./2026-08-14_future_directions.md) for the non-committal roadmap.
 
@@ -240,31 +242,65 @@ agent-owned forces[i]  forces[i] (no race — each thread owns i)
 
 ---
 
-## 7. Sprint 3E — Testset 3F Measured Results (2026-08-19)
+## 7. Sprint 3E — Testset 3F Baseline Results (SFM, 2026-08-19)
+
+> **⚠️ SUPERSEDED by §8 (Sprint 3G GCF results)**. Kept for historical comparison.
 
 **Scenario**: 20×4m periodic corridor, SFM standard params (μ=0.5, σ=0, seed=42)  
 **Commit**: `14519cd`
 
 | ρ (ped/m²) | N | v_sim (m/s) | v_weidmann (m/s) | ratio | Asserted? |
 |---|---|---|---|---|---|
-| 0.5 | 40 | **1.340** | 1.298 | 1.032 | ✅ (±40% pass) |
-| 1.0 | 80 | **1.319** | 1.058 | 1.247 | ✅ (±40% pass) |
-| 2.0 | 160 | **0.568** | 0.606 | 0.937 | ✅ (±40% pass) |
-| 3.0 | 240 | **0.721** | 0.331 | 2.180 | ⚠️ diagnostic only |
+| 0.5 | 40 | **1.340** | 1.298 | 1.032 | ✅ (±40%) |
+| 1.0 | 80 | **1.319** | 1.058 | 1.247 | ✅ (±40%) — ❌ fails ±15% |
+| 2.0 | 160 | **0.568** | 0.606 | 0.937 | ✅ (±40%) |
+| 3.0 | 240 | **0.721** | 0.331 | 2.180 | ⚠️ diagnostic — **non-monotonic** |
 
-**ρ=3.0 artifact**: At N=240 (spacing≈0.52m≈2r), SFM back-neighbor repulsion pushes agents forward in the periodic corridor. Speed at ρ=3.0 is *higher* than at ρ=2.0 — physically non-monotonic. Root cause: SFM has no compression limit at body contact. The agent_repulsion spring force becomes repulsive-forward rather than slowing. Fix target: Sprint 3G (enable GCF, η≠0).
+**Gap to RiMEA T2** (±15% required) at Sprint 3E baseline:
+- ρ=0.5: ratio=1.032 (+3.2%) ✅
+- ρ=1.0: ratio=1.247 (+24.7%) ❌ over-speed
+- ρ=2.0: ratio=0.937 (-6.3%) ✅
+- ρ=3.0: ratio=2.18 ❌ + non-monotonic (SFM artifact)
 
-**Gap to RiMEA T2** (±15% required):
-- ρ=0.5: ratio=1.032 (+3.2%) ✅ would pass RiMEA
-- ρ=1.0: ratio=1.247 (+24.7%) ❌ fails RiMEA ±15%
-- ρ=2.0: ratio=0.937 (-6.3%) ✅ would pass RiMEA
-- ρ=3.0: ratio=2.18 ❌ fails completely (SFM artifact)
-
-**Conclusion**: SFM passes 2 of 3 reliable density points for RiMEA T2 tolerance. Sprint 3G (GCF η≠0) is needed to fix ρ=1.0 over-speed and ρ=3.0 artifact.
+**→ Fixed in Sprint 3G** — see §8 below.
 
 ---
 
-## 8. Sprint 3F — Testset 3G Measured Results (2026-08-19)
+## 8. Sprint 3G — Testset 3F GCF Calibration Results (2026-08-19)
+
+**Scenario**: 20×4m periodic corridor, GCF η=0.5s, V₀=50N, Coulomb μ=0.5, σ=0, seed=42  
+**Commit**: `eac101d`  
+**Calibration method**: Sweep 14 configs (η∈{0.3,0.5} × V₀∈{30,50,80,100,120,150,200}N) × 4 densities
+
+| ρ (ped/m²) | N | v_sim (m/s) | v_weidmann (m/s) | ratio | Asserted? |
+|---|---|---|---|---|---|
+| 0.5 | 40 | **1.341** | 1.298 | **1.033** | ✅ ±15% (**RiMEA T2 pass**) |
+| 1.0 | 80 | **0.912** | 1.058 | **0.862** | ✅ ±15% (**RiMEA T2 pass**) |
+| 2.0 | 160 | **0.602** | 0.606 | **0.993** | ✅ ±15% (**RiMEA T2 pass**) |
+| 3.0 | 240 | **0.594** | 0.331 | 1.796 | ⚠️ ratio diagnostic; **speed monotonic ✅** |
+
+**RiMEA T2 gap — RESOLVED for ρ∈{0.5, 1.0, 2.0}**:
+- ρ=0.5: ratio=1.033 (+3.3%) ✅ passes RiMEA ±15%
+- ρ=1.0: ratio=0.862 (-13.8%) ✅ passes RiMEA ±15% (was +24.7% ❌)
+- ρ=2.0: ratio=0.993 (-0.7%) ✅ passes RiMEA ±15% (near-perfect)
+- ρ=3.0: ratio=1.796 — **not asserted** (jam-density limitation, see below)
+
+**ρ=3.0 artifact fixed (partially)**: SFM gave v(3.0)=0.721 > v(2.0)=0.568 — non-monotonic. GCF gives v(3.0)=0.594 < v(2.0)=0.602 — **monotonically decreasing** ✅. However, ratio=1.796 remains because Weidmann predicts near-zero motion (v=0.331 m/s) at jam density, which requires cohesive body forces not modeled in SFM+GCF.
+
+**ρ=3.0 remaining gap** (jam-density limitation):
+- Root cause: at ρ=3.0 (spacing≈0.58m ≈ 2.3r), agents are nearly at contact. Weidmann's empirical model captures the "jam" regime where crowd becomes quasi-solid. SFM+GCF produces a compressed-but-moving crowd (v≈0.6 m/s) rather than near-stall (v≈0.33 m/s).
+- JuPedSim also excludes ρ>2.5 ped/m² from its RiMEA T2 pass criteria for this reason.
+- Fix path: jam-density cohesion forces (future sprint, beyond Sprint 3J scope).
+
+**GCF + lane formation finding** (attempted in Sprint 3G):
+- GCF (η=0.5, A=50N) reduces lane score 0.585 → 0.525 in testset 3G.
+- Root cause: `gcf_force()` is **isotropic** — it returns a force along n̂_ij without the λ-anisotropy weight. The λ weighting that makes frontal agents count more than rear agents is the mechanism driving lane formation. GCF bypasses it.
+- Lane formation testset (3G) reverted to pure SFM (η=0, λ=0.5).
+- Future sprint: apply λ-anisotropy weight on top of GCF force in `compute_psych_forces_kernel!`.
+
+---
+
+## 9. Sprint 3F — Testset 3G Measured Results (2026-08-19)
 
 **Scenario**: 20×5m periodic corridor, N=100+100=200, ρ=2.0 ped/m², σ=0, seed=42  
 **Commit**: `14978e4`
@@ -287,5 +323,6 @@ agent-owned forces[i]  forces[i] (no race — each thread owns i)
 **Gap to RiMEA T14** (visual lane separation required):
 - Visual lane separation typically requires score > 0.75
 - Current plateau: 0.585 → gap of ~0.165
-- Fix: Sprint 3G (GCF η≠0) — GCF reduces isotropic contact repulsion that traps agents in mixed-lane equilibria. With proper compression limiting, agents can move across the corridor to their preferred lane.
+- GCF attempted (Sprint 3G) but failed due to isotropy bypass of λ weighting (score→0.525)
+- Fix path: GCF+λ combined anisotropy in `compute_psych_forces_kernel!` (future sprint)
 - Alternative: stochastic noise (σ > 0) breaks the symmetric equilibrium but makes the test non-deterministic.
