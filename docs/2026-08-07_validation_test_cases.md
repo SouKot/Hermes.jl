@@ -1,7 +1,8 @@
 # Simulation Platform — Validation Test Case Catalogue
 **Date**: 2026-08-07  
 **Status**: Living document — update as tests are implemented  
-**Scope**: DES engine + Crowd Simulation (Social Force Model) + Parallelization
+**Scope**: DES engine + Crowd Simulation (Social Force Model) + Parallelization  
+**References**: [Implementation Phases](./2026-08-07_implementation_phases.md) (checkboxes & status) · [Validation Caveats](./2026-08-19_validation_caveats.md) (honest per-test assessment) · [Design Doc](./2026-08-07_simulation_platform_design.md)
 
 ---
 

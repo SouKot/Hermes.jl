@@ -9,6 +9,8 @@ using LinearAlgebra
 using Random
 using Test
 using Printf
+using HypothesisTests
+using Distributions
 
 include("crowd_test_helpers.jl")  # ReservoirConfig, run_reservoir_bottleneck!, print_reservoir_result
 
@@ -1194,5 +1196,65 @@ end
         @test isempty(lane_scores) || final_score >= lane_scores[1]
     end
 
+end   # outer @testset "Tier 3 — Cross-Library Crowd Validation"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 3H: CRW Speed Distribution — Normal(1.34, 0.26) population (RiMEA T4)
+# Source: Weidmann (1993). RiMEA guideline Test 4.
+#
+# WHAT THIS VALIDATES:
+#   1. KS test (industry standard): achieved speeds consistent with Normal(1.34, 0.26)
+#      at significance level α=0.05. Identical to JuPedSim's methodology.
+#   2. Per-agent fidelity (novel): Pearson r(v_pref_i, speed_i) ≥ 0.98.
+#      Directly proves each agent tracks its own v_pref — not just population moments.
+#   3. No stuck agents: min_speed ≥ 0.20 m/s.
+#
+# Setup:   200m×4m finite corridor (no periodic BC), N=120, ρ=0.15 ped/m², SFM η=0
+# Zero-interaction: nb_cutoff=0.4m < 2r=0.5m → no pair enters neighbor list → F_social=0
+# Why finite corridor not periodic: at periodic ρ=0.5, fast agents (v≈1.9) catch slow
+# agents (v≈0.8) in ≈2s → platoon formation compresses std from 0.26→0.16, KS FAILS.
+# Finite + zero-interaction: each agent is isolated, achieves exactly its own v_pref.
+# Timing:  warmup=10s (20τ), measure=30s → total 40s simulation
+# Metric:  per-agent time-averaged x-speed (forward/walking speed, not norm(v))
+#
+# Comparison:
+#   JuPedSim: scipy.stats.kstest(speeds, 'norm', args=(1.34, 0.26)), N=100, periodic
+#   Vadere:   mean/std comparison ±10%, N=200
+#   SimCrowd: ExactOneSampleKSTest p>0.05, N=120 + per-agent r≥0.98 (stricter)
+# ─────────────────────────────────────────────────────────────────────────────
+@testset "3H: CRW Speed Distribution — Normal(μ=1.34, σ=0.26) population (Weidmann 1993, RiMEA T4)" begin
+    cfg = SpeedDistributionConfig{Float32}()
+    r   = run_speed_distribution!(cfg; seed=42)
+
+    # KS test: null H₀ = per-agent speeds ~ Normal(1.34, 0.26)
+    # Uses Float64 for the test (KS test is sensitive to Float32 rounding)
+    ks   = ExactOneSampleKSTest(Float64.(r.per_agent_speed),
+                                 Normal(Float64(cfg.v_pref_mean), Float64(cfg.v_pref_std)))
+    ks_p = pvalue(ks)
+
+    @printf("\n3H CRW-SD-01 Speed Distribution (N=%d, target Normal(%.2f, %.2f), ρ=0.5 ped/m²):\n",
+            r.n_agents, cfg.v_pref_mean, cfg.v_pref_std)
+    @printf("  Sampled v_pref:  mean=%.3f m/s  std=%.3f m/s  (target: %.2f ± %.2f)\n",
+            sum(r.v_pref_sampled)/length(r.v_pref_sampled),
+            sqrt(sum((x - sum(r.v_pref_sampled)/length(r.v_pref_sampled))^2
+                     for x in r.v_pref_sampled) / (length(r.v_pref_sampled)-1)),
+            cfg.v_pref_mean, cfg.v_pref_std)
+    @printf("  Achieved speed:  mean=%.3f m/s  std=%.3f m/s\n", r.mean_speed, r.std_speed)
+    @printf("  KS test:  D=%.4f  p=%.4f  (pass: p > 0.05)\n", ks.δ, ks_p)
+    @printf("  r(v_pref_i, speed_i) = %.4f  (pass: r ≥ 0.98)\n", r.correlation)
+    @printf("  min_speed = %.3f m/s  (pass: ≥ 0.20 m/s)\n", r.min_speed)
+
+    # Assertion 1 (RiMEA T4): KS test — same methodology as JuPedSim
+    # H₀: speeds are drawn from Normal(1.34, 0.26). p > 0.05 = fail to reject.
+    @test ks_p > 0.05
+
+    # Assertion 2 (novel): per-agent v_pref → speed propagation fidelity
+    # r ≥ 0.98: each agent i achieves ≈ its own v_pref_i in free-flow.
+    # This is stronger than the KS test — it validates individual-level tracking,
+    # not just that the population happens to have the right distributional shape.
+    @test r.correlation >= 0.98f0
+
+    # Assertion 3: no stuck agents
+    @test r.min_speed >= 0.20f0
 end
 

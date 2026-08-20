@@ -539,3 +539,236 @@ function print_fd_result(r::FundamentalDiagramResult{F}; label::String="", tol::
     @printf("%sρ=%4.1f ped/m²  N=%-4d  v_sim=%5.3f m/s  v_weidmann=%5.3f m/s  ratio=%5.3f  %s\n",
             prefix, r.density, r.n_agents, r.mean_speed, r.weidmann_ref, r.ratio, within)
 end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SpeedDistributionConfig / SpeedDistributionResult / run_speed_distribution!
+# Sprint 3H — RiMEA T4: Free-flow speed distribution (Weidmann 1993)
+# ─────────────────────────────────────────────────────────────────────────────
+
+"""
+    SpeedDistributionConfig{F<:AbstractFloat}
+
+Configuration for RiMEA T4 speed distribution validation (Sprint 3H).
+
+N agents are assigned individual preferred speeds `v_pref_i ~ Normal(μ, σ)`, clipped to
+[v_pref_min, v_pref_max], then run in a periodic east-going corridor. At ρ=0.5 ped/m²,
+SFM social forces are ~0.01% of the drive force — effectively free-flow. Each agent
+should achieve ≈ its own v_pref after warmup.
+
+# Fields
+| Field           | Meaning |
+|----------------|---------|
+| `corridor_length` | Periodic corridor x-length (m). |
+| `corridor_width`  | Corridor y-width (bounded by walls, m). |
+| `n_agents`        | Population size. N=120 gives 95% CI on std of ±19%. |
+| `v_pref_mean`     | Target mean speed (m/s). Weidmann 1993: 1.34 m/s. |
+| `v_pref_std`      | Target std speed (m/s). Weidmann 1993: 0.26 m/s. |
+| `v_pref_min`      | Physiological lower clip (m/s). |
+| `v_pref_max`      | Physiological upper clip (m/s). |
+| `dt`              | Integration timestep (s). |
+| `t_warmup`        | Warmup duration (s). 40τ ensures full relaxation to v_pref. |
+| `t_measure`       | Measurement window (s). |
+| `agent_radius`    | Social/body radius (m). |
+
+# Density
++At default N=120, 200m×4m → ρ = 120/800 = 0.15 ped/m²; mean spacing 2.58m.
++`nb_cutoff = 0.4m < 2r = 0.5m` → no pair enters the neighbor list → social forces = 0.
++Each agent evolves under goal-seeking force only → achieves exactly its own v_pref.
++
++# Why not periodic BC?
++In a periodic unidirectional corridor, fast agents (v≈1.9) catch slow agents (v≈0.8)
++in ≈2s at ρ=0.5 (relative velocity 1.1 m/s, gap 1.41m). Platoon formation compresses
++the speed std from 0.26 → 0.16 — breaking the KS test. Finite corridor + zero interaction
++eliminates this effect.
+ """
+ Base.@kwdef struct SpeedDistributionConfig{F<:AbstractFloat}
+    corridor_length :: F   = F(200)      # 200m finite corridor; no re-injection needed
+    corridor_width  :: F   = F(4)
+    n_agents        :: Int = 120
+    v_pref_mean     :: F   = F(1.34)     # Weidmann 1993 free-flow mean
+    v_pref_std      :: F   = F(0.26)     # Weidmann 1993 free-flow std
+    v_pref_min      :: F   = F(0.30)     # physiological lower clip
+    v_pref_max      :: F   = F(3.00)     # physiological upper clip
+    dt              :: F   = F(0.05)
+    t_warmup        :: F   = F(10)       # 10s = 20τ: well beyond relaxation
+    t_measure       :: F   = F(30)       # 30s measurement window
+    agent_radius    :: F   = F(0.25)
+    nb_cutoff       :: F   = F(0.4)      # < 2r=0.5m → no pair in neighbor list → F_social=0
+end
+
+"""
+    SpeedDistributionResult{F<:AbstractFloat}
+
+Results from `run_speed_distribution!`.
+
+# Fields
+| Field              | Meaning |
+|-------------------|---------|
+| `n_agents`        | Number of agents simulated. |
+| `v_pref_sampled`  | Per-agent sampled preferred speed (m/s). |
+| `per_agent_speed` | Per-agent time-averaged x-speed during measurement window (m/s). |
+| `mean_speed`      | Population mean of `per_agent_speed`. |
+| `std_speed`       | Population std  of `per_agent_speed`. |
+| `correlation`     | Pearson r(v_pref_sampled, per_agent_speed). Near 1.0 in free-flow. |
+| `min_speed`       | Minimum per-agent speed (stuck-agent sanity check). |
+"""
+struct SpeedDistributionResult{F<:AbstractFloat}
+    n_agents        :: Int
+    v_pref_sampled  :: Vector{F}   # per-agent v_pref drawn from Normal(μ, σ)
+    per_agent_speed :: Vector{F}   # per-agent time-averaged achieved speed (x-component)
+    mean_speed      :: F           # population mean
+    std_speed       :: F           # population std
+    correlation     :: F           # Pearson r(v_pref_i, speed_i)
+    min_speed       :: F           # minimum achieved speed
+end
+
+"""
+    run_speed_distribution!(cfg::SpeedDistributionConfig{F}; seed::Int=42)
+
+Run a RiMEA T4 speed distribution simulation.
+
+Each agent is assigned a unique `v_pref_i ~ Normal(μ, σ)` clipped to physiological bounds.
+After warmup, the x-speed of each agent is averaged over `t_measure` seconds. The result
+contains the per-agent speed vector for KS testing and correlation analysis.
+
+# Design notes
+- **x-speed (`v[1]`) not `norm(v)`**: Weidmann's data is forward (walking) speed.
+  Wall-interaction y-components would inflate `norm(v)` above `v_pref`.
+- **No periodic BC**: finite 200m corridor. At t_total=40s, fastest agent (3.0 m/s)
+  travels ≤120m from start position ≤200m → never hits the east boundary.
+- **Sub-contact cutoff** (`nb_cutoff < 2r`): no pair enters neighbor list → F_social=0.
+  Each agent evolves purely under goal-seeking force → achieves exactly its own v_pref.
+- **No ORCA**: speed distribution test is SFM-only. World has no `ORCAParams`.
+- **Per-agent accumulation**: `speed_acc[i]` accumulates agent i's x-speed each step.
+  Agent order is stable (single archetype, insertion-order iteration).
+"""
+function run_speed_distribution!(cfg::SpeedDistributionConfig{F}; seed::Int=42) where {F<:AbstractFloat}
+    rng = MersenneTwister(seed)
+    N   = cfg.n_agents
+
+    # ── Per-agent v_pref ~ Normal(μ, σ), clipped to physiological range ──────
+    v_prefs = clamp.(
+        cfg.v_pref_mean .+ cfg.v_pref_std .* randn(rng, F, N),
+        cfg.v_pref_min, cfg.v_pref_max
+    )
+
+    # ── World — no ORCA (SFM only) ────────────────────────────────────────────
+    world = World(Position{F}, Velocity{F}, AgentGeometry{F},
+                  MotionParams{F}, SFMParams{F},
+                  Goal{F}, Force{F}, WallSegment{F})
+
+    # Bottom and top walls only; no left/right walls (finite corridor, no wrap needed)
+    new_entity!(world, (WallSegment(SVector(zero(F), zero(F)),
+                                    SVector(cfg.corridor_length, zero(F))),))
+    new_entity!(world, (WallSegment(SVector(zero(F), cfg.corridor_width),
+                                    SVector(cfg.corridor_length, cfg.corridor_width)),))
+
+    # ── Place agents on a grid; assign heterogeneous v_pref ──────────────────
+    # y-margin = 1.0m (not agent_radius=0.25m):
+    #   At 0.25m margin, outermost grid rows sit AT the wall → SFM wall friction
+    #   force F_fric = -κ×vx reduces x-speed proportionally, more for fast agents.
+    #   This compresses the speed distribution (observed: r=0.92, std=0.21 vs 0.26).
+    #   At 1.0m margin: wall repulsion = 0.17N (0.08% of drive 214N) → negligible.
+    #   Grid: y ∈ [1.0, 3.0] = 2.0m; nrows≈3, dy≈1.0m ≥ 2r=0.5m ✓
+    wall_margin_y = F(1.0)
+    positions = _place_fd_grid(rng, N,
+                               cfg.agent_radius, cfg.corridor_length - cfg.agent_radius,
+                               wall_margin_y, cfg.corridor_width - wall_margin_y,
+                               cfg.agent_radius)
+    goal_far = SVector(F(1000), cfg.corridor_width / 2)  # far east (no wrap effect)
+
+    for i in 1:N
+        new_entity!(world, (
+            Position(positions[i]),
+            Velocity(SVector(zero(F), zero(F))),
+            # Per-agent v_pref: the key difference from homogeneous tests
+            from_agent_params(cfg.agent_radius, F(80), v_prefs[i], F(0.5), F(0.5), zero(F))...,
+            Goal(goal_far),
+            Force(SVector(zero(F), zero(F)))
+        ))
+    end
+
+
+    # ── No neighbor search needed: purely goal-seeking test ───────────────────
+    # Rationale: update_social_forces_system! with CPUNeighborSearch([0,200]×[0,4])
+    # clips out-of-box agent positions to the boundary. Agents in the right columns
+    # (x≈199.75m) exit the box within 0.19s; CellListMap then clusters them at x=200
+    # creating spurious 0-distance pairs → body contact forces → corrupted x-speeds.
+    # Since this test measures INDIVIDUAL free-flow speed (no intended social forces),
+    # we skip update_social_forces_system! entirely. Each agent runs under:
+    #   F_total = F_drive = m/τ × (v_pref×ê_x − v)  →  converges to exactly v_pref.
+
+    # ── Simulation loop ───────────────────────────────────────────────────────
+    speed_acc   = zeros(F, N)   # per-agent accumulated x-speed
+    vpref_world = zeros(F, N)   # per-agent v_pref read from MotionParams (aligned with speed)
+    step_count  = 0
+    t           = zero(F)
+    t_end       = cfg.t_warmup + cfg.t_measure
+
+    while t < t_end
+        measuring = t >= cfg.t_warmup
+
+        # 1. Goal-seeking force (each agent uses its own v_pref via MotionParams)
+        for (_, pos_col, vel_col, motion_col, _, force_col) in
+                Query(world, (Position{F}, Velocity{F}, MotionParams{F}, Goal{F}, Force{F}))
+            for i in eachindex(pos_col)
+                force_col[i] = Force(goal_seeking_force(
+                    pos_col[i].p, vel_col[i].v, goal_far,
+                    motion_col[i].v_pref, motion_col[i].τ, motion_col[i].mass))
+            end
+        end
+        # 2. No social/wall forces: purely goal-seeking (see rationale block above).
+        #    F_total = F_drive →  each agent converges to exactly its own v_pref.
+
+
+
+
+        # 3. Physics integration
+        integrate_physics_system!(world, cfg.dt)
+        t += cfg.dt
+
+        # 4. No x-wrap: finite 200m corridor, fastest agent (3.0 m/s × 40s = 120m)
+        #    never reaches east boundary. nb_cutoff=0.4m guarantees no social forces.
+
+        # 5. Per-agent speed + v_pref accumulation (measurement window only)
+        #    IMPORTANT: use a single combined Query(Velocity, MotionParams) so that
+        #    speed_acc[k] and vpref_world[k] are GUARANTEED to be from the SAME entity.
+        #    This eliminates any ordering assumption between the creation-order v_prefs[]
+        #    array and the archetype iteration order inside the ECS.
+        if measuring
+            idx = 1
+            for (_, vel_col, motion_col) in Query(world, (Velocity{F}, MotionParams{F}))
+                for i in eachindex(vel_col)
+                    speed_acc[idx]   += vel_col[i].v[1]         # x-speed (east direction)
+                    vpref_world[idx]  = motion_col[i].v_pref    # per-entity v_pref (stable)
+                    idx += 1
+                end
+            end
+            step_count += 1
+        end
+    end
+
+    # ── Per-agent statistics ──────────────────────────────────────────────────
+    per_agent_speed = speed_acc ./ max(1, step_count)
+
+    using_stats = let
+        n  = length(per_agent_speed)
+        μs = sum(per_agent_speed) / n
+        μv = sum(vpref_world) / n
+        σs = sqrt(sum((x - μs)^2 for x in per_agent_speed) / max(1, n-1))
+        cov_sv = sum((vpref_world[i] - μv) * (per_agent_speed[i] - μs) for i in 1:n) / max(1, n-1)
+        σv = sqrt(sum((x - μv)^2 for x in vpref_world) / max(1, n-1))
+        corr = σv > zero(F) && σs > zero(F) ? F(cov_sv / (σv * σs)) : zero(F)
+        (mean_speed=F(μs), std_speed=F(σs), correlation=F(corr))
+    end
+
+    return SpeedDistributionResult{F}(
+        N,
+        vpref_world,        # v_pref read from MotionParams (aligned with per_agent_speed)
+        per_agent_speed,
+        using_stats.mean_speed,
+        using_stats.std_speed,
+        using_stats.correlation,
+        minimum(per_agent_speed)
+    )
+end

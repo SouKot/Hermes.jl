@@ -2,7 +2,8 @@
 ### DES · Fluid Dynamics · Crowd Simulation — Unified Architecture
 **Date**: 2026-08-07  
 **Status**: In Review  
-**Goal**: Build an AnyLogic / FlexSim-class simulation platform in Julia
+**Goal**: Build an AnyLogic / FlexSim-class simulation platform in Julia  
+**References**: [Implementation Phases](./2026-08-07_implementation_phases.md) · [Test Cases](./2026-08-07_validation_test_cases.md) · [Code Practices](./2026-08-07_code_design_practices.md) · [Future Directions](./2026-08-14_future_directions.md)
 
 ---
 

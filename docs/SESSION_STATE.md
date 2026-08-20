@@ -1,127 +1,100 @@
-# SESSION STATE
+# SESSION STATE — Hermes.jl / Antigravity
 
 > **DO NOT EDIT BY HAND.** Updated automatically at end of each session.  
-> Last updated: 2026-08-12 (conversation `78616c9e-3fd6-407c-bebd-abc1d7c4255f`)
+> Last updated: 2026-08-19 (conversation `78616c9e-3fd6-407c-bebd-abc1d7c4255f`)
+
+> [!IMPORTANT]
+> The **authoritative, always-current** session state is maintained in the IDE agent's
+> Knowledge Item (KI) system, which the agent reads automatically at the start of each session.
+> This file is a human-readable mirror kept in sync with the KI. If in doubt, the KI takes precedence.
 
 ---
 
 ## 1. Where We Left Off
 
-- **Last Commit:** `763ab36 (HEAD → master) feat(SimCrowd): Sprint 1B — ContactModel enum + GPU μ parity`
-- **Previous:** `64ce516 fix(SimCrowd): Sprint 1A — AgentParams μ default + navigation mass + test API sync`
-- **Current Phase:** Sprint 1 COMPLETE. Ready for Sprint 2 (Performance).
-- **Test Status:**
-  ```
-  runtests.jl:                18/18   2.8s
-  Tier 3: Cross-Library Validation vs Published Benchmarks |  8/8   1m20s
-    3A-easy ORCA N=30 antipodal circle                      | 3/3
-    3A-hard ORCA N=250 collision avoidance                  | 2/2
-    3B SFM Bottleneck N=50 6×6m (Helbing 2000)              | 1/1
-    3C SFM Faster-is-Slower N=50 (Helbing 2000 Figure 4)    | 2/2
-  ```
+- **Last Commit:** `a6072c8` — `Sprint 8C: Add tier-3 SFM anisotropy tests (3D, 3E) + fix 3B/3B-res assertions`
+- **Repo git root:** `/run/media/sourabh/SANDISK-2TB/antigravity/ABM/packages/SimCrowd`
+- **Active Phase:** Sprint 8C COMPLETE. Sprint 8D in progress (doc structure + linking).
 
 ---
 
-## 2. What Was Accomplished in Sprint 1
+## 2. Test Status
 
-### Sprint 1A (commit 64ce516) — Correctness Bugs
-| Fix | File | Details |
-|-----|------|---------|
-| `AgentParams` 4-arg constructor: `μ = F(1.2e5) → F(0.5)` | `SimCrowd.jl:45` | `1.2e5` was body stiffness `k`, not friction coefficient |
-| `update_navigation_system!` mass bug | `navigation.jl:116` | `F_drive = (v_pref×dir−vel)/τ` stored as Force; physics divided by mass again → 80× too weak. Fixed → `mass × ...` |
-| `agent_repulsion` old 4-arg API | `runtests.jl:31` | Forces refactor expanded to 8-arg; test not updated |
-| CRW-S-01 query included `ORCAParams` | `runtests.jl:113` | Entity has AgentParams only; query returned empty → no force → agent drifted on noise |
-| `goal_seeking_force` test assertion | `runtests.jl:20` | Expected 2.0 (old accel) → 160.0 N (mass × accel) |
-| 3-arg `AgentParams(r, v_pref, τ)` | bench/validate scripts | Old form predating `mass` field; fixed to 4-arg with mass=80.0f0 |
-| `ap.radius` → `ap.social_radius` | `validate_parity.jl` | Field rename not propagated |
-
-### Sprint 1B (commit 763ab36) — ContactModel + GPU Parity
-| Fix | File | Details |
-|-----|------|---------|
-| `ContactModel` enum | `SimCrowd.jl` | `@enum ContactModel::Int32 { NoContact, Coulomb, Viscous }` encoded in `AgentParams.μ` sentinel |
-| New `AgentParams` constructor | `SimCrowd.jl` | `AgentParams(r, m, vp, τ, model::ContactModel [, μ])` — sets both collision_radius and μ from model |
-| `contact_force` ContactModel dispatch | `forces.jl` | `isinf(μ)` → Viscous (pure κ×g×Δv_t, FiS-capable); `iszero(μ)` → NoContact; else Coulomb |
-| GPU μ parity | `social.jl` | `cpu_mus/dev_mus/sorted_dev_mus` buffers in `SocialForcesGPUContext`; per-agent μ uploaded and sorted each step; kernel reads `μ_i` from `sorted_mus[i]` — last hardcoded GPU default removed |
-
----
-
-## 3. Next Sprint — Sprint 2 (Performance)
-
-Full plan at: `simcrowd_improvement_plan.md` (in conversation artifacts).
-
-### Sprint 2 — Performance (START HERE)
-| Task | File | Effort | Notes |
-|------|------|--------|-------|
-| Replace O(N²) psych loop with KA `@kernel(CPU())` | `social.jl:322` | 1 day | Architecture: one kernel, `CPU()` + `CUDABackend()` dispatch. No Polyester. |
-| Morton curve sorting in `RadixSpatialHash` | `neighbor_search.jl` | 3h | Memory locality improvement for cache performance |
-
-### Sprint 3 — Scientific Completeness
-| Task | Effort |
-|------|--------|
-| Per-agent σ in `AgentParams`; remove hardcoded `sigma` in `physics.jl` | 2h |
-| ORCA LP3 profiling + fix (LP3 fallback produces min_sep≈0.01–0.18m) | 1 day |
-| ORCA static obstacle lines (integrate wall ORCA constraints into LP) | 1 day |
-
----
-
-## 4. Key Files for Next Session
-
-| File | Why |
-|------|-----|
-| `packages/SimCrowd/src/systems/social.jl` | Phase 3 O(N²) psych loop → KA `@kernel` |
-| `packages/SimCrowd/src/neighbor_search.jl` | `RadixSpatialHash` Morton curve sorting |
-| `packages/SimCrowd/src/SimCrowd.jl` | ContactModel enum (just added) |
-| `packages/SimCrowd/src/forces.jl` | contact_force ContactModel dispatch (just added) |
-
----
-
-## 5. API Reference — What Changed in Sprint 1
-
-### New types
-```julia
-@enum ContactModel::Int32 NoContact Coulomb Viscous  # exported
+```
+tier1_unit_tests.jl                | 12/12  ✅
+runtests.jl (unit+integration)     | 20/20  ✅
+tier3_cross_library.jl (published) | 18/18  ✅  3m23s
+run_validations.jl (Phase 3C)      | runs but not in CI
 ```
 
-### New constructors
-```julia
-# ContactModel constructor — sets collision_radius and μ automatically
-AgentParams(r, m, vp, τ, model::ContactModel)           # μ defaults to 0.5 for Coulomb
-AgentParams(r, m, vp, τ, model::ContactModel, μ::F)     # explicit μ for Coulomb
-
-# Examples
-AgentParams(0.25f0, 80f0, 1.4f0, 0.5f0, NoContact)     # social force only
-AgentParams(0.25f0, 80f0, 4.0f0, 0.5f0, Viscous)       # FiS-capable evacuation
-AgentParams(0.25f0, 80f0, 1.4f0, 0.5f0, Coulomb, 0.3f0) # custom μ
-```
-
-### contact_force dispatch via μ
-| μ value | ContactModel | Behavior |
-|---------|--------------|----------|
-| `iszero(μ)` | NoContact | Returns zero — no body contact |
-| `isinf(μ)` | Viscous | Pure `κ×g×Δv_t` — Helbing 2000 exact, FiS-capable |
-| `0 < μ < Inf` | Coulomb | `clamp(κ×g×Δv_t, ±μ×k×g)` — default |
-
----
-
-## 6. Resume Commands
-
-**After restart**, paste this in the new conversation to restore context instantly:
-> "Continue antigravity/SimCrowd development. Read SESSION_STATE.md. Sprint 1 is complete (runtests 18/18, Tier 3 8/8). Start Sprint 2: replace the O(N²) psych loop in social.jl with a KA @kernel."
-
-**Run tests to verify no drift:**
+Verify after restart:
 ```bash
 cd /run/media/sourabh/SANDISK-2TB/antigravity/ABM/packages/SimCrowd
-julia --startup-file=no --project=. test/runtests.jl       # Expected: 18/18
-julia --startup-file=no --project=. test/tier3_cross_library.jl  # Expected: 8/8
+julia --startup-file=no --project=. -t auto test/tier3_cross_library.jl
 ```
 
 ---
 
-## 7. Open Questions / Decisions Pending
+## 3. Completed Sprints
 
-| Question | Context | Decision |
-|----------|---------|---------|
-| Polyester.@batch for psych loop? | Sprint 2 | **No** — use KA @kernel with CPU()/GPU() backends. One implementation, zero new deps. See §3.1 of improvement plan. |
-| Should we switch to Chraibi GCF as default SFM? | Sprint 4 | Deferred — keep Helbing as default, add GCF as `ForceModel` option |
-| Should 3B use 6-arg (body contact)? | Tier 3 | No — 5-arg is intentional. 3B = social-only, 3C = full contact+FiS |
-| Per-agent A, B, k, κ, λ? | Sprint 3/4 | Deferred — requires AgentParams struct expansion. Currently module-level defaults |
+| Sprint | Commit | Summary |
+|--------|--------|---------|
+| 8A | `7b5cdeb` | 3C: Viscous friction, goal-past-door, t_90 metric |
+| 8B | `a654ec9` | 3B: cr=0.25m contact forces, crowd_flow metric |
+| 8B-proper | `4ce8613` | 3B-res: reservoir test, ReservoirConfig infrastructure (13/13) |
+| 8C-1 | `a6072c8` | 3D: head-on anisotropy λ test (18/18) |
+| 8C-2 | `a6072c8` | 3E: lane maintenance test (18/18) |
+
+---
+
+## 4. Next Tasks
+
+| Sprint | Task | Status |
+|--------|------|--------|
+| 8D | Update implementation_phases.md checkmarks, link new tests | **← IN PROGRESS** |
+| 9 | CRW-M-02: fundamental diagram density sweep | NOT STARTED |
+| CRW-M-01 | Periodic BCs in CPUNeighborSearch | NOT STARTED |
+| CRW-M-03 | Proper FiS: N=200, 4×4m, 0.8m door | NOT STARTED |
+
+---
+
+## 5. Key Architecture Decisions
+
+- **`from_agent_params` 7-arg**: `(sr, cr, mass, v_pref, τ, μ, σ)` — explicit cr
+- **Friction**: `μ=Inf32` Viscous for arch/FiS; `μ=0.5` Coulomb for bottleneck flow
+- **σ in tests**: Use σ=0.0 for deterministic results. σ>0 routes through `Threads.@threads randn()` → non-deterministic
+- **WallSegment ECS rule**: Always declare WallSegment{F} in World() even in open-space tests
+- **Re-injection (reservoir)**: x∈[0.3,2.0] tight zone creates pressure waves that help break arches
+- **3B-res peak_local_rate**: Assert on peak (max any 10s window), not average flow
+
+---
+
+## 6. Key Files
+
+| File | Purpose |
+|------|---------|
+| `test/tier3_cross_library.jl` | All tier-3 benchmark tests (3A–3E, 18/18) |
+| `test/crowd_test_helpers.jl` | Reusable reservoir simulation infrastructure |
+| `src/systems/physics.jl` | `integrate_physics_system!` — σ+Threads non-determinism source |
+| `src/neighbor_search.jl` | `CPUNeighborSearch` — needs periodic BC for CRW-M-01 |
+
+---
+
+## 7. Docs Navigation (All in `/run/media/sourabh/SANDISK-2TB/antigravity/ABM/docs/`)
+
+| Doc | Purpose |
+|-----|---------|
+| [2026-08-07_implementation_phases.md](./2026-08-07_implementation_phases.md) | Sprint tracker — checkboxes and status |
+| [2026-08-19_validation_caveats.md](./2026-08-19_validation_caveats.md) | Honest per-test assessment + library survey |
+| [2026-08-14_future_directions.md](./2026-08-14_future_directions.md) | Non-committal roadmap (RiMEA, periodic BCs, FiS) |
+| [2026-08-07_validation_test_cases.md](./2026-08-07_validation_test_cases.md) | Full test specifications |
+| [2026-08-07_simulation_platform_design.md](./2026-08-07_simulation_platform_design.md) | Architecture reference |
+| [2026-08-07_code_design_practices.md](./2026-08-07_code_design_practices.md) | Coding standards |
+
+---
+
+## 8. Resume Phrase
+
+> "Continue antigravity/SimCrowd. Read SESSION_STATE KI. Sprint 8C COMPLETE (18/18 tier3, commit a6072c8).
+> Sprint 8D in progress: updating implementation_phases.md checkmarks and doc cross-links.
+> Next after 8D: Sprint 9 (CRW-M-02 fundamental diagram) or CRW-M-01 (periodic BCs)."
