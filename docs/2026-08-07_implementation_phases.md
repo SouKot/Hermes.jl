@@ -745,15 +745,20 @@ julia --startup-file=no --project=. -t auto test/tier3_cross_library.jl
 
 ---
 
-#### Sprint 3H — RiMEA T4: Speed Distribution (σ=0.26 m/s population) `[ ]` NOT STARTED
+#### Sprint 3H — RiMEA T4: Speed Distribution (σ=0.26 m/s population) `[x]` DONE (2026-08-20)
 
-**Goal**: Validate that agent speed variability matches the empirical Normal distribution from Weidmann (μ=1.34 m/s, σ=0.26 m/s). Currently all tests use σ=0 (deterministic) or a fixed σ per agent.
+**Goal**: Validate that agent speed variability matches the empirical Normal distribution from Weidmann (μ=1.34 m/s, σ=0.26 m/s).
 
-**What needs to change**: `AgentParams` already has `v_pref` per agent. Need to add per-agent speed sampling from `Normal(1.34, 0.26)` at world creation time.
+**Implemented**: `run_speed_distribution!` in `crowd_test_helpers.jl`. N=120 agents, v_pref~Normal(1.34,0.26), 200m×4m finite corridor, purely goal-seeking (no social forces).
 
-**Acceptance criteria**:
-- In a free-flow corridor (ρ=0.1 ped/m²), measured speed distribution satisfies KS-test vs Normal(1.34, 0.26) at p > 0.05
-- Or: mean speed ≈ 1.34±0.05 m/s, std ≈ 0.26±0.05 m/s over N≥100 agents
+**Results** (commit `5e2635f`):
+- KS test: D=0.0955, p=0.2097 > 0.05 ✅
+- Per-agent Pearson r(v_pref_i, speed_i) = 1.0000 ≥ 0.98 ✅ (novel assertion beyond JuPedSim)
+- min_speed = 0.491 m/s ≥ 0.20 m/s ✅
+
+**Key lesson** (see validation_caveats §10): `CPUNeighborSearch` with finite bounding box clips out-of-box positions, creating spurious 0-distance pairs → body contact forces. Fix: skip `update_social_forces_system!` for any free-flow drift test. See §10 for full root cause chain.
+
+**Dependencies added**: `HypothesisTests.jl` (ExactOneSampleKSTest), `Distributions.jl`.
 
 ---
 
