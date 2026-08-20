@@ -12,7 +12,7 @@
 
 ## 1. Where We Left Off
 
-- **Last Commit:** `e74c1c4` — `docs: update validation caveats for Sprint 3H and 3F`
+- **Last Commit:** `0bb7fab` — `docs: add METHODOLOGY.md with post-sprint close-out checklist`
 - **Previous code commit:** `5e2635f` — `Sprint 3H PASS: RiMEA T4 speed distribution — r=1.0, KS p=0.21`
 - **Repo git root:** `/run/media/sourabh/SANDISK-2TB/antigravity/ABM/packages/SimCrowd`
 - **Active Phase:** Sprint 3H **COMPLETE** ✅. Next: Sprint 3I (RiMEA T7: Bottleneck Flow ±15%)
