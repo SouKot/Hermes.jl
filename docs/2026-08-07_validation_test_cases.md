@@ -715,6 +715,89 @@ Expected full evacuation: 10,000 / 36 ≈ 278 seconds ≈ 4.6 min
 - No DES-crowd race conditions (verify causal ordering)
 
 **What this tests**: Full DES ↔ Crowd integration, event-driven crowd behavior change, multi-agent-type handling.
+---
+
+### ORCA Navigation Test Cases
+
+> **Reference**: Van den Berg et al. (2011) *IJRR* (RVO2); Bonneaud et al. (2022) *UMANS*.
+> These scenarios are the canonical published validation suite for ORCA/RVO2.
+> They should be compared against RVO2 and UMANS published results.
+>
+> **Important constraint**: ORCA has **no anisotropy (no λ)** and **no contact forces**.
+> It therefore CANNOT produce arch formation, lane formation, or density-dependent
+> speed reduction. Test assertions must reflect these design boundaries.
+
+#### CRW-ORCA-01 — Bidirectional Corridor (ORCA, Low Density)
+**Scale**: Medium (100+100=200 agents) | **Type**: Qualitative + Performance | **Priority**: P1  
+**Reference**: UMANS (2022) Scenario 3 — bidirectional corridor
+
+**Setup**:
+- Corridor: 20m × 4m (same dimensions as 3E/3G lane tests for direct comparison)
+- 100 agents: left→right (v_pref = 1.34 m/s)
+- 100 agents: right→left (v_pref = 1.34 m/s)
+- ρ = 200 / (20×4) = 2.5 ped/m² (moderate density, within ORCA feasibility range)
+- Goals placed 1m past each wall. σ=0, seed=42
+
+**Expected behavior** (from UMANS 2022):
+- All agents reach goals (collision-free guarantee)
+- Agents do NOT spontaneously form lanes (ORCA has no λ — confirmed by UMANS)
+- Individual dodging instead of lane segregation
+- Mean flow speed: ≥85% of v_pref (ORCA efficient at this density)
+
+**Pass criteria**:
+- `reached ≥ 180/200` (90% liveness — some LP3 fallback acceptable at ρ=2.5)
+- `min_separation > 0` (no penetrations — ORCA’s primary guarantee)
+- `mean_speed ≥ 0.80 × v_pref` (1.07 m/s) — ORCA maintains throughput
+- `lane_score ≤ 0.60` — confirm NO lane formation (CANNOT by design)
+
+**Cross-library comparison**: UMANS (2022) reports ORCA bidirectional mean speed ≈ 87%–95%
+of v_pref at ρ=2.5 depending on time horizon. Assert within that band.
+
+---
+
+#### CRW-ORCA-02 — Static Block Navigation (ORCA)
+**Scale**: Small–Medium (50 agents) | **Type**: Qualitative | **Priority**: P2  
+**Reference**: RVO2 `examples/Blocks.cc` — Van den Berg et al. (2011)
+
+**Setup**:
+- Room: 20m × 20m
+- 4 static square obstacles (2m × 2m) arranged in a 2×2 grid in the centre
+- 50 agents: antipodal start/goal positions around the obstacle grid
+- Agents must navigate around obstacles to reach goals
+
+**Expected behavior** (RVO2 Blocks):
+- All agents reach goals without penetrating obstacles
+- Smooth detour paths around blocks
+- No permanent deadlock from obstacle corners
+
+**Pass criteria**:
+- `reached == 50` (all reach goals)
+- `min_obstacle_separation > 0` (no wall penetration)
+- `max_time < 60s` (no deadlocks)
+
+**Cross-library comparison**: RVO2 Blocks: all N=100 agents reach goals in ≤40s.
+
+---
+
+#### CRW-ORCA-03 — Crossing Flows (ORCA, X-Junction)
+**Scale**: Small (40 agents) | **Type**: Qualitative | **Priority**: P2  
+**Reference**: UMANS (2022) Scenario 4 — crossing scenario
+
+**Setup**:
+- 10m × 10m open space
+- 4 groups of 10 agents each entering from N, S, E, W walls
+- Each group heading to the opposite wall (N→S, S→N, E→W, W→E)
+- Groups intersect at centre — maximum conflict zone
+
+**Expected behavior**:
+- All agents reach goals
+- Smooth crossing with velocity-space negotiation
+- No permanent collision clusters at centre
+
+**Pass criteria**:
+- `reached ≥ 38/40` (95% liveness)
+- `min_separation > 0` (collision-free)
+- `max_time < 30s`
 
 ---
 
@@ -895,9 +978,11 @@ Optimal: somewhere in between (typically 10-30% of mean inter-event time)
 | PAR-06 | SimClock parallel | Small | P1 | `[ ]` | |
 | PAR-07 | Lookahead sensitivity | Medium | P2 | `[ ]` | |
 
-**Total**: 37 test cases | P0: 9 | P1: 16 | P2: 10 | P3: 4
+**Total**: 37 test cases + 3 ORCA navigation tests | P0: 9 | P1: 17 | P2: 12 | P3: 4
 
----
+> **ORCA navigation tests** (CRW-ORCA-01/02/03): Not in the original 37-case catalogue.
+> Added after ORCA implementation to complete the published RVO2/UMANS validation suite.
+
 
 ## Implementation Order (Recommended)
 
@@ -946,12 +1031,81 @@ Optimal: somewhere in between (typically 10-30% of mean inter-event time)
 | Helbing & Molnár (1995) *Phys. Rev. E* — Social Force Model | CRW-M-01, CRW-S-03 |
 | Helbing, Farkas, Vicsek (2000) *Nature* — Panic paper | CRW-S-05, CRW-L-02 |
 | Weidmann (1993) — Fundamental diagram | CRW-M-02 |
+| **Chraibi, Seyfried, Schadschneider (2010) *Phys. Rev. E* — Generalized Centrifugal Force** | CRW-M-02 (GCFM-circular §II); Option C — GCFM-elliptical (§III, not yet implemented) |
+| **Van den Berg, Lin, Manocha (2011) *IJRR* — RVO2/ORCA** | CRW-ORCA-01, CRW-ORCA-02, CRW-ORCA-03 |
+| **Bonneaud et al. (2022) — UMANS comparison framework** | CRW-ORCA-01, CRW-ORCA-03 |
 | Fruin (1971) — Level of Service | CRW-M-05 |
 | SFPE Handbook — Fire evacuation engineering | CRW-M-05, CRW-L-01 |
 | NIST TN-1822 — Evacuation model V&V | CRW-L-01 |
 | Erlang-C formula — Multi-server queueing | DES-S-04, DES-L-02 |
 | Pollaczek-Khinchine formula — M/G/1 | DES-S-06, DES-S-07 |
-| Jackson's theorem — Open networks | DES-M-01, DES-M-02 |
+| Jackson’s theorem — Open networks | DES-M-01, DES-M-02 |
 | Kelton et al. — *Simio and Simulation* | DES-S-01 through DES-S-07 |
 | JaamSim — Open-source DES reference | DES-L-01 cross-validation |
-| Amdahl's Law | PAR-03 |
+| Amdahl’s Law | PAR-03 |
+
+---
+
+## PART 4: Model Capability Matrix
+
+> **Purpose**: Each locomotion model has a different physical basis. This table defines which
+> tests each model is expected to pass, may not pass, or physically cannot pass by design.
+> Use this when planning new tests or evaluating a new model.
+>
+> **Levels**:
+> - `MUST` — failure = bug in the implementation
+> - `SHOULD` — expected for a well-calibrated implementation; important but forgiving
+> - `NICE` — demonstrates capability beyond baseline
+> - `MAY NOT` — known physical limitation; not a bug if it fails
+> - `CANNOT` — physically impossible by design
+
+### Current Locomotion Models
+
+| Model | Description | Reference | Status |
+|-------|-------------|-----------|--------|
+| **SFM** | Social Force Model — repulsion + contact spring | Helbing & Molnár 1995 | ✅ Implemented |
+| **ORCA** | Optimal Reciprocal Collision Avoidance — velocity-space LP | Van den Berg 2008/2011 | ✅ Implemented |
+| **GCFM-circular** | Generalized Centrifugal Force — speed-adaptive range D_i, circular | Chraibi 2010 §II | ✅ Implemented |
+| **GCFM-elliptical** | GCFM with velocity-direction elliptic semi-axes (a_v, a_min, b_min, b_max) | Chraibi 2010 §III | ❌ Not implemented |
+| **CSM** | Collision-Free Speed Model — speed reduction by gap ahead | Tordeux et al. 2016 | ❌ Not implemented |
+| **Hybrid FSM** | Density-triggered dispatch: ORCA (ρ<3.5) + SFM (ρ>3.5) | future_directions.md §2 | ❌ Not implemented |
+| **MEC/NavMesh** | Macro Element Content routing layer + locomotion underneath | future_directions.md §4 | ❌ Not implemented |
+
+### Capability Matrix
+
+| Test / Scenario | SFM | ORCA | GCFM-circular | GCFM-elliptical | CSM | Hybrid FSM | MEC/NavMesh |
+|-----------------|-----|------|---------------|-----------------|-----|------------|-------------|
+| **T1: Free walking speed** | MUST | MUST | MUST | MUST | MUST | MUST | MUST |
+| **T2: Fundamental diagram (ρ-v curve)** | SHOULD | CANNOT | MUST | MUST | SHOULD | MUST | MAY NOT |
+| **T4: Speed distribution Normal(μ,σ)** | MUST | MUST | MUST | MUST | MUST | MUST | SHOULD |
+| **T7: Bottleneck mean flow ≥1.22 ped/s** | MAY NOT | MAY NOT | SHOULD | MUST | SHOULD | MUST | SHOULD |
+| **T12: Arch formation / clogging** | MUST | CANNOT | SHOULD | SHOULD | CANNOT | MUST | CANNOT |
+| **T14: Lane formation from disorder** | SHOULD | CANNOT | SHOULD | SHOULD | NICE | SHOULD | NICE |
+| **T15: Staircase speed reduction** | MAY NOT | MAY NOT | MAY NOT | MAY NOT | MAY NOT | MAY NOT | MUST |
+| **CRW-ORCA-01: Bidirectional corridor** | SHOULD | MUST | SHOULD | SHOULD | SHOULD | MUST | NICE |
+| **CRW-ORCA-02: Circle crossing N=30** | NICE | MUST | NICE | NICE | NICE | MUST | NICE |
+| **CRW-ORCA-03: Circle crossing N=250** | MAY NOT | SHOULD | MAY NOT | MAY NOT | NICE | SHOULD | NICE |
+| **CRW-ORCA-04: Static block navigation** | SHOULD | MUST | SHOULD | SHOULD | NICE | MUST | SHOULD |
+| **CRW-ORCA-05: Crossing flows** | SHOULD | MUST | SHOULD | SHOULD | NICE | MUST | NICE |
+| **FiS: Faster-is-Slower** | MUST | CANNOT | SHOULD | SHOULD | CANNOT | MUST | CANNOT |
+| **PAR-05: GPU scaling N>10k** | SHOULD | SHOULD | SHOULD | MAY NOT | SHOULD | SHOULD | NICE |
+
+### Notes on CANNOT entries
+
+| Model | Test | Physical reason |
+|-------|------|-----------------|
+| ORCA | T2 (fundamental diagram) | No contact forces — ORCA has no density-dependent speed reduction. Agents maintain v_pref at all densities until LP3 fallback (infeasible). |
+| ORCA | T12 (arch) | Arch formation requires contact force compression at the door. ORCA prevents all contact by design. |
+| ORCA | T14 (lane formation) | Lane formation is driven by λ-anisotropy (frontal agents repel more than rear). ORCA has no λ. Confirmed by UMANS 2022. |
+| ORCA | FiS | Faster-is-Slower requires panic v₀ increasing arch persistence (more pressure = more clogging). ORCA has no arch. |
+| CSM | T12, FiS | CSM uses speed-reduction rule, not spring forces — no contact compression, no arch. |
+
+### Guidance for Future Models
+
+When implementing a new locomotion model (e.g., CSM, GCFM-elliptical, Hybrid FSM):
+1. Identify which row in the matrix it maps to (or add a new row)
+2. Run the MUST tests first — these are non-negotiable for the model’s physics claims
+3. Run SHOULD tests — document any failures in `validation_caveats.md`
+4. Use CANNOT entries to document explicitly what the model does NOT claim to do
+5. Add new test IDs (CRW-X-xx) if the new model has unique validation scenarios without existing equivalents
+
