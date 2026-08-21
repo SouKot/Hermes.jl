@@ -692,45 +692,58 @@ julia --startup-file=no --project=. -t auto test/tier3_cross_library.jl
 
 ---
 
-### Sprint 3G — RiMEA T2: GCF Calibration + Tighten Fundamental Diagram `[x]` COMPLETE
+### Sprint 3G — RiMEA T2: GCF Calibration + Tighten Fundamental Diagram `[x]` SUPERSEDED by Sprint 3F (λ-fix)
 
-> **Status**: All 30 tier-3 tests passing · commit `eac101d` · 2026-08-19  
-> **Testset**: `3F` in code (Fundamental Diagram testset, now GCF-enabled)  
-> **Caveats**: ρ=3.0 ratio=1.796 (jam-density physics not modeled) — see §8 of Validation Caveats  
-> **RiMEA path**: T2 **fully compliant** for ρ∈{0.5, 1.0, 2.0} (all within ±15% of Weidmann)
+> **⚠️ SUPERSEDED**: This sprint used a broken `gcf_force` (isotropic — missing λ anisotropy) and dt=0.05s.
+> Results passed by coincidence. See Sprint 3F section below for the corrected canonical work.
+> Commit `eac101d` was reverted at `c9bd2ee` (2026-08-21).
 
-**What changed**:
+**What changed** (infrastructure only — kept in live code):
 - `FundamentalDiagramConfig` gained two new fields: `η` (GCF factor, s) and `V₀_gcf` (GCF potential, N)
-- `run_fundamental_diagram!` dispatches GCF when `η > 0` (sets `SFMParams.A = V₀_gcf`)
-- `print_fd_result` accepts `tol` kwarg (was hardcoded ±40%)
-- Calibration sweep: 14 configs (η ∈ {0.3, 0.5} × V₀ ∈ {30,50,80,100,120,150,200} N) × 4 densities
+- `run_fundamental_diagram!` dispatches GCF when `η > 0`
+- `print_fd_result` accepts `tol` kwarg
 
-**Calibration results** (2026-08-19 sweep):
+**Results (old, with broken isotropic GCF, commit `eac101d` — reverted)**:
 
-| Config | ρ=0.5 | ρ=1.0 | ρ=2.0 | ρ=3.0 speed mono? | winner? |
+| Config | ρ=0.5 | ρ=1.0 | ρ=2.0 | ρ=3.0 speed mono? | valid? |
 |---|---|---|---|---|---|
-| SFM (η=0, baseline) | 1.032 | 1.247 ❌ | 0.937 | ❌ | |
-| GCF η=0.5, V₀=30 | 1.032 | 0.778 ❌ | 0.787 | ❌ | |
-| **GCF η=0.5, V₀=50** | **1.033** | **0.862 ✅** | **0.993 ✅** | **✅** | **★ BEST** |
-| GCF η=0.5, V₀=80 | 1.034 | 0.798 | 0.918 | ❌ | |
+| **GCF η=0.5, V₀=50N** | 1.033 | 0.862 | 0.993 | ✅ | ❌ **artefact — isotropic GCF** |
 
-**Key results** (GCF η=0.5, V₀=50N, seed=42):
+> ρ=3.0 ratio=1.796 was **not asserted** (diagnostic only). The passing numbers at ρ≤2.0 were coincidental.
+
+---
+
+### Sprint 3F (λ-bug fix) — RiMEA T2: GCF+λ, All 4 Densities `[x]` COMPLETE (2026-08-21)
+
+> **Status**: All 33 tier-3 tests passing · commit `557028e` · 2026-08-21  
+> **Testset**: `3F` in code (Fundamental Diagram testset, GCF+λ enabled)  
+> **RiMEA path**: T2 **fully compliant** for **all 4 densities** ρ∈{0.5, 1.0, 2.0, 3.0} (±15% of Weidmann)
+
+**Three root-cause bugs fixed**:
+1. `gcf_force` was isotropic (missing `w = λ + (1-λ)(1+cosφ)/2` weight) — contradicts Chraibi 2010 §II
+2. `dt=0.05s` — GCFM is stiff; Euler instability caused non-monotonic speeds. Fixed to `dt=0.01s`
+3. `V₀=50N` was calibrated to broken code. With correct physics, `V₀=70N` matches Weidmann
+
+**Calibration**: Chraibi 2010 recommended η=0.5s, λ=0.5. V₀=70N found by bisection on ρ=2.0.
+Not a sweep-and-fit. Parameters are physically motivated.
+
+**Key results** (GCF+λ η=0.5, V₀=70N, λ=0.5, dt=0.01s, seed=42):
 
 | ρ (ped/m²) | v_sim | v_weidmann | ratio | Status |
 |---|---|---|---|---|
-| 0.5 | 1.341 m/s | 1.298 | **1.033** | ✅ ±15% |
-| 1.0 | 0.912 m/s | 1.058 | **0.862** | ✅ ±15% |
-| 2.0 | 0.602 m/s | 0.606 | **0.993** | ✅ ±15% |
-| 3.0 | 0.594 m/s | 0.331 | 1.796 | ⚠ diagnostic; speed mono ✅ |
+| 0.5 | 1.327 m/s | 1.298 | **1.022** | ✅ ±15% |
+| 1.0 | 0.933 m/s | 1.058 | **0.882** | ✅ ±15% |
+| 2.0 | 0.581 m/s | 0.606 | **0.959** | ✅ ±15% |
+| 3.0 | 0.330 m/s | 0.331 | **0.997** | ✅ ±15% (NOW ASSERTED) |
 
-> **ρ=3.0 artifact fixed**: SFM gave v(3.0)=0.721 > v(2.0)=0.568 (non-monotonic). GCF gives v(3.0)=0.594 < v(2.0)=0.602 (monotonic). Ratio=1.796 remains — jam-density physics requires cohesive body forces beyond SFM+GCF scope.
-
-> **GCF + lane formation attempted**: GCF bypasses λ-anisotropy (isotropic force), reducing lane score 0.585 → 0.525. Testset 3G reverted to SFM. GCF+λ combination deferred to future sprint.
+> **ρ=3.0 breakthrough**: The λ-anisotropy amplifies front-neighbor repulsion, naturally stalling agents at jam density (v≈0.33 m/s ≈ Weidmann jam speed). Previously this density was "diagnostic only." It is now a full assertion.
 
 **Assertions passed** (testset `3F` in `tier3_cross_library.jl`):
-- All 3 density points within ±15% of Weidmann ✅
-- v(3.0) < v(2.0) (speed monotonicity, all 4 points) ✅
+- All 4 density points within ±15% of Weidmann ✅
+- v(3.0) < v(2.0) < v(1.0) < v(0.5) (strict monotonicity) ✅
 - Free-flow sanity: v(0.5) ≥ 0.85 × v_weidmann(0.5) ✅
+
+**See**: [Validation Caveats §11](./2026-08-19_validation_caveats.md) for full root-cause analysis.
 
 ---
 
@@ -764,16 +777,41 @@ julia --startup-file=no --project=. -t auto test/tier3_cross_library.jl
 
 #### Sprint 3I — RiMEA T7: Bottleneck Flow ±15% of Weidmann `[ ]` NOT STARTED
 
-**Goal**: Close the factor-of-5 gap in `3B-res` (current `peak_local_rate = 0.9 ped/s` vs Weidmann 1.44 ped/s). Tighten reservoir bottleneck assertion to within ±15%.
+**Goal**: Achieve **mean** flow rate ≥ 1.22 ped/s (≥85% of Weidmann 1.44 ped/s) over the
+60s measurement window. This is a mean assertion, not peak — it requires sustained flow,
+not just a burst when an arch breaks.
 
-**Root cause of gap**: `3B-res` uses a 10×4m corridor and 80 agents; arch deadlocks mean peak flow of 0.9 ped/s only occurs in a 10s burst. The mean over 60s is 0.23 ped/s.
+**Current SFM gap (after λ-fix, commit `557028e`)**:
+- 3B-res `peak_local_rate` ≈ 0.6 ped/s (best 10s window)
+- 3B-res `mean_flow_rate` ≈ 0.15 ped/s (60s average, arch deadlocks dominate)
+- **Gap to target**: 8× below on mean; 2× below even on peak
 
-**Approach options**:
-1. Stochastic noise (σ > 0) to break arch deadlocks more frequently
-2. Smaller dt for better arch dynamics
-3. GCF (from Sprint 3G) reduces arch persistence
+**Previous attempt**: commit `cfd116f` achieved `peak = 2.2 ped/s` via a **double-integration
+bug** (agents with both MotionParams+ORCAParams were integrated twice per step, giving
+2× effective velocity). This was reverted at `c9bd2ee` as physically dishonest.
 
-**Acceptance criteria**: Mean flow rate ≥ 1.22 ped/s (≥85% of Weidmann 1.44 ped/s) over 60s measurement window.
+**Root cause of SFM gap**: SFM contact forces at the door create an arch that locks for 40–60s
+between flow bursts. Mean flow is dominated by deadlock time, not flow-burst rate.
+
+**Approach options (in order of scientific legitimacy)**:
+1. **SFM with arch-breaking mechanisms** (original plan — most authentic for human crowd physics):
+   - Stochastic noise (σ > 0) to perturb arch symmetry
+   - Smaller dt (now 0.01s — already improved)
+   - GCF reduces arch persistence (reduced contact stiffness)
+2. **ORCA-based flow** (velocity-space, no contact forces → no arch formation):
+   - Physically different from human crowd behavior (humans DO form arches)
+   - Can achieve sustained flow near Weidmann, but as a *navigation model*, not crowd physics
+   - JuPedSim uses GCFM/CFSM for T7, not ORCA/RVO2
+   - Must be clearly labeled and caveated if used
+3. **GCFM elliptical (JuPedSim’s actual approach)**: not yet implemented
+
+**Acceptance criteria** (unchanged from original specification):
+- **Mean** flow rate ≥ 1.22 ped/s (≥85% of Weidmann 1.44 ped/s) over 60s measurement window
+- If ORCA approach used: must also assert mean (not just peak), and document model-choice caveat
+
+**Pre-requisite**: Fix double-integration bug in `integrate_physics_system!` (ORCAParams loop
+gives 2× movement — separate bug from `cfd116f`, exists in live code). This fix is safe for
+all existing tests (SFM tests unaffected; ORCA tests 3A still pass but with corrected physics).
 
 ---
 
