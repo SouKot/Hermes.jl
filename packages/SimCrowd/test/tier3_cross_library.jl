@@ -939,34 +939,43 @@ end
     # ─────────────────────────────────────────────────────────────────────────
     # TEST 3F: CRW-M-02 Fundamental Diagram — speed vs. density (Weidmann 1993)
     # Source: Weidmann (1993), Transporttechnik der Fussgänger
-    # RiMEA T2: v(ρ) within ±15% of Weidmann. Sprint 3G (GCF calibration) achieves this.
+    # RiMEA T2: v(ρ) within ±15% of Weidmann for ρ ∈ {0.5, 1.0, 2.0, 3.0}.
     #
     # WHAT THIS TEST VALIDATES:
     #   - Monotonic speed decrease with density (qualitative fundamental diagram)
-    #   - GCF (Chraibi 2010, η=0.5s, V₀=50N) gives ±15% match for ρ ∈ {0.5, 1.0, 2.0}
-    #   - Speed at ρ=3.0 is monotonically below ρ=2.0 (artifact fixed vs pure SFM)
+    #   - GCF (Chraibi 2010) ±15% match for ALL densities ρ ∈ {0.5, 1.0, 2.0, 3.0}
     #
-    # CALIBRATION RESULTS (Sprint 3G sweep, 2026-08-19):
-    #   Pure SFM: ρ=0.5: 1.032, ρ=1.0: 1.247 ❌, ρ=2.0: 0.937, ρ=3.0: 2.18 ❌ (non-monotonic)
-    #   GCF η=0.5 V₀=50: ρ=0.5: 1.033 ✅, ρ=1.0: 0.862 ✅, ρ=2.0: 0.993 ✅, ρ=3.0: mono ✅
+    # CALIBRATION HISTORY (2026-08-21 λ-fix root-cause chain):
+    #   Sprint 3G (stale, V₀=50, dt=0.05): ρ=1.0: 0.862, ρ=2.0: 0.993 — WRONG.
+    #   These numbers were physically incorrect because:
+    #     1. dt=0.05s: 5× the Chraibi 2010 recommended dt=0.01s. Euler over-integration
+    #        of stiff forces at high density created fake slowing (not real equilibrium).
+    #     2. λ-bug: gcf_force was ISOTROPIC (no anisotropy weight). In a periodic
+    #        corridor, isotropic forces cancel exactly (each agent pushed equally forward
+    #        and backward → net=0). Without λ, ratio≈1.0 for ALL densities at dt=0.01.
+    #     3. V₀=50: too weak (verified at dt=0.01 — gave free-flow at all densities).
     #
-    # WHY ρ=3.0 RATIO IS NOT ASSERTED:
-    #   At jam density (ρ=3.0), Weidmann predicts v=0.331 m/s — nearly stopped.
-    #   SFM+GCF gives v≈0.595 m/s (ratio 1.796). Root cause: jam-density crowd
-    #   physics requires cohesive body forces not modeled in SFM. JuPedSim also
-    #   excludes ρ>2.5 from its RiMEA T2 pass criteria. See Validation Caveats §8.
+    #   After fixes:
+    #     - Added λ anisotropy to gcf_force (Chraibi 2010 §II explicitly requires kij)
+    #     - Changed FundamentalDiagramConfig default dt: 0.05 → 0.01 (paper-correct)
+    #     - Calibrated V₀: 50 → 70N (fine sweep over [60,70,80,90,100], seed=42)
+    #     - Result: ALL 4 densities within ±15%, monotone, stable across 5 seeds
     #
-    # Setup: 20×4m corridor, periodic x-BC, σ=0, seed=42
-    # Force model: GCF (η=0.5s, V₀=50N) + Coulomb contact (μ=0.5)
+    # CALIBRATION RESULTS (λ-fixed GCF, dt=0.01, seed=42):
+    #   GCF η=0.5 V₀=70: ρ=0.5: 0.942 ✅, ρ=1.0: 0.985 ✅, ρ=2.0: 1.122 ✅, ρ=3.0: 1.110 ✅
+    #   Seed stability (5 seeds): ρ=2.0 ∈ [1.122,1.132], ρ=3.0 ∈ [1.096,1.110]
+    #
+    # Setup: 20×4m corridor, periodic x-BC, σ=0, seed=42, dt=0.01s
+    # Force model: GCF (η=0.5s, V₀=70N, λ=0.5) + Coulomb contact (μ=0.5)
     # Densities: ρ ∈ {0.5, 1.0, 2.0, 3.0} ped/m²
     # Weidmann: v(ρ) = 1.34 × (1 − exp(−1.913 × (1/ρ − 1/5.4)))
     # ─────────────────────────────────────────────────────────────────────────
     @testset "3F: CRW-M-02 Fundamental Diagram — speed vs density (Weidmann 1993)" begin
-        # Sprint 3G GCF parameters: η=0.5s (Chraibi 2010), V₀_gcf=50N (calibrated)
-        # See crowd_test_helpers.jl: FundamentalDiagramConfig.η and .V₀_gcf
-        cfg = FundamentalDiagramConfig{Float32}(η=0.5f0, V₀_gcf=50f0)
+        # λ-fixed GCF parameters: η=0.5s (Chraibi 2010), V₀_gcf=70N (calibrated 2026-08-21)
+        # dt=0.01 set in FundamentalDiagramConfig default (paper-correct Euler timestep).
+        cfg = FundamentalDiagramConfig{Float32}(η=0.5f0, V₀_gcf=70f0)
 
-        @printf("\n3F CRW-M-02 Fundamental Diagram (GCF η=0.5 V₀=50N, Weidmann 1993, ±15%% tolerance):\n")
+        @printf("\n3F CRW-M-02 Fundamental Diagram (GCF η=0.5 V₀=70N λ=0.5, dt=0.01, Weidmann 1993, ±15%% tolerance):\n")
         @printf("  %-12s  %-6s  %-10s  %-12s  %-8s  %-14s\n",
                 "ρ (ped/m²)", "N", "v_sim(m/s)", "v_weidmann", "ratio", "asserted?")
 
@@ -979,34 +988,22 @@ end
         print_fd_result(r_05; label="3F ✓", tol=0.15)
         print_fd_result(r_10; label="3F ✓", tol=0.15)
         print_fd_result(r_20; label="3F ✓", tol=0.15)
-        print_fd_result(r_30; label="3F ⚠ diag", tol=0.15)
-        @printf("  ↳ ρ=3.0 ratio not asserted: jam-density SFM+GCF limitation (see Caveats §8)\n")
+        print_fd_result(r_30; label="3F ✓", tol=0.15)
 
-        # ── Assertion 1: Monotonic decrease — ρ ∈ {0.5, 1.0, 2.0} ──────────
-        speeds_assert = [r_05.mean_speed, r_10.mean_speed, r_20.mean_speed]
-        @printf("  Monotonic check (reliable range): %s\n", string(round.(speeds_assert, digits=3)))
-        @test issorted(speeds_assert; rev=true)
+        # ── Assertion 1: Monotonic speed decrease across all 4 densities ─────
+        speeds_all = [r_05.mean_speed, r_10.mean_speed, r_20.mean_speed, r_30.mean_speed]
+        @printf("  Monotonic check (all 4 densities): %s\n", string(round.(speeds_all, digits=3)))
+        @test issorted(speeds_all; rev=true)
 
-        # ── Assertion 2: ρ=3.0 speed below ρ=2.0 (monotonicity across all 4) ──
-        # Ratio is not asserted (jam-density limitation). Speed monotonicity verifies
-        # GCF fixes the SFM back-repulsion artifact (SFM artifact: v(3.0) > v(2.0)).
-        @printf("  Monotonic check (ρ=3.0 vs ρ=2.0): v30=%.3f m/s, v20=%.3f m/s\n",
-                r_30.mean_speed, r_20.mean_speed)
-        @test r_30.mean_speed < r_20.mean_speed
-
-        # ── Assertion 3: Weidmann ±15% for reliable range — RiMEA T2 ─────────
-        for (r, lbl) in [(r_05,"ρ=0.5"), (r_10,"ρ=1.0"), (r_20,"ρ=2.0")]
+        # ── Assertion 2: Weidmann ±15% for ALL 4 densities — RiMEA T2 ────────
+        # ρ=3.0 now passes due to λ-fix (anisotropy makes forces directional even at jam density).
+        for (r, lbl) in [(r_05,"ρ=0.5"), (r_10,"ρ=1.0"), (r_20,"ρ=2.0"), (r_30,"ρ=3.0")]
             @printf("  %s: sim=%.3f, Weidmann=%.3f, lo=%.3f, hi=%.3f\n",
                     lbl, r.mean_speed, r.weidmann_ref,
                     0.85f0*r.weidmann_ref, 1.15f0*r.weidmann_ref)
             @test r.mean_speed >= 0.85f0 * r.weidmann_ref
             @test r.mean_speed <= 1.15f0 * r.weidmann_ref
         end
-
-        # ── Assertion 4: Free-flow sanity at ρ=0.5 ────────────────────────────
-        @printf("  Free-flow (ρ=0.5): v_sim=%.3f m/s, threshold=%.3f m/s\n",
-                r_05.mean_speed, 0.85f0*r_05.weidmann_ref)
-        @test r_05.mean_speed >= 0.85f0 * r_05.weidmann_ref
     end
 
 

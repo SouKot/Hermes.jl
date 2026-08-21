@@ -282,7 +282,7 @@ described in Weidmann (1993) and used by JuPedSim's RiMEA T2 suite.
 Base.@kwdef struct FundamentalDiagramConfig{F<:AbstractFloat}
     corridor_length :: F = F(20)
     corridor_width  :: F = F(4)
-    dt              :: F = F(0.05)
+    dt              :: F = F(0.01)    # Chraibi 2010 paper uses Euler dt=0.01s
     t_warmup        :: F = F(30)
     t_measure       :: F = F(20)
     v_pref          :: F = F(1.34)   # Weidmann free-flow speed

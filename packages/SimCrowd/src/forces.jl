@@ -209,7 +209,7 @@ end
 
 
 """
-    gcf_force(pos_i, vel_i, s_r_i, pos_j, s_r_j; V₀, η)
+    gcf_force(pos_i, vel_i, s_r_i, pos_j, s_r_j; V₀, η, λ)
 
 §1.4 — Chraibi et al. (2010) Generalized Centrifugal Force (GCF) model.
 Drop-in replacement for `psychological_force` when `SFMParams.η > 0`.
@@ -225,20 +225,25 @@ where:
   At v=1.5 m/s: D_i = 0.25 + 0.5×1.5 = 1.0 m (2–4× Helbing B=0.08 m)
   At v=0.0 m/s: D_i = 0.25 m (= social_radius)
 
-**Anisotropy:** Inherited from the force direction — the exponential is scalar, so the
-force always points along n̂_ij (away from j). The anisotropy weighting (look-ahead
-attention) from Helbing can be applied on top by the calling kernel if desired.
-This function returns the isotropic GCF force; the kernel adds the λ-weight.
+**Anisotropy (λ):** Same Helbing formula as `psychological_force`.
+Chraibi 2010 §II explicitly includes the kij anisotropy coefficient in GCFM.
+Bug fix: previously gcf_force was isotropic (no λ), causing forces to cancel
+exactly in a symmetric periodic corridor → all densities gave free-flow speed.
+
+    cos_φ = dot(e_i, −n̂_ij)   # positive when j is ahead of i
+    w = λ + (1 − λ) × (1 + cos_φ) / 2
 
 **GPU-safe:** no dynamic dispatch, all IEEE 754 operations.
 
 # References
 - Chraibi, M., Seyfried, A., Schadschneider, A. (2010). *Generalized centrifugal-force model
-  for pedestrian dynamics.* Physical Review E, 82(4), 046111.
+  for pedestrian dynamics.* Physical Review E, 82(4), 046111. §II, eq. 8.
+- Helbing, D. & Molnár, P. (1995). Social force model for pedestrian dynamics.
+  Physical Review E, 51(5), 4282. (anisotropy, same formula).
 """
 @inline function gcf_force(pos_i::SVector{2,F}, vel_i::SVector{2,F}, s_r_i::F,
                            pos_j::SVector{2,F}, s_r_j::F;
-                           V₀::F=2000f0, η::F=0.5f0) where {F<:AbstractFloat}
+                           V₀::F=2000f0, η::F=0.5f0, λ::F=F(0.5)) where {F<:AbstractFloat}
     r_ij = pos_i - pos_j
     d    = norm(r_ij)
     d < F(1e-6) && return zero(SVector{2,F})
@@ -250,9 +255,19 @@ This function returns the isotropic GCF force; the kernel adds the λ-weight.
     speed_i = norm(vel_i)
     D_i = max(s_r_i * F(0.1), s_r_i + η * speed_i)
 
+    # Anisotropy weight: same formula as psychological_force.
+    # Chraibi 2010 §II includes kij explicitly. Without it, forces cancel in
+    # a symmetric periodic corridor and the fundamental diagram cannot be reproduced.
+    w = one(F)
+    if dot(vel_i, vel_i) > F(1e-6)
+        e_i   = vel_i / speed_i
+        cos_φ = dot(e_i, -n_ij)   # positive when j is ahead of i
+        w     = λ + (one(F) - λ) * (one(F) + cos_φ) / F(2)
+    end
+
     # GCF potential: V = V₀ × exp((s_r_i + s_r_j − d) / D_i)
-    # Force = −∂V/∂pos_i = (V₀ / D_i) × exp(…) × n_ij
+    # Force = −∂V/∂pos_i = (V₀ / D_i) × exp(…) × w × n_ij
     # Same exponential structure as Helbing but with speed-adaptive decay length D_i.
     social_overlap = (s_r_i + s_r_j) - d
-    return (V₀ / D_i) * exp(social_overlap / D_i) * n_ij
+    return (V₀ / D_i) * exp(social_overlap / D_i) * w * n_ij
 end

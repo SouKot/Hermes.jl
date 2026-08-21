@@ -306,7 +306,7 @@ to completion first, then launch this kernel for Phase 3.
         # §1.4: dispatch to GCF when η > 0, else use Helbing psychological_force.
         # Both functions are @inline — no runtime dispatch on GPU.
         f_i += if η_i > zero(F)
-            gcf_force(pos_i, vel_i, s_r_i, positions[j], social_radii[j]; V₀=A_i, η=η_i)
+            gcf_force(pos_i, vel_i, s_r_i, positions[j], social_radii[j]; V₀=A_i, η=η_i, λ=λ_i)
         else
             psychological_force(pos_i, vel_i, s_r_i, positions[j], social_radii[j];
                                 A=A_i, B=B_i, λ=λ_i)
@@ -468,13 +468,13 @@ function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F},
 
         # Force on i from j — uses i's decay/anisotropy parameters
         f_ij = cpu_ηs[i] > zero(F) ?
-            gcf_force(pos_i, vel_i, s_r_i, pos_j, s_r_j; V₀=cpu_As[i], η=cpu_ηs[i]) :
+            gcf_force(pos_i, vel_i, s_r_i, pos_j, s_r_j; V₀=cpu_As[i], η=cpu_ηs[i], λ=cpu_λs[i]) :
             psychological_force(pos_i, vel_i, s_r_i, pos_j, s_r_j;
                                 A=cpu_As[i], B=cpu_Bs[i], λ=cpu_λs[i])
 
         # Force on j from i — uses j's parameters (anisotropy depends on j's velocity direction)
         f_ji = cpu_ηs[j] > zero(F) ?
-            gcf_force(pos_j, vel_j, s_r_j, pos_i, s_r_i; V₀=cpu_As[j], η=cpu_ηs[j]) :
+            gcf_force(pos_j, vel_j, s_r_j, pos_i, s_r_i; V₀=cpu_As[j], η=cpu_ηs[j], λ=cpu_λs[j]) :
             psychological_force(pos_j, vel_j, s_r_j, pos_i, s_r_i;
                                 A=cpu_As[j], B=cpu_Bs[j], λ=cpu_λs[j])
 
