@@ -93,8 +93,8 @@ Fields:
          `D_i = social_radius + η × ‖v_i‖`, giving elliptical personal space that stretches ahead.
 - `τ_gap`: §1.5 GCFM-elliptical time-gap (s). 0.0 = circular/Helbing; 0.53 = Chraibi 2010 §III.
            When τ_gap>0, `gcf_force_elliptical` is dispatched instead of `gcf_force`.
-- `b_min`: Minimum lateral semi-axis (m). At high speed. Chraibi 2010: 0.25m.
-- `b_max`: Maximum lateral semi-axis (m). At rest. Chraibi 2010: 0.30m.
+- `b_min`: Minimum lateral semi-axis (m). At high speed. Chraibi 2010 §VII: **0.20m** (not 0.25m).
+- `b_max`: Maximum lateral semi-axis (m). At rest. Chraibi 2010 §VII: **0.25m** (not 0.30m).
 """
 struct SFMParams{F<:AbstractFloat}
     A::F
@@ -109,7 +109,7 @@ end
 
 # Backward-compatible 5-arg constructor: τ_gap=0, b_min=b_max=0.25 (circular, GCF disabled)
 SFMParams(A::F, B::F, λ::F, μ::F, η::F) where {F<:AbstractFloat} =
-    SFMParams(A, B, λ, μ, η, zero(F), F(0.25), F(0.25))
+    SFMParams(A, B, λ, μ, η, zero(F), F(0.20), F(0.25))  # Chraibi 2010: b_min=0.20, b_max=0.25
 
 # Backward-compatible 4-arg constructor: η=0, τ_gap=0 (Helbing SFM)
 SFMParams(A::F, B::F, λ::F, μ::F) where {F<:AbstractFloat} =

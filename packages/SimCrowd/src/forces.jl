@@ -295,10 +295,12 @@ where the ellipse radius toward j is computed from the standard ellipse polar-ra
 **Same exponential potential** as circular `gcf_force`: V = V₀ × exp(overlap/D_i).
 **Same anisotropy** λ as Helbing/GCFM-circular.
 
-# Default calibration (Chraibi 2010, Table I)
-- `a₀ = 0.25m`  (body radius at rest = collision_radius)
-- `τ_gap = 0.53s` (time-gap for personal space growth)
-- `b_min = 0.25m`, `b_max = 0.30m` (shoulder width range)
+# Default calibration (Chraibi 2010, Table I / §VII)
+# These are the PHYSICAL BODY ELLIPSE dimensions, NOT the collision_radius:
+- `a₀ = 0.18m`  (body ellipse front semi-axis at rest; grows with speed via τ_gap)
+- `τ_gap = 0.53s` (time-gap; same value used in §II for circular D_i)
+- `b_min = 0.20m`, `b_max = 0.25m` (lateral shoulder range; narrower at speed, wider at rest)
+# Note: a₀ = 0.18m ≠ collision_radius (= 0.25m body contact radius). They model different things.
 
 # References
 - Chraibi, M., Seyfried, A., Schadschneider, A. (2010). *Generalized centrifugal-force model
@@ -306,10 +308,10 @@ where the ellipse radius toward j is computed from the standard ellipse polar-ra
 """
 @inline function gcf_force_elliptical(pos_i::SVector{2,F}, vel_i::SVector{2,F},
                                        pos_j::SVector{2,F};
-                                       a₀::F=F(0.25),        # body radius at rest (m)
-                                       τ_gap::F=F(0.53),     # Chraibi 2010 Table I
-                                       b_min::F=F(0.25),     # lateral semi-axis at high speed (m)
-                                       b_max::F=F(0.30),     # lateral semi-axis at rest (m)
+                                       a₀::F=F(0.18),        # Chraibi 2010 body ellipse front semi-axis at rest (m)
+                                       τ_gap::F=F(0.53),     # Chraibi 2010 §III time-gap (s)
+                                       b_min::F=F(0.20),     # Chraibi 2010 lateral semi-axis at high speed (m)
+                                       b_max::F=F(0.25),     # Chraibi 2010 lateral semi-axis at rest (m)
                                        V₀::F=F(70f0),        # potential strength (N)
                                        λ::F=F(0.5),          # anisotropy weight
                                        v₀_ref::F=F(1.34)) where {F<:AbstractFloat}

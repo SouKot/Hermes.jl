@@ -477,6 +477,7 @@ function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F},
         # §1.5 GCFM-elliptical (τ_gap > 0) takes priority over circular GCF (η > 0)
         f_ij = if cpu_τ_gaps[i] > zero(F)
             gcf_force_elliptical(pos_i, vel_i, pos_j;
+                                 a₀=s_r_i,  # agent's own body semi-axis (from AgentGeometry.social_radius)
                                  V₀=cpu_As[i], λ=cpu_λs[i],
                                  τ_gap=cpu_τ_gaps[i], b_min=cpu_b_mins[i], b_max=cpu_b_maxs[i])
         elseif cpu_ηs[i] > zero(F)
@@ -489,6 +490,7 @@ function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F},
         # Force on j from i
         f_ji = if cpu_τ_gaps[j] > zero(F)
             gcf_force_elliptical(pos_j, vel_j, pos_i;
+                                 a₀=s_r_j,  # agent's own body semi-axis (from AgentGeometry.social_radius)
                                  V₀=cpu_As[j], λ=cpu_λs[j],
                                  τ_gap=cpu_τ_gaps[j], b_min=cpu_b_mins[j], b_max=cpu_b_maxs[j])
         elseif cpu_ηs[j] > zero(F)
