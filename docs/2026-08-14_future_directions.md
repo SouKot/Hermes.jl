@@ -1,6 +1,6 @@
 # Hermes.jl / SimCrowd — Future Directions
 
-**Date**: 2026-08-14  
+**Date**: 2026-08-14 (last updated: 2026-08-23 after Sprint 3I)  
 **Status**: Non-committal. These are *informed possibilities*, not scheduled work.  
 **Purpose**: Prevent good ideas from being forgotten without creating false commitment in the implementation plan.  
 **Informed by**: [`crowd_simulation_discussion.md`](file:///home/sourabh/Documents/crowd_simulation_discussion.md) · architectural discussion 2026-08-14
@@ -52,10 +52,11 @@ Agent FSM:
 ```
 
 ### Why it matters for SimCrowd
-SimCrowd already has both engines fully implemented and tested independently (ORCA in 3A tests, SFM in 3B/3C tests). The missing piece is a **unified dispatch layer** that runs the appropriate engine per-agent based on local density. Benefits:
-- Eliminates the SFM "shaking artifact" in low-density normal walking (currently visible in 3B time series: agents trickle inconsistently)
+SimCrowd already has both engines fully implemented and **canonically tested** (ORCA in 3A/3I-a/b/c tests, SFM in 3B/3C tests). **Sprint 3I (2026-08-21) resolved the last physics bug** (double-integration in `physics.jl`) and validated ORCA against RVO2/UMANS published benchmarks. The missing piece is a **unified dispatch layer** that runs the appropriate engine per-agent based on local density. Benefits:
+- Eliminates the SFM "shaking artifact" in low-density normal walking (visible in 3B time series: agents trickle inconsistently)
 - Allows ORCA's collision-freedom guarantee to apply where it's tractable (ρ < 3.5 ped/m²)
 - Makes the FiS effect properly testable: at panic, all agents switch to SFM, which naturally produces arch formation at Helbing densities
+- **Would address Sprint 3J (T7 bottleneck)**: ORCA in corridor prevents arch formation; SFM near door preserves physical contact dynamics
 
 ### Implementation sketch (not committed)
 ```julia
@@ -76,8 +77,8 @@ end
 ```
 
 ### What would trigger pursuing this
-- Once 3B flow rate validation is properly implemented with a reservoir setup (the current N=50 depletion test is insufficient)
-- When we observe the shaking artifact causing test instability or incorrect physics
+- **Sprint 3J (T7 bottleneck) work** — the reservoir bottleneck test is implemented and failing to meet 1.22 ped/s. The Menge FSM hybrid is the top-ranked approach for fixing this.
+- When the shaking artifact produces test instability or incorrect physics in regression tests
 
 ---
 
@@ -168,10 +169,14 @@ A hybrid approach: macroscopic model for venue-level planning, SimCrowd microsco
 
 ## Trigger Conditions Summary
 
-| Direction | Trigger |
-|-----------|---------|
-| RiMEA validation | Real-world safety engineering use case; partnership requiring documented compliance |
-| Menge FSM dispatch | Shaking artefact causing failures; reservoir bottleneck test implemented |
-| CSM normal-flow model | RiMEA fundamental diagram scenario; shaking in low-density tests |
-| NavMesh decision layer | Mixed normal/emergency deployment; group cohesion required |
-| Continuum macro model | N > 50,000 use case; venue-planning scenario |
+| Direction | Trigger | Status (2026-08-23) |
+|-----------|---------|---------------------|
+| RiMEA T2 fundamental diagram | Physics-correct GCFM + calibration | ✅ DONE (Sprint 3F, commit `557028e`) |
+| RiMEA T4 speed distribution | Speed heterogeneity population test | ✅ DONE (Sprint 3H, commit `5e2635f`) |
+| ORCA canonical validation | Cross-validate vs RVO2/UMANS benchmarks | ✅ DONE (Sprint 3I, commit `afc8f59`) |
+| **Menge FSM dispatch** | **Reservoir bottleneck test exists; T7 gap is the trigger** | ⚠️ **TRIGGERED — Sprint 3J next** |
+| GCFM-elliptical (Chraibi 2010 §III) | T7 gap persists after Menge FSM attempt | ⏳ Pending Sprint 3J result |
+| CSM normal-flow model | RiMEA T2/T7 gap; SFM shaking in low-density tests | ⏳ Not yet triggered |
+| NavMesh decision layer | Mixed normal/emergency deployment; group cohesion required | ⏳ Not yet triggered |
+| Continuum macro model | N > 50,000 use case; venue-planning scenario | ⏳ Not yet triggered |
+| RiMEA full compliance audit | Real-world safety engineering use case | ⏳ After Sprint 3K |
