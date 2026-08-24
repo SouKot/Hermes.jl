@@ -580,3 +580,81 @@ toward the door, which causes arch formation at high density.
 | **3J GCFM-Elliptical Bottleneck** | **4** | **NEW** |
 | **Total** | **44** | **Was 40 before Sprint 3J** |
 
+---
+
+### §13.6 Sprint 3J-fix — Corrected Parameters + Seeded Noise (2026-08-24, commit 9f0cd17)
+
+**Motivation**: Post-mortem research (`2026-08-24_sprint3j_research_analysis.md`) identified
+two correctness issues from Sprint 3J:
+1. GCFM-elliptical parameters wrong vs Chraibi 2010 §VII
+2. Global RNG noise in physics integrator caused correlated, arch-reinforcing jumps
+
+#### Parameter Fix
+
+| Param | Sprint 3J (wrong) | Chraibi 2010 §VII (correct) | Impact |
+|-------|-------------------|----------------------------|--------|
+| `a₀` (front semi-axis at rest) | 0.25m (function default, but not passed from `social.jl`) | 0.25m from `AgentGeometry.social_radius` — **architecture fixed** | `social.jl` now passes `a₀=s_r_i` |
+| `b_min` (lateral, high speed) | 0.25m | **0.20m** | Narrower at speed |
+| `b_max` (lateral, rest) | 0.30m | **0.25m** | Narrower at rest |
+
+**Architecture fix**: `social.jl` was not passing `a₀` to `gcf_force_elliptical`, so it used
+the function default. When we changed the function default from 0.25→0.18, this silently broke
+the simulation. Fixed by explicitly passing `a₀=s_r_i` / `a₀=s_r_j` at the call sites so
+each agent uses its own body semi-axis regardless of function default.
+
+#### Corrected-Parameters Result (3J-fix run, 2026-08-24)
+
+**Run**: N=80, 10×4m corridor, 1m door, v₀=1.34 m/s, dt=0.01s, τ_gap=0.53s,
+**b_min=0.20m, b_max=0.25m**, seed=42 (atomic counter, stochastic per run)
+
+| Metric | Value | Threshold | Result |
+|--------|-------|-----------|--------|
+| `crossings` | 35 | ≥5 | ✅ Pass |
+| `peak_local_rate` | 1.000 ped/s | ≥0.8 ped/s | ✅ Pass |
+| `flow_rate` | **0.583 ped/s (40% Weidmann)** | ≥0.50 ped/s | ✅ Pass |
+| T7 target | 0.583 ped/s | ≥1.22 ped/s | ❌ **Not achieved** |
+
+**vs Sprint 3J result** (wrong params): 0.82 ped/s → 0.583 ped/s. The corrected, smaller
+lateral ellipse permits denser packing near the door → stronger arch formation → lower mean flow.
+The old wrong params (wider ellipse) artificially spread agents, creating less stable arches.
+
+**Diagnostic snapshot (10s windows during 60s measurement):**
+
+| Sim time | Cumul. crossings | Local rate |
+|----------|-----------------|------------|
+| t=30s (start) | 0 | 0.000 ped/s |
+| t=40s | 3 | 0.300 ped/s |
+| t=50s | 10 | **0.700 ped/s** |
+| t=60s | 20 | **1.000 ped/s** (burst) |
+| t=70s | 29 | 0.900 ped/s |
+| t=80s | 31 | 0.200 ped/s (deadlock) |
+| t=90s | 35 | 0.400 ped/s |
+
+#### Noise Fix (per-agent seeded Xoshiro)
+
+**OLD** (`physics.jl`): `randn(F)` — draws from Julia's global shared RNG.
+- **Problem 1**: All agents advance the same RNG in sequence → correlated noise
+- **Problem 2**: `Threads.@threads` reads/writes shared RNG concurrently → data race (UB)
+- **Problem 3**: Correlated noise synchronises arch lock rather than breaking it
+
+**NEW**: Per-agent `Xoshiro(hash(entity) ⊻ (call_counter ⊻ (call_counter<<32)) ⊻ salt)`
+- `_physics_call_counter` (global `Threads.Atomic{Int}`) auto-increments each call
+- Each agent gets an independent RNG seeded by entity identity × call index
+- Thread-safe (Xoshiro is local, not shared; atomic counter uses hardware atomics)
+- `σ>0` guard: deterministic agents (`σ=0`) skip RNG allocation entirely
+
+**Effect on 3B and 3C tests**: Tests using σ=0.1 (Helbing exact) previously relied on the
+global RNG's sequential behavior. With independent per-agent noise, arch dynamics are
+physically more correct but quantitatively different. No assertion thresholds needed changing
+— the atomic counter ensures different noise patterns across calls, restoring liveness.
+
+**Updated capability matrix**:
+
+| Model | T7 status | Notes |
+|-------|-----------|-------|
+| SFM (v₀=1.0) | CAN NOT (0.23 ped/s mean) | v₀ miscalibrated |
+| SFM (v₀=1.34) | MAY NOT (0.97–1.07 ped/s) | Phase A diagnostic |
+| GCFM-elliptical **CORRECTED** (b_min=0.20, b_max=0.25) | MAY NOT (0.58 ped/s mean) | **updated** |
+| Hybrid FSM (ORCA + SFM at ρ>3.5) | SHOULD | Sprint 3K |
+| CSM (Collision-Free Speed Model) | MUST | Sprint 3L |
+
