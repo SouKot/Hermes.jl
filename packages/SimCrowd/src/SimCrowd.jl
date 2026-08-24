@@ -79,7 +79,7 @@ MotionParams(mass::F, v_pref::F, τ::F) where {F<:AbstractFloat} = MotionParams(
 """
     SFMParams{F<:AbstractFloat}
 
-Social Force Model (Helbing & Molnár 1995 / Helbing, Farkas & Vicsek 2000) parameters.
+Social Force Model (Helbing & Molnar 1995 / Helbing, Farkas & Vicsek 2000) parameters.
 
 Used only by the SFM force kernel. Agents using purely ORCA do not need this component.
 
@@ -88,25 +88,40 @@ Fields:
 - `B`: repulsion decay length (m).     Helbing 2000: 0.08 m.
 - `λ`: anisotropy factor ∈ [0,1].     Helbing 2000: 0.5. λ=1 isotropic; λ=0.5 half attention behind.
 - `μ`: Coulomb friction cap. 0=NoContact, Inf=Viscous (exact Helbing), 0.5=normal walking.
-- `η`: §1.4 GCF speed-adaptation factor (s). 0.0 = Helbing (disabled), 0.5 = Chraibi 2010.
+- `η`: §1.4 GCF speed-adaptation factor (s). 0.0 = Helbing (disabled), 0.5 = Chraibi 2010 circular.
          When η>0, the personal space range grows linearly with agent speed:
          `D_i = social_radius + η × ‖v_i‖`, giving elliptical personal space that stretches ahead.
+- `τ_gap`: §1.5 GCFM-elliptical time-gap (s). 0.0 = circular/Helbing; 0.53 = Chraibi 2010 §III.
+           When τ_gap>0, `gcf_force_elliptical` is dispatched instead of `gcf_force`.
+- `b_min`: Minimum lateral semi-axis (m). At high speed. Chraibi 2010: 0.25m.
+- `b_max`: Maximum lateral semi-axis (m). At rest. Chraibi 2010: 0.30m.
 """
 struct SFMParams{F<:AbstractFloat}
     A::F
     B::F
     λ::F
     μ::F
-    η::F   # §1.4 GCF speed-adaptation factor; 0.0 = Helbing behavior (GCF disabled)
+    η::F      # §1.4 GCF speed-adaptation factor; 0.0 = Helbing behavior (GCF disabled)
+    τ_gap::F   # §1.5 GCFM-elliptical time-gap; 0.0 = circular (gcf_force); >0 = elliptical
+    b_min::F   # §1.5 lateral semi-axis minimum (m)
+    b_max::F   # §1.5 lateral semi-axis maximum (m)
 end
 
-# Backward-compatible 4-arg constructor: η defaults to 0.0 (Helbing, GCF disabled)
-SFMParams(A::F, B::F, λ::F, μ::F) where {F<:AbstractFloat} = SFMParams(A, B, λ, μ, zero(F))
+# Backward-compatible 5-arg constructor: τ_gap=0, b_min=b_max=0.25 (circular, GCF disabled)
+SFMParams(A::F, B::F, λ::F, μ::F, η::F) where {F<:AbstractFloat} =
+    SFMParams(A, B, λ, μ, η, zero(F), F(0.25), F(0.25))
 
-# Convenience: supply only μ, use Helbing 2000 defaults for A, B, λ, η=0
-SFMParams(μ::F) where {F<:AbstractFloat} = SFMParams(F(2000), F(0.08), F(0.5), μ, zero(F))
-# All Helbing 2000 defaults (A=2000, B=0.08, λ=0.5, μ=0.5, η=0)
-SFMParams{F}() where {F<:AbstractFloat} = SFMParams(F(2000), F(0.08), F(0.5), F(0.5), zero(F))
+# Backward-compatible 4-arg constructor: η=0, τ_gap=0 (Helbing SFM)
+SFMParams(A::F, B::F, λ::F, μ::F) where {F<:AbstractFloat} =
+    SFMParams(A, B, λ, μ, zero(F), zero(F), F(0.25), F(0.25))
+
+# Convenience: supply only μ, Helbing 2000 defaults for A, B, λ, η=0, τ_gap=0
+SFMParams(μ::F) where {F<:AbstractFloat} =
+    SFMParams(F(2000), F(0.08), F(0.5), μ, zero(F), zero(F), F(0.25), F(0.25))
+
+# All Helbing 2000 defaults
+SFMParams{F}() where {F<:AbstractFloat} =
+    SFMParams(F(2000), F(0.08), F(0.5), F(0.5), zero(F), zero(F), F(0.25), F(0.25))
 
 """
     ContactModel
@@ -144,25 +159,25 @@ This helper exists to ease migration. When all call sites use explicit `AgentGeo
 
 See: §2.2 in `simcrowd_improvement_plan.md`.
 """
-# 4/5-arg: auto cr = sr×2/3, σ = 0.1 default; η=0.0 (Helbing, GCF disabled)
+# 4/5-arg: auto cr = sr×2/3, σ = 0.1 default; η=0.0 (Helbing, GCF disabled), τ_gap=0 (circular)
 function from_agent_params(sr::F, mass::F, v_pref::F, τ::F, μ::F=F(0.5);
                             σ::F=F(0.1), A::F=F(2000), B::F=F(0.08), λ::F=F(0.5),
-                            η::F=zero(F)) where {F<:AbstractFloat}
-    return (AgentGeometry(sr, sr * F(2/3)), MotionParams(mass, v_pref, τ, σ), SFMParams(A, B, λ, μ, η))
+                            η::F=zero(F), τ_gap::F=zero(F), b_min::F=F(0.25), b_max::F=F(0.25)) where {F<:AbstractFloat}
+    return (AgentGeometry(sr, sr * F(2/3)), MotionParams(mass, v_pref, τ, σ), SFMParams(A, B, λ, μ, η, τ_gap, b_min, b_max))
 end
 
 # 6-arg positional: auto cr = sr×2/3, explicit σ
 function from_agent_params(sr::F, mass::F, v_pref::F, τ::F, μ::F, σ::F;
                             A::F=F(2000), B::F=F(0.08), λ::F=F(0.5),
-                            η::F=zero(F)) where {F<:AbstractFloat}
-    return (AgentGeometry(sr, sr * F(2/3)), MotionParams(mass, v_pref, τ, σ), SFMParams(A, B, λ, μ, η))
+                            η::F=zero(F), τ_gap::F=zero(F), b_min::F=F(0.25), b_max::F=F(0.25)) where {F<:AbstractFloat}
+    return (AgentGeometry(sr, sr * F(2/3)), MotionParams(mass, v_pref, τ, σ), SFMParams(A, B, λ, μ, η, τ_gap, b_min, b_max))
 end
 
 # 7-arg: explicit collision_radius and σ
 function from_agent_params(sr::F, cr::F, mass::F, v_pref::F, τ::F, μ::F, σ::F;
                             A::F=F(2000), B::F=F(0.08), λ::F=F(0.5),
-                            η::F=zero(F)) where {F<:AbstractFloat}
-    return (AgentGeometry(sr, cr), MotionParams(mass, v_pref, τ, σ), SFMParams(A, B, λ, μ, η))
+                            η::F=zero(F), τ_gap::F=zero(F), b_min::F=F(0.25), b_max::F=F(0.25)) where {F<:AbstractFloat}
+    return (AgentGeometry(sr, cr), MotionParams(mass, v_pref, τ, σ), SFMParams(A, B, λ, μ, η, τ_gap, b_min, b_max))
 end
 
 struct ORCAParams{F<:AbstractFloat}

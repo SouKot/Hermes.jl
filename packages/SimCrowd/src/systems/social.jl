@@ -411,14 +411,21 @@ function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F},
     cpu_Bs  = search.cpu_Bs
     cpu_λs  = search.cpu_λs
     cpu_ηs  = search.cpu_ηs
+    # §1.5 GCFM-elliptical per-agent params (pre-allocated in CPUNeighborSearch)
+    cpu_τ_gaps = search.cpu_τ_gaps
+    cpu_b_mins  = search.cpu_b_mins
+    cpu_b_maxs  = search.cpu_b_maxs
     p_idx = 1
     for (_, _, _, _, sfm_col) in Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}, SFMParams{F}))
         for i in eachindex(sfm_col)
-            cpu_mus[p_idx] = sfm_col[i].μ
-            cpu_As[p_idx]  = sfm_col[i].A
-            cpu_Bs[p_idx]  = sfm_col[i].B
-            cpu_λs[p_idx]  = sfm_col[i].λ
-            cpu_ηs[p_idx]  = sfm_col[i].η
+            cpu_mus[p_idx]    = sfm_col[i].μ
+            cpu_As[p_idx]     = sfm_col[i].A
+            cpu_Bs[p_idx]     = sfm_col[i].B
+            cpu_λs[p_idx]     = sfm_col[i].λ
+            cpu_ηs[p_idx]     = sfm_col[i].η
+            cpu_τ_gaps[p_idx] = sfm_col[i].τ_gap  # §1.5 elliptical dispatch flag
+            cpu_b_mins[p_idx] = sfm_col[i].b_min
+            cpu_b_maxs[p_idx] = sfm_col[i].b_max
             p_idx += 1
         end
     end
@@ -466,17 +473,30 @@ function _update_social_forces_impl!(world::World, search::CPUNeighborSearch{F},
         pos_i = positions[i]; vel_i = velocities[i]; s_r_i = social_radii[i]
         pos_j = positions[j]; vel_j = velocities[j]; s_r_j = social_radii[j]
 
-        # Force on i from j — uses i's decay/anisotropy parameters
-        f_ij = cpu_ηs[i] > zero(F) ?
-            gcf_force(pos_i, vel_i, s_r_i, pos_j, s_r_j; V₀=cpu_As[i], η=cpu_ηs[i], λ=cpu_λs[i]) :
+        # Force on i from j
+        # §1.5 GCFM-elliptical (τ_gap > 0) takes priority over circular GCF (η > 0)
+        f_ij = if cpu_τ_gaps[i] > zero(F)
+            gcf_force_elliptical(pos_i, vel_i, pos_j;
+                                 V₀=cpu_As[i], λ=cpu_λs[i],
+                                 τ_gap=cpu_τ_gaps[i], b_min=cpu_b_mins[i], b_max=cpu_b_maxs[i])
+        elseif cpu_ηs[i] > zero(F)
+            gcf_force(pos_i, vel_i, s_r_i, pos_j, s_r_j; V₀=cpu_As[i], η=cpu_ηs[i], λ=cpu_λs[i])
+        else
             psychological_force(pos_i, vel_i, s_r_i, pos_j, s_r_j;
                                 A=cpu_As[i], B=cpu_Bs[i], λ=cpu_λs[i])
+        end
 
-        # Force on j from i — uses j's parameters (anisotropy depends on j's velocity direction)
-        f_ji = cpu_ηs[j] > zero(F) ?
-            gcf_force(pos_j, vel_j, s_r_j, pos_i, s_r_i; V₀=cpu_As[j], η=cpu_ηs[j], λ=cpu_λs[j]) :
+        # Force on j from i
+        f_ji = if cpu_τ_gaps[j] > zero(F)
+            gcf_force_elliptical(pos_j, vel_j, pos_i;
+                                 V₀=cpu_As[j], λ=cpu_λs[j],
+                                 τ_gap=cpu_τ_gaps[j], b_min=cpu_b_mins[j], b_max=cpu_b_maxs[j])
+        elseif cpu_ηs[j] > zero(F)
+            gcf_force(pos_j, vel_j, s_r_j, pos_i, s_r_i; V₀=cpu_As[j], η=cpu_ηs[j], λ=cpu_λs[j])
+        else
             psychological_force(pos_j, vel_j, s_r_j, pos_i, s_r_i;
                                 A=cpu_As[j], B=cpu_Bs[j], λ=cpu_λs[j])
+        end
 
         psych_out[i] += f_ij
         psych_out[j] += f_ji

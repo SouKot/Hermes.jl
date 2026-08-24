@@ -242,24 +242,27 @@ Two separate `ParticleSystem` objects are maintained:
 - `psych_system`: psychological forces (asymmetric — f_ij ≠ −f_ji; both directions
   computed per pair in a single `pairwise!` pass at O(N×k) cost)
 
-Five parameter buffers (`cpu_mus`, `cpu_As`, `cpu_Bs`, `cpu_λs`, `cpu_ηs`) are
+Eight parameter buffers (`cpu_mus`, `cpu_As`, `cpu_Bs`, `cpu_λs`, `cpu_ηs`,
+`cpu_τ_gaps`, `cpu_b_mins`, `cpu_b_maxs`) are
 pre-allocated in the struct and filled from ECS once per step, eliminating the
-5 × `Vector{F}(undef, N)` allocations that previously occurred per step.
+per-step Vector allocations that previously occurred.
 """
 mutable struct CPUNeighborSearch{F<:AbstractFloat, Sys} <: AbstractNeighborSearch{F}
     cell_size::F
     grid_min::SVector{2, F}
     grid_max::SVector{2, F}
-    unitcell::Union{Nothing, SVector{2, F}}  # nothing = non-periodic (default); SVector = periodic box
-    system::Sys          # CellListMap ParticleSystem for contact forces (symmetric)
-    psych_system::Sys    # CellListMap ParticleSystem for psych forces (asymmetric, O(N×k))
+    unitcell::Union{Nothing, SVector{2, F}}
+    system::Sys
+    psych_system::Sys
     # Pre-allocated per-agent parameter buffers — staged from ECS once per step.
-    # Eliminates 5 × Vector{F}(undef, N) allocations per step (§3.2 / Sprint 7).
-    cpu_mus::Vector{F}   # Coulomb friction cap μ
-    cpu_As::Vector{F}    # Social repulsion strength A
-    cpu_Bs::Vector{F}    # Social repulsion decay length B
-    cpu_λs::Vector{F}    # Anisotropy factor λ
-    cpu_ηs::Vector{F}    # §1.4 GCF speed-adaptation factor η (0 = Helbing)
+    cpu_mus::Vector{F}    # Coulomb friction cap μ
+    cpu_As::Vector{F}     # Social repulsion strength A
+    cpu_Bs::Vector{F}     # Social repulsion decay length B
+    cpu_λs::Vector{F}     # Anisotropy factor λ
+    cpu_ηs::Vector{F}     # §1.4 GCF speed-adaptation factor η (0 = Helbing/circular)
+    cpu_τ_gaps::Vector{F} # §1.5 GCFM-elliptical time-gap τ_gap (0 = circular)
+    cpu_b_mins::Vector{F} # §1.5 lateral semi-axis minimum b_min (m)
+    cpu_b_maxs::Vector{F} # §1.5 lateral semi-axis maximum b_max (m)
 end
 
 function CPUNeighborSearch(N::Int, grid_min::SVector{2,F}, grid_max::SVector{2,F}, cell_size::F;
@@ -301,16 +304,20 @@ function CPUNeighborSearch(N::Int, grid_min::SVector{2,F}, grid_max::SVector{2,F
     end
 
     # Pre-allocate parameter buffers (filled from ECS in _update_social_forces_impl!)
-    cpu_mus = Vector{F}(undef, N)
-    cpu_As  = Vector{F}(undef, N)
-    cpu_Bs  = Vector{F}(undef, N)
-    cpu_λs  = Vector{F}(undef, N)
-    cpu_ηs  = Vector{F}(undef, N)
+    cpu_mus    = Vector{F}(undef, N)
+    cpu_As     = Vector{F}(undef, N)
+    cpu_Bs     = Vector{F}(undef, N)
+    cpu_λs     = Vector{F}(undef, N)
+    cpu_ηs     = Vector{F}(undef, N)
+    cpu_τ_gaps = Vector{F}(undef, N)  # §1.5 GCFM-elliptical
+    cpu_b_mins = Vector{F}(undef, N)  # §1.5
+    cpu_b_maxs = Vector{F}(undef, N)  # §1.5
 
     return CPUNeighborSearch{F, typeof(sys)}(
         cell_size, grid_min, grid_max, unitcell,
         sys, psych_sys,
-        cpu_mus, cpu_As, cpu_Bs, cpu_λs, cpu_ηs
+        cpu_mus, cpu_As, cpu_Bs, cpu_λs, cpu_ηs,
+        cpu_τ_gaps, cpu_b_mins, cpu_b_maxs
     )
 end
 

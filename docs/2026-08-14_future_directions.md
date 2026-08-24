@@ -34,10 +34,13 @@ Professional-grade crowd simulation libraries (JuPedSim, AnyLogic, SimWalk, Pede
 
 ---
 
-## 2. Menge-Style Behavioural State Machine (Near-Term Priority)
+## 2. Hybrid FSM (Density-Triggered Locomotion Dispatch) — Sprint 3K
+
+> **Status (2026-08-23)**: TRIGGERED. Pre-implementation research phase required before any code.  
+> **Depends on**: Sprint 3J (GCFM-elliptical) completing first — both ORCA and SFM must be individually validated before combining.
 
 ### What it is
-[Menge](https://github.com/MengeCrowdSim/Menge) (UNC Chapel Hill) implements a **Finite State Machine (FSM)** over agent behaviour. Each agent runs a behaviour state (e.g., `WALKING_NORMAL`, `EVACUATING_PANIC`), and the *locomotion model* bound to that state can be swapped independently:
+[Menge](https://github.com/MengeCrowdSim/Menge) (UNC Chapel Hill, Curtis et al. 2016) implements a **Finite State Machine (FSM)** over agent behaviour. Each agent runs a behaviour state (e.g., `WALKING_NORMAL`, `EVACUATING_PANIC`), and the *locomotion model* bound to that state can be swapped independently:
 
 ```
 Agent FSM:
@@ -48,37 +51,77 @@ Agent FSM:
   Transitions:
     NORMAL → DENSE:    local density ρ > 3.5 ped/m²  (contact regime begins)
     DENSE  → NORMAL:   local density ρ < 2.5 ped/m²  (hysteresis to prevent chatter)
-    *      → EVACUATE: alarm event
+    *      → EVACUATE: alarm event (DES integration point)
 ```
+
+### Pre-Implementation Research Requirement (mandatory for Sprint 3K)
+
+Before any implementation, the following must be documented in a `docs/sprint3k_hybrid_fsm_research.md` file:
+
+#### A. Established Libraries That Implement Hybrid FSM
+
+| Library | Approach | Published reference | Shortcomings documented? |
+|---------|----------|--------------------|-----------------------------|
+| **Menge** (UNC Chapel Hill) | FSM over pluggable locomotion models; density-triggered state transitions; ORCA + SF plug-ins | Curtis, Best, Manocha (2016) *J. Autonomous Robots* | Yes: state chatter at threshold density; no continuous blending |
+| **JuPedSim** (FZ Jülich) | Uses model layers: GCFM-elliptical for normal walking, activates body-contact forces only when physical overlap occurs (implicit FSM) | Chraibi et al. 2010; Tordeux 2016 | Yes: contact activation threshold is sensitive to `cr` param |
+| **STEPS** (Mott MacDonald) | Commercial; density-adaptive speed-reduction, no published model | Internal | No public paper |
+| **MassMotion** (Oasys) | Density-triggered profile switching (normal/emergency/evacuation) | Internally documented | Partial — `flow_model_switching` paper 2019 |
+| **UMANS** (Claes et al. 2022) | Pluggable simulation pipeline; ORCA + SFM as separate plugins; no density-triggered FSM | UMANS 2022 | Yes: agents can only use one model per run |
+
+**Key finding from literature**: Menge is the most general published Hybrid FSM design. Its key architectural decisions:
+1. **Pluggable behaviour graph** — states and transitions are configured (not hardcoded), similar to a BehaviorTree
+2. **Locomotion model is per-state** — any state can bind any locomotion model; the FSM is agnostic to physics
+3. **Density estimated from neighbor search** — exact same neighbor list used for force computation, zero extra cost
+4. **Hysteresis band required** — without it, agents flip states every step at threshold (chatter instability)
+
+#### B. Known Shortcomings to Address in Sprint 3K
+
+| Shortcoming | Source | Our mitigation |
+|-------------|--------|----------------|
+| **State chatter** at ρ ≈ threshold | Menge paper §5.2 | Hysteresis band (ρ_off < ρ_on), per-agent mode history |
+| **Discontinuous force** at transition | JuPedSim internal tests | Blend window: interpolate forces for 1–2 steps at mode switch |
+| **Density estimation noise** | All libraries | Use 3-step rolling average of local ρ per agent |
+| **No arch at moderate density** | This codebase (see §12 caveats) | Documented explicitly; T12/FiS remain SFM-only tests |
+| **Non-reciprocal transitions** | Menge §5.3 | If agent i switches to SFM but neighbors are ORCA, forces are asymmetric — document and test |
+
+#### C. Target Design for Sprint 3K
+
+The Sprint 3K implementation should be the **most general, modular, configurable** version consistent with the codebase's ECS architecture:
+
+```julia
+# Target Sprint 3K struct (based on Menge §3 architecture)
+Base.@kwdef struct HybridFSMParams{F<:AbstractFloat}
+    # Density thresholds (Menge defaults: 3.5 / 2.5 ped/m²)
+    ρ_on            :: F = F(3.5)      # ORCA → SFM threshold (ped/m²)
+    ρ_off           :: F = F(2.5)      # SFM → ORCA threshold (ped/m²); must be < ρ_on
+    # Density estimation
+    density_radius  :: F = F(2.0)      # neighbor search radius for local ρ estimate (m)
+    density_avg_n   :: Int = 3         # rolling average window (steps) to reduce chatter
+    # Blend window (force continuity at mode switch)
+    blend_steps     :: Int = 2         # number of steps to interpolate forces at transition
+    # Underlying model params (reuse existing structs — no duplication)
+    sfm_params      :: SFMParams{F}    # populated from existing SFMParams constructor
+    orca_params     :: ORCAParams{F}   # populated from existing ORCAParams constructor
+end
+```
+
+This design:
+- Is configured at World-setup time (no hardcoded thresholds)
+- Reuses existing `SFMParams` + `ORCAParams` — no new force kernels
+- Has explicit `blend_steps` for force continuity
+- Documents the non-reciprocal transition limitation explicitly
 
 ### Why it matters for SimCrowd
-SimCrowd already has both engines fully implemented and **canonically tested** (ORCA in 3A/3I-a/b/c tests, SFM in 3B/3C tests). **Sprint 3I (2026-08-21) resolved the last physics bug** (double-integration in `physics.jl`) and validated ORCA against RVO2/UMANS published benchmarks. The missing piece is a **unified dispatch layer** that runs the appropriate engine per-agent based on local density. Benefits:
-- Eliminates the SFM "shaking artifact" in low-density normal walking (visible in 3B time series: agents trickle inconsistently)
+SimCrowd already has both engines fully implemented and **canonically tested** (ORCA in 3A/3I-a/b/c tests, SFM in 3B/3C tests). The missing piece is a **unified dispatch layer** that runs the appropriate engine per-agent based on local density. Benefits:
+- Eliminates the SFM "shaking artifact" in low-density normal walking
 - Allows ORCA's collision-freedom guarantee to apply where it's tractable (ρ < 3.5 ped/m²)
-- Makes the FiS effect properly testable: at panic, all agents switch to SFM, which naturally produces arch formation at Helbing densities
-- **Would address Sprint 3J (T7 bottleneck)**: ORCA in corridor prevents arch formation; SFM near door preserves physical contact dynamics
+- Makes the FiS effect properly testable: at panic, all agents switch to SFM → arch formation
+- Enables DES-triggered evacuation mode (alarm event → all agents switch to SFM+panic v₀)
 
-### Implementation sketch (not committed)
-```julia
-struct AgentBehaviourState
-    mode::Symbol  # :normal, :dense, :evacuate
-end
-
-function select_locomotion!(world, density_field)
-    for agent in agents(world)
-        ρ = local_density(density_field, agent.position)
-        if ρ > 3.5 && agent.mode == :normal
-            agent.mode = :dense    # switch to SFM
-        elseif ρ < 2.5 && agent.mode == :dense
-            agent.mode = :normal   # switch to ORCA
-        end
-    end
-end
-```
-
-### What would trigger pursuing this
-- **Sprint 3J (T7 bottleneck) work** — the reservoir bottleneck test is implemented and failing to meet 1.22 ped/s. The Menge FSM hybrid is the top-ranked approach for fixing this.
-- When the shaking artifact produces test instability or incorrect physics in regression tests
+### What would trigger pursuing Sprint 3K
+- Sprint 3J (GCFM-elliptical) is complete
+- Pre-implementation research (`docs/sprint3k_hybrid_fsm_research.md`) is written and reviewed
+- Pre-implementation research includes: reading Menge §3–5, JuPedSim hybrid tests, UMANS 2022
 
 ---
 

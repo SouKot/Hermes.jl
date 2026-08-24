@@ -271,3 +271,87 @@ exactly in a symmetric periodic corridor → all densities gave free-flow speed.
     social_overlap = (s_r_i + s_r_j) - d
     return (V₀ / D_i) * exp(social_overlap / D_i) * w * n_ij
 end
+
+"""
+    gcf_force_elliptical(pos_i, vel_i, pos_j; a₀, τ_gap, b_min, b_max, V₀, λ, v₀_ref)
+
+§1.5 — Chraibi et al. (2010) §III — GCFM with velocity-direction elliptic semi-axes.
+Drop-in replacement for `gcf_force` when `SFMParams.τ_gap > 0`.
+
+Agent i is represented as an ellipse oriented in its velocity direction:
+- **Front semi-axis**:  `a(v) = a₀ + τ_gap × ‖v_i‖`  (grows with speed → more space ahead)
+- **Side semi-axis**:   `b(v) = b_max − (b_max − b_min) × ‖v‖/v₀_ref`  (narrows with speed)
+
+The effective overlap distance between agent i (ellipse) and agent j (circle radius a₀) is:
+
+    effective_overlap = r_ellipse_i_toward_j + a₀ − d
+
+where the ellipse radius toward j is computed from the standard ellipse polar-radius formula:
+
+    r_ellipse = a(v)⋅b(v) / √( (b(v)⋅cosθ)² + (a(v)⋅sinθ)² )
+
+θ is the angle from v_i to the i→j direction.
+
+**Same exponential potential** as circular `gcf_force`: V = V₀ × exp(overlap/D_i).
+**Same anisotropy** λ as Helbing/GCFM-circular.
+
+# Default calibration (Chraibi 2010, Table I)
+- `a₀ = 0.25m`  (body radius at rest = collision_radius)
+- `τ_gap = 0.53s` (time-gap for personal space growth)
+- `b_min = 0.25m`, `b_max = 0.30m` (shoulder width range)
+
+# References
+- Chraibi, M., Seyfried, A., Schadschneider, A. (2010). *Generalized centrifugal-force model
+  for pedestrian dynamics.* Physical Review E, 82(4), 046111. §III, Eq. 10–12.
+"""
+@inline function gcf_force_elliptical(pos_i::SVector{2,F}, vel_i::SVector{2,F},
+                                       pos_j::SVector{2,F};
+                                       a₀::F=F(0.25),        # body radius at rest (m)
+                                       τ_gap::F=F(0.53),     # Chraibi 2010 Table I
+                                       b_min::F=F(0.25),     # lateral semi-axis at high speed (m)
+                                       b_max::F=F(0.30),     # lateral semi-axis at rest (m)
+                                       V₀::F=F(70f0),        # potential strength (N)
+                                       λ::F=F(0.5),          # anisotropy weight
+                                       v₀_ref::F=F(1.34)) where {F<:AbstractFloat}
+    r_ij = pos_i - pos_j
+    d    = norm(r_ij)
+    d < F(1e-6) && return zero(SVector{2,F})
+    n_ij = r_ij / d
+
+    speed_i = norm(vel_i)
+
+    # §III Eq.10: velocity-direction semi-axes
+    # a(v): front axis grows with speed (more personal space ahead when moving)
+    a_i = a₀ + τ_gap * speed_i
+    # b(v): lateral axis shrinks with speed (shoulder compression during fast walking)
+    b_i = b_max - (b_max - b_min) * min(speed_i / v₀_ref, one(F))
+
+    # Angle θ from vel_i direction to i→j (i.e., −n_ij direction)
+    if speed_i > F(1e-6)
+        e_i  = vel_i / speed_i
+        cosθ = clamp(dot(e_i, -n_ij), F(-1), F(1))
+        sinθ = sqrt(max(zero(F), one(F) - cosθ * cosθ))
+    else
+        cosθ = one(F); sinθ = zero(F)
+        e_i  = n_ij   # fallback when stationary
+    end
+
+    # Ellipse polar radius: r = a⋅b / √((b⋅cosθ)² + (a⋅sinθ)²)
+    denom     = sqrt((b_i * cosθ)^2 + (a_i * sinθ)^2)
+    r_ellipse = denom > F(1e-6) ? (a_i * b_i / denom) : a₀
+
+    # Effective overlap: positive when j is inside i's personal ellipse
+    effective_overlap = (r_ellipse + a₀) - d   # a₀ = j's body radius
+
+    # Decay length: use front semi-axis (mirrors circular D_i = s_r + η⋅v)
+    D_i = max(a₀ * F(0.1), a_i)
+
+    # Anisotropy: same Helbing formula as gcf_force
+    w = one(F)
+    if speed_i > F(1e-6)
+        cos_φ = dot(e_i, -n_ij)
+        w = λ + (one(F) - λ) * (one(F) + cos_φ) / F(2)
+    end
+
+    return (V₀ / D_i) * exp(effective_overlap / D_i) * w * n_ij
+end
