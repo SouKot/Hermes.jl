@@ -212,14 +212,16 @@ A hybrid approach: macroscopic model for venue-level planning, SimCrowd microsco
 
 ## Trigger Conditions Summary
 
-| Direction | Trigger | Status (2026-08-23) |
+| Direction | Trigger | Status (2026-08-24) |
 |-----------|---------|---------------------|
 | RiMEA T2 fundamental diagram | Physics-correct GCFM + calibration | ✅ DONE (Sprint 3F, commit `557028e`) |
 | RiMEA T4 speed distribution | Speed heterogeneity population test | ✅ DONE (Sprint 3H, commit `5e2635f`) |
 | ORCA canonical validation | Cross-validate vs RVO2/UMANS benchmarks | ✅ DONE (Sprint 3I, commit `afc8f59`) |
-| **Menge FSM dispatch** | **Reservoir bottleneck test exists; T7 gap is the trigger** | ⚠️ **TRIGGERED — Sprint 3J next** |
-| GCFM-elliptical (Chraibi 2010 §III) | T7 gap persists after Menge FSM attempt | ⏳ Pending Sprint 3J result |
-| CSM normal-flow model | RiMEA T2/T7 gap; SFM shaking in low-density tests | ⏳ Not yet triggered |
+| **GCFM-elliptical (Chraibi 2010 §III)** | T7 alternative; elliptic personal space | ✅ **DONE (Sprint 3J, commit `76f402f`)** — T7 MAY NOT (0.583 ped/s; arch deadlocks) |
+| **Param correction + seeded noise** | Chraibi §VII defaults wrong; global RNG data race | ✅ **DONE (Sprint 3J-fix, commits `9f0cd17`, `d6e8ef4`)** |
+| **SFM+σ arch-breaking investigation** | User Q: why σ=0.30 vs literature 0.15–0.25? | ✅ **DONE (2026-08-24)** — SFM+σ has ±0.30 ped/s variance; not reliable for T7 single-run; SFM not wrong |
+| **Menge FSM dispatch (Hybrid FSM)** | T7 gap persists after GCFM-elliptical + SFM+σ | ⚠️ **TRIGGERED — Sprint 3K next** |
+| **CSM normal-flow model** | T7 gap confirmed; SFM/GCFM arch-limited by design | ⚠️ **TRIGGERED — Sprint 3L** (after 3K) |
 | NavMesh decision layer | Mixed normal/emergency deployment; group cohesion required | ⏳ Not yet triggered |
 | Continuum macro model | N > 50,000 use case; venue-planning scenario | ⏳ Not yet triggered |
-| RiMEA full compliance audit | Real-world safety engineering use case | ⏳ After Sprint 3K |
+| RiMEA full compliance audit | Real-world safety engineering use case | ⏳ After Sprint 3L |

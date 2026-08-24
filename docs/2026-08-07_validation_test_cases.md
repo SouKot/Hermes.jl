@@ -1078,7 +1078,7 @@ Optimal: somewhere in between (typically 10-30% of mean inter-event time)
 | **T1: Free walking speed** | MUST | MUST | MUST | MUST | MUST | MUST | MUST |
 | **T2: Fundamental diagram (ρ-v curve)** | SHOULD | CANNOT | MUST | MUST | SHOULD | MUST | MAY NOT |
 | **T4: Speed distribution Normal(μ,σ)** | MUST | MUST | MUST | MUST | MUST | MUST | SHOULD |
-| **T7: Bottleneck mean flow ≥1.22 ped/s** | MAY NOT | MAY NOT | **MAY NOT** (same spring-force arch artifact as SFM; Chraibi 2010 never tested room exit) | **MAY NOT** (3J: 0.82 ped/s wrong params; corrected Chraibi params → SHOULD) | MUST (arch-free by design) | **MUST** (Sprint 3K) | SHOULD |
+| **T7: Bottleneck mean flow ≥1.22 ped/s** | MAY NOT (SFM+σ has ±0.30 ped/s variance; σ=0.30 gives 1.15±0.09 mean, below T7; not reliable for single-run assertion — see 3J-fix investigation 2026-08-24) | MAY NOT | **MAY NOT** (same spring-force arch artifact as SFM; Chraibi 2010 never tested room exit) | **MAY NOT** (Sprint 3J-fix: corrected params b_min=0.20/b_max=0.25 → 0.583 ped/s; smaller ellipse tightens arch more than wrong params; arch-limited regardless of σ) | MUST (arch-free by design; JuPedSim primary T7 model — Sprint 3L) | **MUST** (ORCA prevents arch formation in corridor; Sprint 3K) | SHOULD |
 | **T12: Arch formation / clogging** | MUST | CANNOT | SHOULD | SHOULD | CANNOT | MUST | CANNOT |
 | **T14: Lane formation from disorder** | SHOULD | CANNOT | SHOULD | SHOULD | NICE | SHOULD | NICE |
 | **T15: Staircase speed reduction** | MAY NOT | MAY NOT | MAY NOT | MAY NOT | MAY NOT | MAY NOT | MUST |
