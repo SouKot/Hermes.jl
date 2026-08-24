@@ -35,13 +35,51 @@ graph TD
 ```
 
 ## 3.2 Data Structures: The Future Event List (FEL)
-The beating heart of SimDES is the Future Event List. Because a stadium evacuation might generate millions of chronological events, scanning a flat array for the next chronological event ($O(N)$ time) is computationally disastrous. 
 
-Antigravity implements the FEL as a **Binary Min-Heap** (via `DataStructures.PriorityQueue`). In a Min-Heap, the event with the smallest timestamp is mathematically guaranteed to always reside at the root node. 
-- Extracting the next event: $O(\log N)$
-- Inserting a newly scheduled event: $O(\log N)$
+### 3.2.1 Data Structure Comparison: Arrays, Linked Lists, and Min-Heaps
 
-This data structure is standard across academic DES research [1] and allows the engine to process hundreds of thousands of events per second on a single core.
+If the simulation generates millions of events, the Future Event List (FEL) must insert and extract events incredibly fast. To understand why SimDES uses a **Binary Min-Heap**, we must compare it against the two basic data structures: Arrays and Linked Lists.
+
+#### 1. The Flat Array (The Memory Shift Problem)
+A flat array stores elements in contiguous memory blocks. If we keep the array sorted chronologically:
+- **Finding the spot**: We can use Binary Search to find the correct insertion spot extremely quickly in $O(\log N)$ time.
+- **Inserting**: To physically place the new event in the middle of the array, we must shift every subsequent element to the right by one memory slot to make room. This memory shift takes **$O(N)$** time. Inserting 1,000 events into an array of 1,000,000 events requires shifting billions of memory addresses per second, crippling the CPU.
+
+#### 2. The Linked List (The Traversal Problem)
+A Linked List solves the memory shift problem. Instead of contiguous memory, elements are scattered, and each element contains a "pointer" to the next element in line. 
+- **Inserting**: Once you find the correct spot, you just change two pointers. No memory shifting is required; insertion is $O(1)$.
+- **Finding the spot**: Because elements are scattered, you cannot use Binary Search (you can't jump to the middle of a linked list). You must start at the beginning and traverse pointer-by-pointer until you find the right spot. Traversing takes **$O(N)$** time.
+
+#### 3. The Binary Min-Heap (The Tree Solution)
+To bring the cost down, SimDES abandons linear structures entirely and uses a **Binary Min-Heap**. A Min-Heap is a tree where every "parent" node branches out to two "child" nodes. It enforces one strict rule: **A parent node must always have a smaller timestamp than its children.** 
+
+```mermaid
+graph TD
+    A["t=10 (Root)"] --> B["t=15"]
+    A --> C["t=12"]
+    B --> D["t=18"]
+    B --> E["t=22"]
+    C --> F["t=14"]
+    C --> G["t=30 (New Event inserted here)"]
+```
+
+By branching exponentially, the tree stays very shallow. A tree with 1,000,000 events is only $\approx 20$ layers deep ($\log_2(1,000,000) \approx 20$).
+
+**How the Min-Heap reduces cost:**
+1. **Extraction**: The next chronological event is always at the Root node ($t=10$). We pop it, move the very last node in the tree to the Root, and "sift-down" (swap it with its smallest child) until the rule is restored.
+2. **Insertion**: When a new event arrives (e.g., $t=13$), we attach it to the very bottom of the tree. We then "sift-up" (or bubble-up), comparing it *only* to its direct parent. If it is smaller than its parent, we swap them.
+
+Because we only swap vertically up the tree, the maximum number of comparisons and memory swaps is exactly equal to the depth of the tree: **$O(\log N)$**. 
+
+#### Cost Comparison Summary
+
+| Data Structure | Extract Next Event | Insert New Event | Bottleneck |
+| :--- | :--- | :--- | :--- |
+| **Sorted Flat Array** | $O(1)$ | $O(N)$ | Massive memory shifting |
+| **Sorted Linked List**| $O(1)$ | $O(N)$ | Pointer traversal |
+| **Binary Min-Heap** | $O(\log N)$ | $O(\log N)$ | **None (Optimal for DES)** |
+
+This algorithmic breakthrough means that even if the FEL contains 1,000,000 events, inserting a new event takes a maximum of 20 extremely fast memory swaps—never an $O(N)$ mass-memory shift or pointer traversal. This allows the engine to process hundreds of thousands of asynchronous events per second on a single core [1].
 
 ## 3.3 Concurrency: Single-Threaded vs. Conservative PDES
 
