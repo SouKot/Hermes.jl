@@ -91,7 +91,7 @@ The platform strictly segregates the workload:
 - **The GPU handles SimCrowd**: The continuous physics engine (Spatial Hashing, $O(N)$ neighbor searches, and vector addition for the Symplectic Euler integrator) is perfectly suited for the GPU.
 
 **Cross-Domain Synchronization (The ECS Bridge):**
-How do the CPU logic and GPU physics actually talk to each other? They communicate via the shared **Entity-Component-System (ECS)** memory. When a DES event executes on the CPU (e.g., `TrainDoorsOpen`), it doesn't need to call complex physics functions; it simply overwrites the data in the ECS `NavigationGoal` arrays. On the very next frame, the GPU physics engine reads the updated arrays and instantly alters the physical forces. *(Note: Because the ECS architecture is the fundamental reason this platform achieves such high performance, it will be explored in profound detail in the upcoming [Chapter 4: Data-Oriented Design & ECS Architecture](04_ecs_architecture.md)).*
+How do the CPU logic and GPU physics actually talk to each other? They communicate via the shared **Entity-Component-System (ECS)** memory. When a DES event executes on the CPU (e.g., `TrainDoorsOpen`), it doesn't need to call complex physics functions; it simply overwrites the data in the ECS `NavigationGoal` arrays. On the very next frame, the GPU physics engine reads the updated arrays and instantly alters the physical forces. *(Note: Because the ECS architecture is the fundamental reason this platform achieves such high performance, it will be explored in profound detail in the upcoming [Chapter 4: Data-Oriented Design & ECS Architecture](file:///home/sourabh/.gemini/antigravity-ide/brain/78616c9e-3fd6-407c-bebd-abc1d7c4255f/04_ecs_architecture.md)).*
 
 ```mermaid
 sequenceDiagram
