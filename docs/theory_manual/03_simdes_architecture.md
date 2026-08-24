@@ -60,14 +60,24 @@ graph TD
     B --> D["t=18"]
     B --> E["t=22"]
     C --> F["t=14"]
-    C --> G["t=30 (New Event inserted here)"]
+    C --> G["t=30 (Next open slot)"]
 ```
+
+> [!NOTE]
+> **Min-Heap vs. Binary Search Tree (BST)**
+> A very common question is: *If the root has children $t=12$ and $t=13$, how does the tree decide which side a new event like $t=15$ goes on?*
+> 
+> A Min-Heap is **not** a Binary Search Tree. In a BST, smaller values go left and larger values go right. A Min-Heap completely ignores left/right sorting. It enforces two strict properties:
+> 1. **The Heap Property**: A parent must be smaller than its children.
+> 2. **The Shape Property**: The tree must be a *complete* binary tree. This means the tree is filled strictly level-by-level, from left to right.
+> 
+> Therefore, a new event *always* goes into the very next available open slot on the bottom level, regardless of its timestamp. Once it is placed in that slot, it is "bubbled up" (swapped with its parent) until the Heap Property is satisfied.
 
 By branching exponentially, the tree stays very shallow. A tree with 1,000,000 events is only $\approx 20$ layers deep ($\log_2(1,000,000) \approx 20$).
 
 **How the Min-Heap reduces cost:**
 1. **Extraction**: The next chronological event is always at the Root node ($t=10$). We pop it, move the very last node in the tree to the Root, and "sift-down" (swap it with its smallest child) until the rule is restored.
-2. **Insertion**: When a new event arrives (e.g., $t=13$), we attach it to the very bottom of the tree. We then "sift-up" (or bubble-up), comparing it *only* to its direct parent. If it is smaller than its parent, we swap them.
+2. **Insertion**: When a new event arrives (e.g., $t=11$), we attach it to the next available left-to-right slot at the bottom of the tree. We then "sift-up" (or bubble-up), comparing it *only* to its direct parent. If it is smaller than its parent, we swap them.
 
 Because we only swap vertically up the tree, the maximum number of comparisons and memory swaps is exactly equal to the depth of the tree: **$O(\log N)$**. 
 
