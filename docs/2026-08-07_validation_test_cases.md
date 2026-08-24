@@ -1067,7 +1067,7 @@ Optimal: somewhere in between (typically 10-30% of mean inter-event time)
 | **ORCA** | Optimal Reciprocal Collision Avoidance — velocity-space LP | Van den Berg 2008/2011 | ✅ Implemented |
 | **GCFM-circular** | Generalized Centrifugal Force — speed-adaptive range D_i, circular | Chraibi 2010 §II | ✅ Implemented |
 | **GCFM-elliptical** | GCFM with velocity-direction elliptic semi-axes (τ_gap, b_min, b_max) | Chraibi 2010 §III | ✅ Implemented (Sprint 3J) |
-| **CSM** | Collision-Free Speed Model — speed reduction by gap ahead | Tordeux et al. 2016 | ❌ Not implemented |
+| **CSM** | Collision-Free Speed Model — speed-reduction by gap ahead (arch-free by design) | Tordeux et al. 2016 | ❌ Not implemented |
 | **Hybrid FSM** | Density-triggered dispatch: ORCA (ρ<3.5) + SFM (ρ>3.5) | future_directions.md §2 | ❌ Not implemented |
 | **MEC/NavMesh** | Macro Element Content routing layer + locomotion underneath | future_directions.md §4 | ❌ Not implemented |
 
@@ -1078,7 +1078,7 @@ Optimal: somewhere in between (typically 10-30% of mean inter-event time)
 | **T1: Free walking speed** | MUST | MUST | MUST | MUST | MUST | MUST | MUST |
 | **T2: Fundamental diagram (ρ-v curve)** | SHOULD | CANNOT | MUST | MUST | SHOULD | MUST | MAY NOT |
 | **T4: Speed distribution Normal(μ,σ)** | MUST | MUST | MUST | MUST | MUST | MUST | SHOULD |
-| **T7: Bottleneck mean flow ≥1.22 ped/s** | MAY NOT | MAY NOT | SHOULD | **MAY NOT** (3J: 0.82 ped/s, arch deadlocks) | SHOULD | **MUST** (Sprint 3K) | SHOULD |
+| **T7: Bottleneck mean flow ≥1.22 ped/s** | MAY NOT | MAY NOT | **MAY NOT** (same spring-force arch artifact as SFM; Chraibi 2010 never tested room exit) | **MAY NOT** (3J: 0.82 ped/s wrong params; corrected Chraibi params → SHOULD) | MUST (arch-free by design) | **MUST** (Sprint 3K) | SHOULD |
 | **T12: Arch formation / clogging** | MUST | CANNOT | SHOULD | SHOULD | CANNOT | MUST | CANNOT |
 | **T14: Lane formation from disorder** | SHOULD | CANNOT | SHOULD | SHOULD | NICE | SHOULD | NICE |
 | **T15: Staircase speed reduction** | MAY NOT | MAY NOT | MAY NOT | MAY NOT | MAY NOT | MAY NOT | MUST |
