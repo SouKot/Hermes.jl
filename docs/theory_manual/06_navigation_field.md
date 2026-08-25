@@ -55,7 +55,7 @@ Because the FMM algorithm is highly parallelizable, the GPU can compute the enti
 
 ```mermaid
 graph TD
-    subgraph Fast Marching "Wavefront" Expansion
+    subgraph Wavefront [Fast Marching Wavefront Expansion]
     Exit["Exit Gate (Cost = 0)"] --- C1["Cost = 1.0"]
     Exit --- C2["Cost = 1.0"]
     C1 --- C3["Cost = 2.0"]
