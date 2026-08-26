@@ -133,7 +133,8 @@ end
         end
         
         sh = CPUNeighborSearch(N, SVector(0.0f0, 0.0f0), SVector(12.0f0, 5.0f0), 4.0f0)
-        
+        orca_sh_s04 = RadixSpatialHash(CPU(), N, SVector(0.0f0, 0.0f0), SVector(12.0f0, 5.0f0), 4.0f0)
+
         function count_passed_x(world, x_val)
             count = 0
             for (entities, pos_col) in Query(world, (Position{Float32},))
@@ -160,7 +161,8 @@ end
                 end
             end
             
-            SimCrowd.update_orca_system_cpu!(world, dt)
+            # Unified ORCA (RadixSpatialHash — O(N×k) spatial hash; replaces orca_cpu.jl)
+            SimCrowd.update_orca_system!(world, orca_sh_s04, CPU(), dt)
             integrate_physics_system!(world, dt)
             t += dt
         end
@@ -198,6 +200,7 @@ end
         end
         
         sh = CPUNeighborSearch(N, SVector(0.0f0, 0.0f0), SVector(12.0f0, 5.0f0), 4.0f0)
+        orca_sh_orca10 = RadixSpatialHash(CPU(), N, SVector(0.0f0, 0.0f0), SVector(12.0f0, 5.0f0), 4.0f0)
         
         function count_passed_x(world, x_val)
             count = 0
@@ -227,7 +230,7 @@ end
             end
 
             update_social_forces_system!(world, sh, CPU())
-            SimCrowd.update_orca_system_cpu!(world, dt)
+            SimCrowd.update_orca_system!(world, orca_sh_orca10, CPU(), dt)
             integrate_physics_system!(world, dt)
             t += dt
 
@@ -350,6 +353,7 @@ end
             end
             
             sh = CPUNeighborSearch(N, SVector(0.0f0, 0.0f0), SVector(12.0f0, 5.0f0), 4.0f0)
+            orca_sh_panic = RadixSpatialHash(CPU(), N, SVector(0.0f0, 0.0f0), SVector(12.0f0, 5.0f0), 4.0f0)
             
             function count_passed_x(world, x_val)
                 count = 0
@@ -377,7 +381,7 @@ end
                 end
                 
                 update_social_forces_system!(world, sh, CPU())
-                SimCrowd.update_orca_system_cpu!(world, dt)
+                SimCrowd.update_orca_system!(world, orca_sh_panic, CPU(), dt)
                 integrate_physics_system!(world, dt)
                 t += dt
             end

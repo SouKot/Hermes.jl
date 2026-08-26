@@ -234,8 +234,12 @@ using CellListMap
 
         min_dist_to_wall = Inf32
         t = 0f0; t_max = 15f0
+
+        # Unified ORCA (O(N×k) spatial hash — replaces update_orca_system_cpu!)
+        search_o01 = RadixSpatialHash(CPU(), 1, SVector(-1f0,-1f0), SVector(7f0,12f0), 1.0f0)
+
         while t < t_max
-            SimCrowd.update_orca_system_cpu!(world, dt)
+            SimCrowd.update_orca_system!(world, search_o01, CPU(), dt)
             integrate_physics_system!(world, dt)
             t += dt
             for (_, pos_col) in Query(world, (Position{Float32},))
@@ -274,8 +278,12 @@ using CellListMap
 
         min_y = Inf32
         t = 0f0; t_max = 15f0
+
+        # Unified ORCA (O(N×k) spatial hash — replaces update_orca_system_cpu!)
+        search_o02 = RadixSpatialHash(CPU(), 2, SVector(-3f0,-1f0), SVector(13f0,5f0), 1.0f0)
+
         while t < t_max
-            SimCrowd.update_orca_system_cpu!(world, dt)
+            SimCrowd.update_orca_system!(world, search_o02, CPU(), dt)
             integrate_physics_system!(world, dt)
             t += dt
             for (_, pos_col) in Query(world, (Position{Float32},))

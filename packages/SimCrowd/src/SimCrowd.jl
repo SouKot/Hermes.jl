@@ -15,6 +15,7 @@ export AbstractNeighborSearch, RadixSpatialHash, CPUNeighborSearch, build_grid!,
 export NavigationField, build_navigation_field, get_desired_direction
 export update_navigation_system!, update_social_forces_system!, integrate_physics_system!
 export ORCAParams, update_orca_system!
+export HybridFSMParams, AgentFSMState, update_hybrid_fsm_system!, ORCA_MODE, SFM_MODE
 export ContactModel, NoContact, Coulomb, Viscous
 # §2.1 ForceModel trait
 export ForceModel, SFMModel, ORCAModel, HybridModel, AgentModel
@@ -216,6 +217,59 @@ struct Goal{F<:AbstractFloat}
     g::SVector{2,F}
 end
 
+# ── §3K-b: Hybrid FSM structs ─────────────────────────────────────────────────
+
+"""
+    HybridFSMParams{F<:AbstractFloat}
+
+Density-triggered FSM parameters for per-agent ORCA↔SFM dispatch.
+Based on the Menge architecture (Curtis, Best, Manocha 2016, §3).
+
+All fields are primitive types → isbits ✅ → GPU-compatible.
+
+Fields:
+- `ρ_on`:           density threshold (ped/m²) for ORCA→SFM switch (high density).
+- `ρ_off`:          density threshold (ped/m²) for SFM→ORCA switch (low density).
+                    Must be < ρ_on. Hysteresis band [ρ_off, ρ_on] prevents chatter.
+- `density_radius`: neighbourhood radius for local density estimation (m).
+- `sfm_params`:     embedded SFMParams (used in SFM_MODE).
+- `orca_params`:    embedded ORCAParams (used in ORCA_MODE).
+"""
+Base.@kwdef struct HybridFSMParams{F<:AbstractFloat}
+    ρ_on           :: F             = F(3.5)    # ORCA→SFM at 3.5 ped/m²
+    ρ_off          :: F             = F(2.5)    # SFM→ORCA at 2.5 ped/m²
+    density_radius :: F             = F(2.0)    # density estimation radius (m)
+    sfm_params     :: SFMParams{F}  = SFMParams{F}()
+    orca_params    :: ORCAParams{F} = ORCAParams(F(2.0), F(0.5), 10, F(15.0),
+                                                   F(0.2), F(1.4), F(0.5), F(80.0))
+end
+
+"""
+    AgentFSMState{F<:AbstractFloat}
+
+Immutable, fully isbits per-agent FSM state. Updated each step via
+`state_col[i] = AgentFSMState{F}(new_mode, new_ρ, new_blend)`.
+
+Fields:
+- `mode`:          Int32. `ORCA_MODE` (0) or `SFM_MODE` (1).
+- `ρ_ema`:         F. Exponential moving average of local density (ped/m²).
+                   α=0.33 → time constant ≈ 3 steps.
+- `blend_counter`: Int32. Reserved for future force-blend at mode switches (currently 0).
+
+GPU upgrade path: `Storage{StructArray}` → `Storage{GPUStructArray{:CUDA}}` with zero struct changes.
+"""
+struct AgentFSMState{F<:AbstractFloat}
+    mode          :: Int32
+    ρ_ema         :: F
+    blend_counter :: Int32
+end
+
+# Default constructor: start in ORCA_MODE, zero density, no blend
+AgentFSMState{F}() where {F<:AbstractFloat} = AgentFSMState{F}(Int32(0), zero(F), Int32(0))
+
+# Compile-time GPU-compatibility guard
+@assert isbitstype(AgentFSMState{Float32}) "AgentFSMState must remain isbits for KA/GPU compatibility"
+
 # ── §2.4 SimConfig (defined here so physics.jl can reference it) ──────────────────
 
 """
@@ -247,7 +301,8 @@ include("systems/physics.jl")
 include("systems/social.jl")
 include("systems/orca_math.jl")
 include("systems/orca.jl")
-include("systems/orca_cpu.jl")
+# Note: orca_cpu.jl was deleted in Sprint 3K-a — all features ported into orca.jl.
+include("systems/hybrid_fsm.jl")
 
 # ── §2.1 ForceModel Trait ─────────────────────────────────────────────────────
 # Marker types that declare which force model an agent uses.
@@ -326,7 +381,7 @@ Advance the simulation by one timestep (`scene.config.dt`).
 System order:
 1. Navigation update (if nav_field is set) — updates `Goal` components from the potential field
 2. SFM social forces — `update_social_forces_system!` (resets + accumulates Force)
-3. ORCA velocity update — `update_orca_system_cpu!` (for ORCA-tagged agents)
+3. ORCA velocity update — `update_orca_system!` (O(N×k) spatial hash; CPU+GPU; §1.7 walls, §1.8 responsibility)
 4. Physics integration — `integrate_physics_system!` (vel/pos update + speed clamp)
 """
 function step!(scene::SimScene{F}) where {F}
@@ -360,12 +415,21 @@ function step!(scene::SimScene{F}) where {F}
         update_social_forces_system!(scene.world, scene.search, CPU())
     end
     # 4. ORCA velocity update (only for agents with ORCAParams)
+    # Uses unified orca.jl (O(N×k) spatial hash — same RadixSpatialHash built by step 3).
+    # W=16: max wall segments per agent (covers all RiMEA geometries; see assert_wall_budget).
     local n_orca::Int
     try; n_orca = count_entities(Query(scene.world, (ORCAParams{F},))); catch; n_orca = 0; end
     if n_orca > 0
-        update_orca_system_cpu!(scene.world, dt)
+        update_orca_system!(scene.world, scene.search, CPU(), dt; W=16)
     end
-    # 5. Integrate: velocity + position update with speed clamp from config
+    # 5. Hybrid FSM dispatch (agents with HybridFSMParams — neither SFMParams nor ORCAParams)
+    # Steps 3 and 4 above skip Hybrid agents automatically (different ECS archetype).
+    local n_hybrid::Int
+    try; n_hybrid = count_entities(Query(scene.world, (HybridFSMParams{F},))); catch; n_hybrid = 0; end
+    if n_hybrid > 0
+        update_hybrid_fsm_system!(scene.world, scene.search, CPU(), dt)
+    end
+    # 6. Integrate: velocity + position update with speed clamp from config
     integrate_physics_system!(scene.world, scene.config)
     return scene
 end

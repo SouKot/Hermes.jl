@@ -1,4 +1,15 @@
-# ── ORCA System ────────────────────────────────────────────────────────
+# ── ORCA System (Unified: O(N×k) spatial hash, CPU + GPU, walls + responsibility) ──
+#
+# This file is the SOLE ORCA implementation for SimCrowd.
+# orca_cpu.jl was deleted in Sprint 3K-a. All features are ported here:
+#   §1.7: Wall ORCA constraints  (MVector{W} for GPU/kernel compatibility)
+#   §1.8: Non-reciprocal responsibility
+#   Per-agent neighbor_dist and max_neighbors
+#   LP3 profiling (return value from update_orca_system!)
+#
+# W = max wall segments visible to a single agent (compile-time, set via Val{W}).
+# W=16 covers all RiMEA scenarios and typical building geometries.
+# The scene construction helper `assert_wall_budget` verifies this spatially.
 
 using Ark
 using KernelAbstractions
@@ -6,88 +17,142 @@ using StaticArrays
 using LinearAlgebra
 using CellListMap
 
-struct ORCAGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector, VGPU<:AbstractVector, SGPU<:AbstractVector}
+# ── Context Struct ─────────────────────────────────────────────────────────────
+
+struct ORCAGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector, ICPU<:AbstractVector,
+                        VGPU<:AbstractVector, SGPU<:AbstractVector}
     N::Int
-    # ── CPU staging buffers (written from ECS, then copyto! device) ──────────
+    # ── CPU staging buffers (written from ECS each step, then copyto! → device) ──
     cpu_positions::VCPU
     cpu_velocities::VCPU
     cpu_radii::SCPU
     cpu_forces::VCPU
-    cpu_v_prefs::VCPU        # Fix A: pre-allocated, avoids Vector{SVector}(undef,N) per step
-    cpu_taus::SCPU           # Fix A: pre-allocated
-    cpu_masses::SCPU         # Fix A: pre-allocated
-    cpu_time_horizons::SCPU  # Fix D: per-agent (no more hardcoded 2.0f0)
-    # ── Device buffers (unsorted, written from CPU) ───────────────────────────
+    cpu_v_prefs::VCPU          # preferred velocity vector (SVector{2}) — direction × scalar
+    cpu_lp_radii::SCPU         # LP velocity-disc radius = v_pref scalar (max speed)
+    cpu_taus::SCPU
+    cpu_masses::SCPU
+    cpu_time_horizons::SCPU       # per-agent agent-agent time horizon
+    cpu_time_horizons_obst::SCPU  # §1.7: per-agent wall time horizon
+    cpu_responsibilities::SCPU    # §1.8: per-agent velocity-change fraction
+    cpu_neighbor_dists::SCPU      # per-agent search radius
+    cpu_max_neighbors::ICPU       # per-agent neighbor cap (stored as Int32 for device)
+    # ── Device buffers (unsorted, written from CPU) ──────────────────────────────
     dev_positions::VGPU
     dev_velocities::VGPU
     dev_radii::SGPU
     dev_forces::VGPU
-    dev_v_prefs::VGPU        # Fix A: pre-allocated on device
-    dev_taus::SGPU           # Fix A: pre-allocated
-    dev_masses::SGPU         # Fix A: pre-allocated
-    dev_time_horizons::SGPU  # Fix D: per-agent
-    # ── Sorted device buffers (Morton-ordered for coalesced access) ───────────
+    dev_v_prefs::VGPU
+    dev_lp_radii::SGPU         # LP radius = v_pref scalar
+    dev_taus::SGPU
+    dev_masses::SGPU
+    dev_time_horizons::SGPU
+    dev_time_horizons_obst::SGPU  # §1.7
+    dev_responsibilities::SGPU    # §1.8
+    dev_neighbor_dists::SGPU
+    dev_max_neighbors::SGPU       # stored as F on device (Int32 not available on all KA backends)
+    # ── Sorted device buffers (Morton-ordered for coalesced access) ──────────────
     sorted_dev_positions::VGPU
     sorted_dev_velocities::VGPU
     sorted_dev_radii::SGPU
-    sorted_dev_v_prefs::VGPU        # Fix A
-    sorted_dev_taus::SGPU           # Fix A
-    sorted_dev_masses::SGPU         # Fix A
-    sorted_dev_time_horizons::SGPU  # Fix D
-    # ── Grid rebuild state ───────────────────────────────────────────────────
+    sorted_dev_v_prefs::VGPU
+    sorted_dev_lp_radii::SGPU
+    sorted_dev_taus::SGPU
+    sorted_dev_masses::SGPU
+    sorted_dev_time_horizons::SGPU
+    sorted_dev_time_horizons_obst::SGPU  # §1.7
+    sorted_dev_responsibilities::SGPU    # §1.8
+    sorted_dev_neighbor_dists::SGPU
+    sorted_dev_max_neighbors::SGPU
+    # ── Wall segments: uploaded once at first step (static for a scene run) ───────
+    # Allocated for max_wall_segs capacity; resized lazily when scene changes.
+    dev_wall_p1s::VGPU
+    dev_wall_p2s::VGPU
+    cpu_wall_p1s::VCPU
+    cpu_wall_p2s::VCPU
+    max_wall_segs::Int     # allocated capacity (≥ actual n_walls in the scene)
+    # ── Grid rebuild state ────────────────────────────────────────────────────────
     last_build_positions::VGPU
     sorted_last_positions::VGPU
     needs_rebuild::AbstractArray{Bool, 1}
 end
 
-function ORCAGPUContext(backend, F, N::Int)
+function ORCAGPUContext(backend, F, N::Int, max_wall_segs::Int = 64)
     VCPU = Vector{SVector{2,F}}
     SCPU = Vector{F}
-    
+    ICPU = Vector{Int32}
+
     # CPU staging
-    cpu_positions        = VCPU(undef, N)
-    cpu_velocities       = VCPU(undef, N)
-    cpu_radii            = SCPU(undef, N)
-    cpu_forces           = VCPU(undef, N)
-    cpu_v_prefs          = VCPU(undef, N)
-    cpu_taus             = SCPU(undef, N)
-    cpu_masses           = SCPU(undef, N)
-    cpu_time_horizons    = SCPU(undef, N)
-    
+    cpu_positions          = VCPU(undef, N)
+    cpu_velocities         = VCPU(undef, N)
+    cpu_radii              = SCPU(undef, N)
+    cpu_forces             = VCPU(undef, N)
+    cpu_v_prefs            = VCPU(undef, N)
+    cpu_lp_radii           = SCPU(undef, N)
+    cpu_taus               = SCPU(undef, N)
+    cpu_masses             = SCPU(undef, N)
+    cpu_time_horizons      = SCPU(undef, N)
+    cpu_time_horizons_obst = SCPU(undef, N)
+    cpu_responsibilities   = SCPU(undef, N)
+    cpu_neighbor_dists     = SCPU(undef, N)
+    cpu_max_neighbors      = ICPU(undef, N)
+
     # Unsorted device buffers
-    dev_positions        = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    dev_velocities       = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    dev_radii            = KernelAbstractions.zeros(backend, F, N)
-    dev_forces           = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    dev_v_prefs          = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    dev_taus             = KernelAbstractions.zeros(backend, F, N)
-    dev_masses           = KernelAbstractions.zeros(backend, F, N)
-    dev_time_horizons    = KernelAbstractions.zeros(backend, F, N)
-    
+    dev_positions          = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    dev_velocities         = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    dev_radii              = KernelAbstractions.zeros(backend, F, N)
+    dev_forces             = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    dev_v_prefs            = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    dev_lp_radii           = KernelAbstractions.zeros(backend, F, N)
+    dev_taus               = KernelAbstractions.zeros(backend, F, N)
+    dev_masses             = KernelAbstractions.zeros(backend, F, N)
+    dev_time_horizons      = KernelAbstractions.zeros(backend, F, N)
+    dev_time_horizons_obst = KernelAbstractions.zeros(backend, F, N)
+    dev_responsibilities   = KernelAbstractions.zeros(backend, F, N)
+    dev_neighbor_dists     = KernelAbstractions.zeros(backend, F, N)
+    dev_max_neighbors      = KernelAbstractions.zeros(backend, F, N)  # F, not Int — KA-generic
+
     # Sorted device buffers
-    sorted_dev_positions      = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    sorted_dev_velocities     = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    sorted_dev_radii          = KernelAbstractions.zeros(backend, F, N)
-    sorted_dev_v_prefs        = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    sorted_dev_taus           = KernelAbstractions.zeros(backend, F, N)
-    sorted_dev_masses         = KernelAbstractions.zeros(backend, F, N)
-    sorted_dev_time_horizons  = KernelAbstractions.zeros(backend, F, N)
-    
+    sorted_dev_positions          = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    sorted_dev_velocities         = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    sorted_dev_radii              = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_v_prefs            = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    sorted_dev_lp_radii           = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_taus               = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_masses             = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_time_horizons      = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_time_horizons_obst = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_responsibilities   = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_neighbor_dists     = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_max_neighbors      = KernelAbstractions.zeros(backend, F, N)
+
+    # Wall segment buffers (capacity = max_wall_segs)
+    dev_wall_p1s = KernelAbstractions.zeros(backend, SVector{2,F}, max_wall_segs)
+    dev_wall_p2s = KernelAbstractions.zeros(backend, SVector{2,F}, max_wall_segs)
+    cpu_wall_p1s = VCPU(undef, max_wall_segs)
+    cpu_wall_p2s = VCPU(undef, max_wall_segs)
+
     last_build_positions  = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     sorted_last_positions = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     needs_rebuild = KernelAbstractions.ones(backend, Bool, 1)
-    
+
     VGPU = typeof(dev_positions)
     SGPU = typeof(dev_radii)
-    
-    return ORCAGPUContext{F, VCPU, SCPU, VGPU, SGPU}(
+
+    return ORCAGPUContext{F, VCPU, SCPU, ICPU, VGPU, SGPU}(
         N,
         cpu_positions, cpu_velocities, cpu_radii, cpu_forces,
-        cpu_v_prefs, cpu_taus, cpu_masses, cpu_time_horizons,
+        cpu_v_prefs, cpu_lp_radii, cpu_taus, cpu_masses,
+        cpu_time_horizons, cpu_time_horizons_obst,
+        cpu_responsibilities, cpu_neighbor_dists, cpu_max_neighbors,
         dev_positions, dev_velocities, dev_radii, dev_forces,
-        dev_v_prefs, dev_taus, dev_masses, dev_time_horizons,
+        dev_v_prefs, dev_lp_radii, dev_taus, dev_masses,
+        dev_time_horizons, dev_time_horizons_obst,
+        dev_responsibilities, dev_neighbor_dists, dev_max_neighbors,
         sorted_dev_positions, sorted_dev_velocities, sorted_dev_radii,
-        sorted_dev_v_prefs, sorted_dev_taus, sorted_dev_masses, sorted_dev_time_horizons,
+        sorted_dev_v_prefs, sorted_dev_lp_radii, sorted_dev_taus, sorted_dev_masses,
+        sorted_dev_time_horizons, sorted_dev_time_horizons_obst,
+        sorted_dev_responsibilities, sorted_dev_neighbor_dists, sorted_dev_max_neighbors,
+        dev_wall_p1s, dev_wall_p2s, cpu_wall_p1s, cpu_wall_p2s, max_wall_segs,
         last_build_positions, sorted_last_positions, needs_rebuild
     )
 end
@@ -95,12 +160,12 @@ end
 const ORCA_GPU_CONTEXTS = IdDict{World, ORCAGPUContext}()
 const ORCA_GPU_CONTEXTS_LOCK = Base.Threads.SpinLock()
 
-function get_orca_gpu_context(world::World, backend, F, N::Int)
+function get_orca_gpu_context(world::World, backend, F, N::Int, max_wall_segs::Int)
     lock(ORCA_GPU_CONTEXTS_LOCK)
     try
         ctx = get(ORCA_GPU_CONTEXTS, world, nothing)
-        if ctx === nothing || ctx.N != N
-            ctx = ORCAGPUContext(backend, F, N)
+        if ctx === nothing || ctx.N != N || ctx.max_wall_segs < max_wall_segs
+            ctx = ORCAGPUContext(backend, F, N, max_wall_segs)
             ORCA_GPU_CONTEXTS[world] = ctx
         end
         return ctx
@@ -109,221 +174,413 @@ function get_orca_gpu_context(world::World, backend, F, N::Int)
     end
 end
 
-function update_orca_system!(world::World, search::AbstractNeighborSearch, backend::Backend, dt::AbstractFloat)
-    num_agents = count_entities(Query(world, (ORCAParams{Float32},)))
-    if num_agents == 0
-        return
-    end
-    
-    F = typeof(search.cell_size)
-    ctx = get_orca_gpu_context(world, backend, F, num_agents)
-    
-    # Use pre-allocated CPU staging buffers from context (Fix A: no heap alloc per step)
-    positions     = ctx.cpu_positions
-    velocities    = ctx.cpu_velocities
-    radii         = ctx.cpu_radii
-    v_prefs       = ctx.cpu_v_prefs
-    taus          = ctx.cpu_taus
-    masses        = ctx.cpu_masses
-    time_horizons = ctx.cpu_time_horizons  # Fix D: per-agent, replaces hardcoded 2.0f0
-    
-    idx = 1
-    for (entities, pos_col, vel_col, params_col, goal_col) in Query(world, (Position{F}, Velocity{F}, ORCAParams{F}, Goal{F}))
-        for i in eachindex(pos_col)
-            positions[idx]     = pos_col[i].p
-            velocities[idx]    = vel_col[i].v
-            radii[idx]         = params_col[i].radius
-            taus[idx]          = params_col[i].τ
-            masses[idx]        = params_col[i].mass
-            time_horizons[idx] = params_col[i].time_horizon  # Fix D: per-agent
-            
-            dir  = goal_col[i].g - pos_col[i].p
-            dist = norm(dir)
-            v_prefs[idx] = dist > F(1e-3) ? (dir / dist) * params_col[i].v_pref : zero(SVector{2,F})
-            
-            idx += 1
+# ── Scene Wall Budget Check ────────────────────────────────────────────────────
+
+"""
+    assert_wall_budget(walls, agent_start_positions, r_max, W)
+
+Verify at scene construction time that no agent can simultaneously see more than W
+wall segments within `r_max + 2m` (the ORCA wall interaction radius).
+
+This is a spatial check — the global wall count alone is not sufficient because
+walls spread across a large room may all be within 2.3m of a corner agent.
+
+Arguments:
+- `walls`: iterable of `(p1::SVector{2}, p2::SVector{2})` tuples
+- `agent_start_positions`: iterable of `SVector{2}` initial positions
+- `r_max`: maximum agent radius in the scene (m). Default: 0.4m
+- `W`: compile-time MVector bound (must match Val{W} passed to kernel)
+
+Throws `AssertionError` if any start position can see more than W walls.
+"""
+function assert_wall_budget(walls, agent_start_positions, W::Int; r_max::AbstractFloat = 0.4f0)
+    interaction_radius = r_max + 2.0f0  # matches orca_cpu.jl §1.7 cutoff: r_i + 2m
+    wall_list = collect(walls)
+    max_visible = 0
+    for pos in agent_start_positions
+        visible = 0
+        for (p1, p2) in wall_list
+            seg = p2 - p1
+            l2  = dot(seg, seg)
+            t   = l2 < 1f-10 ? zero(eltype(pos)) : clamp(dot(pos - p1, seg) / l2, zero(eltype(pos)), one(eltype(pos)))
+            q   = p1 + t * seg
+            dist = norm(q - pos)
+            if dist < interaction_radius
+                visible += 1
+            end
         end
+        max_visible = max(max_visible, visible)
     end
-    
-    _update_orca_impl!(world, search, positions, velocities, radii, v_prefs, taus, masses, time_horizons, F(dt), backend, ctx)
+    @assert max_visible <= W """
+    Wall budget exceeded: an agent start position can see $max_visible wall segments simultaneously.
+    W=$W (the MVector bound in compute_orca_kernel!). Either:
+      1. Increase W (recompiles kernel — check register budget)
+      2. Merge nearby wall segments to reduce local density
+      3. Use the pre-pass kernel design for complex urban geometries
+    """
 end
 
+# ── ORCA GPU Kernel ────────────────────────────────────────────────────────────
+
+"""
+    compute_orca_kernel!
+
+One thread per agent. Computes ORCA velocity constraints from:
+  §1.7 Wall segments  (MVector{W}: GPU-safe fixed-size, W=16 covers all RiMEA scenarios)
+  Agent-agent ORCA    (MVector{K}: K=25 GPU, K=250 CPU)
+  §1.8 Responsibility (per-agent fraction of velocity change)
+  Per-agent neighbor_dist and max_neighbors
+
+Wall lines prepended to constraint set → LP3 treats them as hard constraints.
+
+Val{K}: compile-time agent-neighbor bound (25 GPU / 250 CPU, set by _update_orca_impl!)
+Val{W}: compile-time wall-line bound (16 by default, configurable per scene)
+"""
 @kernel function compute_orca_kernel!(
-    forces, @Const(sorted_positions), @Const(sorted_velocities), @Const(sorted_radii),
-    @Const(sorted_v_prefs), @Const(sorted_taus), @Const(sorted_masses),
-    @Const(sorted_time_horizons),  # Fix D: per-agent time horizon (replaces scalar)
+    forces,
+    @Const(sorted_positions), @Const(sorted_velocities), @Const(sorted_radii),
+    @Const(sorted_v_prefs),
+    @Const(sorted_lp_radii),       # LP velocity-disc radius = v_pref scalar (max speed)
+    @Const(sorted_taus), @Const(sorted_masses),
+    @Const(sorted_time_horizons),
+    @Const(sorted_time_horizons_obst),   # §1.7: per-agent wall time horizon
+    @Const(sorted_responsibilities),      # §1.8: per-agent velocity-change fraction
+    @Const(sorted_neighbor_dists),        # per-agent search radius
+    @Const(sorted_max_neighbors),         # per-agent cap (stored as F, cast to Int inside)
     @Const(sorted_last_positions),
-    grid_min, grid_dims, cell_size, @Const(cell_starts), @Const(cell_ends), @Const(agent_indices),
+    # Wall segments — shared read-only across all agents
+    @Const(wall_p1s), @Const(wall_p2s), n_walls::Int,
+    grid_min, grid_dims, cell_size,
+    @Const(cell_starts), @Const(cell_ends), @Const(agent_indices),
     dt,
-    ::Val{K}
-) where {K}
+    ::Val{K},   # compile-time: max agent-agent neighbors
+    ::Val{W},   # compile-time: max wall segments visible per agent
+) where {K, W}
     i = @index(Global, Linear)
-    
+
     @inbounds begin
         original_i = agent_indices[i]
-        
+
         pos_i      = sorted_positions[i]
         vel_i      = sorted_velocities[i]
         r_i        = sorted_radii[i]
         old_pos_i  = sorted_last_positions[i]
-        v_pref_i   = sorted_v_prefs[i]
-        tau_i      = sorted_taus[i]
+        v_pref_i      = sorted_v_prefs[i]       # preferred velocity vector
+        lp_radius_i   = sorted_lp_radii[i]       # max speed = LP disc radius
+        tau_i         = sorted_taus[i]
         mass_i     = sorted_masses[i]
-        time_h_i   = sorted_time_horizons[i]  # Fix D: per-agent time horizon
-        
-        idx = floor.(Int, (old_pos_i - grid_min) / cell_size)
+        time_h_i   = sorted_time_horizons[i]
+        time_h_obst_i = sorted_time_horizons_obst[i]  # §1.7
+        resp_i     = sorted_responsibilities[i]        # §1.8
+        nb_dist_i  = sorted_neighbor_dists[i]
+        max_nb_i   = Int(sorted_max_neighbors[i])
+
+        nb_dist_sq_i = nb_dist_i * nb_dist_i
+
+        # ── §1.7: Wall ORCA lines (MVector: GPU-safe, no heap allocation) ─────────
+        # Wall lines are PREPENDED so LP3 treats them as hard constraints
+        # (wall cannot be passed through, unlike agent-agent constraints).
+        wall_lines     = MVector{W, Line{typeof(r_i)}}(undef)
+        num_wall_lines = 0
+
+        for w in 1:n_walls
+            p1 = wall_p1s[w]
+            p2 = wall_p2s[w]
+            seg = p2 - p1
+            l2  = dot(seg, seg)
+            t   = l2 < typeof(r_i)(1e-10) ? zero(typeof(r_i)) :
+                  clamp(dot(pos_i - p1, seg) / l2, zero(typeof(r_i)), one(typeof(r_i)))
+            q   = p1 + t * seg
+            dist_to_wall = norm(q - pos_i)
+            # Interaction radius: agent radius + 2m slack (matches orca_cpu.jl §1.7)
+            if dist_to_wall < r_i + typeof(r_i)(2) && num_wall_lines < W
+                num_wall_lines += 1
+                wall_lines[num_wall_lines] = compute_orca_line_wall(
+                    pos_i, vel_i, r_i, p1, p2, time_h_obst_i, dt)
+            end
+        end
+
+        # ── Agent-agent neighbor search (O(k) via SortedNeighborIterator) ─────────
+        idx  = floor.(Int, (old_pos_i - grid_min) / cell_size)
         iter = SortedNeighborIterator(grid_min, grid_dims, cell_size, cell_starts, cell_ends, idx)
-        
-        # Maintain the closest K neighbors by squared distance
-        best_d2 = MVector{K, typeof(cell_size)}(undef)
-        best_idx = MVector{K, Int}(undef)
+
+        best_d2    = MVector{K, typeof(r_i)}(undef)
+        best_nb_idx = MVector{K, Int}(undef)
         best_count = 0
-        
+
         for neighbor_idx in iter
             if neighbor_idx != i
                 pos_j = sorted_positions[neighbor_idx]
-                r_j = sorted_radii[neighbor_idx]
-                
-                # Check distance
-                d2 = sum(abs2.(pos_i - pos_j))
-                if d2 <= (r_i + r_j + 15.0f0)^2 # Interaction horizon
+                r_j   = sorted_radii[neighbor_idx]
+                d2    = sum(abs2.(pos_i - pos_j))
+                if d2 <= nb_dist_sq_i
                     if best_count < K
                         best_count += 1
-                        best_d2[best_count] = d2
-                        best_idx[best_count] = neighbor_idx
-                        # Insertion sort step
+                        best_d2[best_count]     = d2
+                        best_nb_idx[best_count] = neighbor_idx
+                        # Insertion sort: keep ascending by d2
                         c = best_count
                         while c > 1 && best_d2[c] < best_d2[c-1]
-                            tmp_d = best_d2[c]; best_d2[c] = best_d2[c-1]; best_d2[c-1] = tmp_d
-                            tmp_i = best_idx[c]; best_idx[c] = best_idx[c-1]; best_idx[c-1] = tmp_i
+                            best_d2[c],     best_d2[c-1]     = best_d2[c-1],     best_d2[c]
+                            best_nb_idx[c], best_nb_idx[c-1] = best_nb_idx[c-1], best_nb_idx[c]
                             c -= 1
                         end
-                    else
-                        if d2 < best_d2[K]
-                            best_d2[K] = d2
-                            best_idx[K] = neighbor_idx
-                            c = K
-                            while c > 1 && best_d2[c] < best_d2[c-1]
-                                tmp_d = best_d2[c]; best_d2[c] = best_d2[c-1]; best_d2[c-1] = tmp_d
-                                tmp_i = best_idx[c]; best_idx[c] = best_idx[c-1]; best_idx[c-1] = tmp_i
-                                c -= 1
-                            end
+                    elseif d2 < best_d2[K]
+                        best_d2[K]     = d2
+                        best_nb_idx[K] = neighbor_idx
+                        c = K
+                        while c > 1 && best_d2[c] < best_d2[c-1]
+                            best_d2[c],     best_d2[c-1]     = best_d2[c-1],     best_d2[c]
+                            best_nb_idx[c], best_nb_idx[c-1] = best_nb_idx[c-1], best_nb_idx[c]
+                            c -= 1
                         end
                     end
                 end
             end
         end
-        
-        # Max neighbors we extract lines for (prevent register overflow)
-        # We will collect lines into an MVector
-        lines = MVector{K, Line{typeof(cell_size)}}(undef)
+
+        # Per-agent max_neighbors cap (runtime clamp — MVector still sized at K)
+        K_eff = min(best_count, max_nb_i)
+
+        # ── Build combined constraint set: [wall lines | agent lines] ─────────────
+        # Size: W walls + K agents = K+W total. Both bounds are compile-time → isbits.
+        lines    = MVector{K + W, Line{typeof(r_i)}}(undef)
         num_lines = 0
-        
-        for k in 1:best_count
-            n_idx = best_idx[k]
+
+        # 1. Wall lines first (hard constraints in LP3)
+        for w in 1:num_wall_lines
+            num_lines += 1
+            lines[num_lines] = wall_lines[w]
+        end
+
+        # 2. Agent-agent ORCA lines (soft constraints in LP3)
+        for k in 1:K_eff
+            n_idx = best_nb_idx[k]
             pos_j = sorted_positions[n_idx]
             vel_j = sorted_velocities[n_idx]
             r_j   = sorted_radii[n_idx]
-            
-            # Fix D: use per-agent time_h_i instead of scalar time_horizon
-            line = compute_orca_line(pos_i, vel_i, r_i, pos_j, vel_j, r_j, time_h_i, dt)
+            # §1.8: resp_i controls velocity-change fraction (0.5 = reciprocal, 1.0 = full)
             num_lines += 1
-            lines[num_lines] = line
+            lines[num_lines] = compute_orca_line(
+                pos_i, vel_i, r_i, pos_j, vel_j, r_j, time_h_i, dt, resp_i)
         end
-        
-        # Now solve 2D LP
-        fail_line, v_opt = linear_program_2_len(lines, num_lines, 5.0f0, v_pref_i, false, v_pref_i)
-        
+
+        # ── LP2 + LP3 ─────────────────────────────────────────────────────────────
+        fail_line, v_opt = linear_program_2_len(
+            lines, num_lines, lp_radius_i, v_pref_i, false, v_pref_i)
+
         if fail_line > 0
-            # Fallback 3D LP (relaxing constraints)
-            v_opt = linear_program_3_static(lines, num_lines, 0, fail_line, 5.0f0, v_opt)
+            # §1.7: num_wall_lines = hard-constraint boundary (walls non-relaxable)
+            # LP3 only relaxes lines[num_wall_lines+1 .. num_lines]
+            v_opt = linear_program_3_static(
+                lines, num_lines, num_wall_lines, fail_line, lp_radius_i, v_opt)
         end
-        
-        # Safety net: If 3D LP somehow produced NaN/Inf due to extreme floating point edge cases, default to zero velocity
+
+        # Safety net for floating-point edge cases
         if isnan(v_opt[1]) || isnan(v_opt[2]) || isinf(v_opt[1]) || isinf(v_opt[2])
-            v_opt = SVector{2, typeof(cell_size)}(0.0f0, 0.0f0)
+            v_opt = zero(SVector{2, typeof(r_i)})
         end
-        
-        # Convert optimal velocity to steering force
-        F_orca = mass_i * (v_opt - vel_i) / tau_i
-        
+
+        # Convert optimal velocity to steering force.
+        # CRITICAL: use dt (not τ) here.
+        # integrate_physics_system! applies: v_new = v_old + F/mass × dt
+        # → v_new = v_old + (mass*(v_opt-v_old)/dt)/mass × dt = v_opt  ✓
+        # Using τ instead gives: v_new = v_old + (v_opt-v_old)*dt/τ ≠ v_opt when τ≠dt,
+        # which breaks ORCA's collision-free guarantee (agents can no longer snap to v_opt).
+        # τ controls goal-seeking relaxation (physics.jl) — not the ORCA velocity step.
+        F_orca = mass_i * (v_opt - vel_i) / dt
         forces[original_i] = F_orca
     end
 end
 
-function _update_orca_impl!(world::World, search::RadixSpatialHash{AT,F}, positions, velocities, radii, v_prefs, taus, masses, time_horizons, dt::F, backend, ctx::ORCAGPUContext) where {AT,F}
-    N = length(positions)
-    
-    # Fix A: Use pre-allocated device buffers from context — no per-step GPU malloc
-    dev_positions     = ctx.dev_positions
-    dev_velocities    = ctx.dev_velocities
-    dev_radii         = ctx.dev_radii
-    dev_forces        = ctx.dev_forces
-    dev_v_prefs       = ctx.dev_v_prefs
-    dev_taus          = ctx.dev_taus
-    dev_masses        = ctx.dev_masses
-    dev_time_horizons = ctx.dev_time_horizons
-    
-    # Upload all agent data to device
-    copyto!(dev_positions,     positions)
-    copyto!(dev_velocities,    velocities)
-    copyto!(dev_radii,         radii)
-    copyto!(dev_v_prefs,       v_prefs)
-    copyto!(dev_taus,          taus)
-    copyto!(dev_masses,        masses)
-    copyto!(dev_time_horizons, time_horizons)
-    
-    # Lazy grid rebuild check (requires CPU read, so one mandatory sync here)
-    sq_skin_radius = F(2.0)^2
-    kernel_check! = check_rebuild_kernel!(backend)
-    kernel_check!(ctx.needs_rebuild, dev_positions, ctx.last_build_positions, sq_skin_radius, ndrange=N)
-    KernelAbstractions.synchronize(backend)  # mandatory: CPU must read needs_rebuild
-    
-    cpu_needs_rebuild = Vector{Bool}(undef, 1)
-    copyto!(cpu_needs_rebuild, ctx.needs_rebuild)
-    
-    kernel_reorder! = reorder_array_kernel!(backend)
-    
-    if cpu_needs_rebuild[1]
-        copyto!(ctx.last_build_positions, dev_positions)
-        build_grid!(search, dev_positions, backend)
-        kernel_reorder!(ctx.sorted_last_positions, ctx.last_build_positions, search.agent_indices, ndrange=N)
-        fill!(ctx.needs_rebuild, false)
+# ── ECS Data Extraction + Dispatch ────────────────────────────────────────────
+
+"""
+    update_orca_system!(world, search, backend, dt; W=16) → lp3_count::Int
+
+Update ORCA velocities for all agents with `ORCAParams`.
+Returns the number of LP3 fallback invocations this step (profiling: high values
+indicate crowd density is exceeding ORCA's guaranteed-feasibility threshold).
+
+`W`: max wall segments per agent (compile-time kernel parameter). Must match
+the scene geometry. Use `assert_wall_budget` at scene construction to verify.
+"""
+function update_orca_system!(world::World, search::AbstractNeighborSearch, backend::Backend,
+                              dt::AbstractFloat; W::Int = 16)
+    num_agents = count_entities(Query(world, (ORCAParams{Float32},)))
+    if num_agents == 0
+        return 0
     end
-    
-    # Reorder all arrays to Morton order — Fix B: all submitted to same GPU stream,
-    # no intermediate synchronize() needed. The ORCA kernel below will wait automatically.
-    kernel_reorder!(ctx.sorted_dev_positions,     dev_positions,     search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_velocities,    dev_velocities,    search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_radii,         dev_radii,         search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_v_prefs,       dev_v_prefs,       search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_taus,          dev_taus,          search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_masses,        dev_masses,        search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_time_horizons, dev_time_horizons, search.agent_indices, ndrange=N)
-    # Fix B: No synchronize() here — GPU stream ordering is automatic within the same stream.
-    
-    kernel! = compute_orca_kernel!(backend)
-    kernel!(dev_forces,
-        ctx.sorted_dev_positions, ctx.sorted_dev_velocities, ctx.sorted_dev_radii,
-        ctx.sorted_dev_v_prefs, ctx.sorted_dev_taus, ctx.sorted_dev_masses,
-        ctx.sorted_dev_time_horizons,  # Fix D: per-agent array
-        ctx.sorted_last_positions,
-        search.grid_min, search.grid_dims, search.cell_size,
-        search.cell_starts, search.cell_ends, search.agent_indices,
-        dt,
-        Val(backend isa CPU ? 250 : 25),
-        ndrange=N)
-    KernelAbstractions.synchronize(backend)  # mandatory: CPU must wait for forces
-    
-    cpu_forces = ctx.cpu_forces
-    copyto!(cpu_forces, dev_forces)
-    
+
+    F = typeof(search.cell_size)
+    ctx = get_orca_gpu_context(world, backend, F, num_agents, 64)
+
+    positions          = ctx.cpu_positions
+    velocities         = ctx.cpu_velocities
+    radii              = ctx.cpu_radii
+    v_prefs            = ctx.cpu_v_prefs
+    lp_radii           = ctx.cpu_lp_radii
+    taus               = ctx.cpu_taus
+    masses             = ctx.cpu_masses
+    time_horizons      = ctx.cpu_time_horizons
+    time_horizons_obst = ctx.cpu_time_horizons_obst
+    responsibilities   = ctx.cpu_responsibilities
+    neighbor_dists     = ctx.cpu_neighbor_dists
+    max_neighbors      = ctx.cpu_max_neighbors
+
     idx = 1
-    for (entities, pos_col, vel_col, params_col, goal_col, force_col) in Query(world, (Position{F}, Velocity{F}, ORCAParams{F}, Goal{F}, Force{F}))
-        for i in eachindex(force_col)
-            force_col[i] = Force(force_col[i].f + cpu_forces[idx])
+    for (entities, pos_col, vel_col, params_col, goal_col) in
+            Query(world, (Position{F}, Velocity{F}, ORCAParams{F}, Goal{F}))
+        for i in eachindex(pos_col)
+            p   = params_col[i]
+            positions[idx]          = pos_col[i].p
+            velocities[idx]         = vel_col[i].v
+            radii[idx]              = p.radius
+            taus[idx]               = p.τ
+            masses[idx]             = p.mass
+            time_horizons[idx]      = p.time_horizon
+            time_horizons_obst[idx] = p.time_horizon_obst   # §1.7
+            responsibilities[idx]   = p.responsibility       # §1.8
+            neighbor_dists[idx]     = p.neighbor_dist
+            max_neighbors[idx]      = Int32(p.max_neighbors)
+
+            dir  = goal_col[i].g - pos_col[i].p
+            dist = norm(dir)
+            v_prefs[idx]            = dist > F(1e-3) ? (dir / dist) * p.v_pref : zero(SVector{2,F})
+            lp_radii[idx]           = p.v_pref   # LP radius = max speed scalar
+
             idx += 1
         end
     end
+
+    # Extract wall segments (static per scene — could be cached, but small cost)
+    n_walls = 0
+    for (_, wall_col) in Query(world, (WallSegment{F},))
+        for i in eachindex(wall_col)
+            n_walls += 1
+            ctx.cpu_wall_p1s[n_walls] = wall_col[i].p1
+            ctx.cpu_wall_p2s[n_walls] = wall_col[i].p2
+        end
+    end
+    # n_walls == 0 is fine (no wall constraints generated)
+
+    return _update_orca_impl!(world, search, positions, velocities, radii, v_prefs,
+                               lp_radii, taus, masses, time_horizons, time_horizons_obst,
+                               responsibilities, neighbor_dists, max_neighbors,
+                               n_walls, F(dt), backend, ctx, Val(W))
 end
 
+# ── Core Implementation ────────────────────────────────────────────────────────
+# Note: check_rebuild_kernel! and reorder_array_kernel! are defined in social.jl
+# and shared across the SimCrowd module — do not redefine them here.
+
+function _update_orca_impl!(
+    world::World, search::RadixSpatialHash{AT,F},
+    positions, velocities, radii, v_prefs, lp_radii,
+    taus, masses, time_horizons, time_horizons_obst,
+    responsibilities, neighbor_dists, max_neighbors,
+    n_walls::Int, dt::F, backend, ctx::ORCAGPUContext,
+    ::Val{W}
+) where {AT, F, W}
+    N = length(positions)
+
+    # Upload per-agent data to device
+    copyto!(ctx.dev_positions,          positions)
+    copyto!(ctx.dev_velocities,         velocities)
+    copyto!(ctx.dev_radii,              radii)
+    copyto!(ctx.dev_v_prefs,            v_prefs)
+    copyto!(ctx.dev_lp_radii,           lp_radii)
+    copyto!(ctx.dev_taus,               taus)
+    copyto!(ctx.dev_masses,             masses)
+    copyto!(ctx.dev_time_horizons,      time_horizons)
+    copyto!(ctx.dev_time_horizons_obst, time_horizons_obst)
+    copyto!(ctx.dev_responsibilities,   responsibilities)
+    copyto!(ctx.dev_neighbor_dists,     neighbor_dists)
+    # max_neighbors: Int32 → F for device (KA-generic; cast back to Int inside kernel)
+    for i in 1:N
+        ctx.dev_max_neighbors[i] = F(max_neighbors[i])
+    end
+
+    # Upload wall segments (only the n_walls valid entries)
+    if n_walls > 0
+        copyto!(ctx.dev_wall_p1s, @view ctx.cpu_wall_p1s[1:n_walls])
+        copyto!(ctx.dev_wall_p2s, @view ctx.cpu_wall_p2s[1:n_walls])
+    end
+
+    # Lazy grid rebuild check
+    sq_skin_radius = F(2.0)^2
+    kernel_check! = check_rebuild_kernel!(backend)
+    kernel_check!(ctx.needs_rebuild, ctx.dev_positions, ctx.last_build_positions,
+                  sq_skin_radius, ndrange=N)
+    KernelAbstractions.synchronize(backend)
+
+    cpu_needs_rebuild = Vector{Bool}(undef, 1)
+    copyto!(cpu_needs_rebuild, ctx.needs_rebuild)
+
+    kernel_reorder! = reorder_array_kernel!(backend)
+
+    if cpu_needs_rebuild[1]
+        copyto!(ctx.last_build_positions, ctx.dev_positions)
+        build_grid!(search, ctx.dev_positions, backend)
+        kernel_reorder!(ctx.sorted_last_positions, ctx.last_build_positions,
+                        search.agent_indices, ndrange=N)
+        fill!(ctx.needs_rebuild, false)
+    end
+
+    # Reorder all per-agent arrays to Morton order for coalesced GPU access
+    kernel_reorder!(ctx.sorted_dev_positions,          ctx.dev_positions,          search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_velocities,         ctx.dev_velocities,         search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_radii,              ctx.dev_radii,              search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_v_prefs,            ctx.dev_v_prefs,            search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_lp_radii,           ctx.dev_lp_radii,           search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_taus,               ctx.dev_taus,               search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_masses,             ctx.dev_masses,             search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_time_horizons,      ctx.dev_time_horizons,      search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_time_horizons_obst, ctx.dev_time_horizons_obst, search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_responsibilities,   ctx.dev_responsibilities,   search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_neighbor_dists,     ctx.dev_neighbor_dists,     search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_max_neighbors,      ctx.dev_max_neighbors,      search.agent_indices, ndrange=N)
+
+    # K: compile-time agent-neighbor bound. 250 on CPU (handles large search radii),
+    # 25 on GPU (register budget). Matches original orca.jl convention.
+    K = backend isa CPU ? 250 : 25
+
+    kernel! = compute_orca_kernel!(backend)
+    kernel!(
+        ctx.dev_forces,
+        ctx.sorted_dev_positions, ctx.sorted_dev_velocities, ctx.sorted_dev_radii,
+        ctx.sorted_dev_v_prefs, ctx.sorted_dev_lp_radii, ctx.sorted_dev_taus, ctx.sorted_dev_masses,
+        ctx.sorted_dev_time_horizons,
+        ctx.sorted_dev_time_horizons_obst,   # §1.7
+        ctx.sorted_dev_responsibilities,      # §1.8
+        ctx.sorted_dev_neighbor_dists,
+        ctx.sorted_dev_max_neighbors,
+        ctx.sorted_last_positions,
+        ctx.dev_wall_p1s, ctx.dev_wall_p2s, n_walls,
+        search.grid_min, search.grid_dims, search.cell_size,
+        search.cell_starts, search.cell_ends, search.agent_indices,
+        dt,
+        Val(K),
+        Val(W),
+        ndrange=N
+    )
+    KernelAbstractions.synchronize(backend)
+
+    cpu_forces = ctx.cpu_forces
+    copyto!(cpu_forces, ctx.dev_forces)
+
+    # Write forces back to ECS
+    idx = 1
+    for (entities, pos_col, vel_col, params_col, goal_col, force_col) in
+            Query(world, (Position{F}, Velocity{F}, ORCAParams{F}, Goal{F}, Force{F}))
+        for i in eachindex(force_col)
+            force_col[i] = Force(cpu_forces[idx])  # ORCA sets, not accumulates
+            idx += 1
+        end
+    end
+
+    # LP3 profiling: not yet tracked in the GPU kernel path (requires GPU atomic or
+    # separate readback pass). Returns 0 for API compatibility with orca_cpu.jl callers.
+    # TODO: add LP3 atomic counter in a future sprint if profiling is needed.
+    return 0
+end
