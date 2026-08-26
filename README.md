@@ -1,42 +1,84 @@
-# Hermes.jl — Simulation Platform
+# Hermes — Simulation Platform
 
-> *Hermes: Greek god of speed and commerce. Built with Julia.*
+A Julia-based simulation platform being built to handle three interconnected
+domains under a single agent-based engine:
 
-A high-performance, general-purpose simulation platform combining:
-- **Discrete Event Simulation (DES)** — parallel, multi-scale event scheduling
-- **Crowd Dynamics** — Social Force Model (SFM) with GPU acceleration
-- **Fluid Simulation** — SPH/LBM (Phase 3)
-- **Real-time Visualization** — GLMakie (Phase 1) → Godot 4 (Phase 2)
+- **Discrete Event Simulation (DES)** — queues, servers, event scheduling, multi-scale process modelling
+- **Crowd Dynamics** — pedestrian agent simulation using physics-based force models and collision-avoidance algorithms
+- **Fluid Simulation** — particle-based methods (planned, not yet started)
 
-**Status**: Pre-alpha (active development)  
-**License**: Commercial proprietary — see [LICENSE](LICENSE)
+The unifying idea is that a customer in a queue, a pedestrian in a crowd, and a
+fluid particle are all *agents with state and behavioural rules* — the same
+computational substrate should handle all three.
+
+---
+
+## Status: Pre-Alpha
+
+This is early-stage research and development code. It is not ready for production
+use. What exists and works:
+
+- **SimDES** — serial DES engine (M/M/1, M/M/c, M/G/1, tandem queues, Jackson
+  networks, fork-join, NHPP arrivals, machine failures). 55+ tests passing.
+- **SimCrowd** — crowd simulation with:
+  - Social Force Model (SFM, Helbing & Molnár 1995)
+  - GCF-Elliptical model (Chraibi 2010) — RiMEA T2 compliant at all 4 densities
+  - ORCA collision avoidance (van den Berg et al.)
+  - Hybrid FSM (density-triggered ORCA+SFM dispatch) — passes RiMEA T7 at 2.3× threshold
+  - GPU acceleration via KernelAbstractions.jl
+
+What is not yet built: fluid simulation, real-time visualization, multi-level
+geometry, staircase models.
+
+The API is unstable and will change without notice.
+
+---
+
+## Intended Use
+
+The long-term goal is a general-purpose simulation tool comparable in scope to
+AnyLogic or FlexSim, but built in Julia for performance and open extensibility.
+Intended application areas include evacuation planning, venue capacity analysis,
+manufacturing process simulation, and airport terminal flow.
+
+This is a solo research project. There is no roadmap commitment or release
+schedule.
+
+---
 
 ## Repository Structure
 
 ```
 packages/
-├── SimCore/    Shared types, ECS world, events
-├── SimDES/     DES engine, FEL, Conservative PDES
-├── SimCrowd/   Social Force Model, crowd dynamics
-├── SimFluid/   Fluid simulation skeleton (Phase 3)
-└── SimViz/     GLMakie visualization layer
+├── SimCore/    Shared types, ECS world, event definitions
+├── SimDES/     DES engine — FEL, routing, statistics
+├── SimCrowd/   Crowd dynamics — SFM, GCF, ORCA, Hybrid FSM
+├── SimFluid/   Fluid simulation (skeleton only)
+└── SimViz/     Visualization (not yet started)
 
-docs/           Design documents and reference
-experiments/    Validation test cases (DrWatson)
+experiments/    Validation scripts (DrWatson environment)
 ```
 
-## Getting Started (Internal)
+---
 
-```julia
-# Start Julia from the repo root
-julia --threads auto --project=.
+## Running the Tests
 
-# In Julia REPL:
-using SimDES, SimCrowd, SimViz
+```bash
+# From packages/SimCrowd:
+julia --threads auto --project=. -e 'using Pkg; Pkg.test()'
+
+# Run cross-library tier-3 benchmarks:
+julia --threads auto --project=. test/tier3_cross_library.jl
 ```
 
-## Documentation
+Requires Julia 1.12+. GPU tests require a CUDA-capable device.
 
-- [Architecture Design](docs/2026-08-07_simulation_platform_design.md)
-- [Validation Test Cases](docs/2026-08-07_validation_test_cases.md)
-- [Code Design & Practices](docs/2026-08-07_code_design_practices.md)
+---
+
+## License
+
+Source-available. Free for academic research and educational use.
+**Commercial use requires written authorization from the author.**
+See [LICENSE](LICENSE) for full terms.
+
+Copyright (c) 2026 Sourabh Kotnala — sauravkotnala@gmail.com

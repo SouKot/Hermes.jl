@@ -1,12 +1,63 @@
-HERMES SIMULATION PLATFORM — COMMERCIAL LICENSE
+HERMES SIMULATION PLATFORM — SOURCE AVAILABLE LICENSE
+Version 1.0, 2026
 
 Copyright (c) 2026 Sourabh Kotnala. All rights reserved.
-
-This software and associated documentation files (the "Software") are proprietary
-and confidential. Unauthorized copying, distribution, modification, or use of this
-Software, in whole or in part, is strictly prohibited.
-
-A formal commercial license agreement is required for any use of this Software.
 Contact: sauravkotnala@gmail.com
 
-[PLACEHOLDER — Replace with full commercial license text before distribution]
+---
+
+## Permitted Uses
+
+Permission is granted, free of charge, to any person obtaining a copy of this
+software and associated documentation files (the "Software"), to use, copy,
+modify, and distribute the Software solely for the following non-commercial
+purposes:
+
+  - Academic research
+  - Educational use (coursework, teaching, self-study)
+  - Non-commercial scientific publications and presentations
+  - Personal experimentation and learning
+
+Redistributions of source code must retain this license notice, the copyright
+notice above, and the following disclaimer in all copies or substantial portions
+of the Software.
+
+---
+
+## Prohibited Uses
+
+The following uses are explicitly prohibited without prior written authorization
+from the copyright holder:
+
+  - Any commercial use, including but not limited to: selling, licensing,
+    sublicensing, or incorporating this Software into a commercial product or
+    service
+  - Use within a for-profit organization's internal operations or infrastructure,
+    even if the Software itself is not sold
+  - Offering the Software or derivative works as a paid or freemium service
+    (SaaS, API, hosted platform, or similar)
+  - Use in consulting, contracting, or client-facing work where compensation is
+    received
+
+If you are unsure whether your intended use qualifies as commercial, contact
+sauravkotnala@gmail.com before proceeding.
+
+---
+
+## Commercial Licensing
+
+Commercial use of this Software requires a separate written license agreement
+with the copyright holder. The author expressly reserves the right to offer
+commercial licenses on terms to be negotiated. To inquire about a commercial
+license, contact: sauravkotnala@gmail.com
+
+---
+
+## Disclaimer
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
