@@ -105,6 +105,62 @@ Requires Julia 1.12+. GPU tests require a CUDA-capable device.
 
 ---
 
+## Acknowledgements
+
+### Algorithms and research
+
+The crowd simulation models are implementations of published peer-reviewed work.
+The parameters used in the code and tests are taken directly from the original
+papers, not calibrated to fit our output.
+
+- **Helbing & Molnár (1995)** — *Social force model for pedestrian dynamics.*
+  Physical Review E 51(5). Foundation of the SFM implementation; parameters
+  A=2000 N, B=0.08 m, λ=0.5, τ=0.5 s.
+
+- **Helbing, Farkas & Vicsek (2000)** — *Simulating dynamical features of escape
+  panic.* Nature 407. Contact force model (spring constant k, friction κ),
+  stochastic noise amplitude σ=0.3 N/kg, faster-is-slower effect.
+
+- **Chraibi, Seyfried & Schadschneider (2010)** — *Generalized centrifugal-force
+  model for pedestrian dynamics.* Physical Review E 82(4). GCFM-elliptical
+  personal space model; parameters η, b_min, b_max, a₀ from Table I of that paper.
+
+- **van den Berg, Guy, Lin & Manocha (2008–2011)** — *Reciprocal velocity
+  obstacles / Reciprocal n-body collision avoidance.* The ORCA algorithm.
+  The linear-programming routines in `orca_math.jl` are a Julia port of the
+  reference RVO2 C++ implementation.
+
+- **Weidmann (1993)** — *Transporttechnik der Fußgänger.* ETH Zurich. The
+  fundamental diagram (speed vs. density) and bottleneck flow rate used as
+  primary validation targets throughout the test suite.
+
+### Cross-validation references
+
+Test results are cross-checked against these open-source implementations:
+
+- **JuPedSim** (Forschungszentrum Jülich) — primary comparison library for
+  bottleneck flow, fundamental diagram, and speed distribution tests.
+- **RVO2** (University of North Carolina) — reference C++ ORCA implementation;
+  our tier-3 ORCA tests reproduce the `Blocks.cc` and `Circle.cc` scenarios.
+- **Menge** (University of North Carolina / GAMMA group) — architectural
+  reference for the density-triggered Hybrid FSM design (Sprint 3K).
+- **UMANS** (Van Toll et al., 2022) — used for ORCA bidirectional corridor
+  speed-efficiency comparison (Table 3).
+
+### Julia ecosystem
+
+This project relies on the following Julia packages:
+[Ark.jl](https://github.com/Gesee-y/Ark.jl) (ECS),
+[KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl) (GPU kernels),
+[StaticArrays.jl](https://github.com/JuliaArrays/StaticArrays.jl),
+[CellListMap.jl](https://github.com/m3g/CellListMap.jl) (neighbor search),
+[DataStructures.jl](https://github.com/JuliaCollections/DataStructures.jl) (priority queue),
+[HypothesisTests.jl](https://github.com/JuliaStats/HypothesisTests.jl),
+[Distributions.jl](https://github.com/JuliaStats/Distributions.jl),
+[DrWatson.jl](https://github.com/JuliaDynamics/DrWatson.jl) (experiment management).
+
+---
+
 ## License
 
 Source-available. Free for academic research and educational use.
