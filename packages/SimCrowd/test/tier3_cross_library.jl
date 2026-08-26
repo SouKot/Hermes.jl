@@ -1794,7 +1794,7 @@ end
             Position(pos),
             Velocity(SVector(0f0, 0f0)),
             AgentGeometry(r_body, r_body * F(2/3)),
-            MotionParams(mass, v_pref, F(0.5), F(0.8)),   # σ=0.8: Helbing fluctuation (was 0.3; increased to ensure arch-breaking for remaining agents)
+            MotionParams(mass, v_pref, F(0.5), F(0.3)),   # σ=0.3: Helbing 2000 canonical fluctuation
             Goal(goal),
             Force(zero(SVector{2,F})),
             hybrid_p,
