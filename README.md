@@ -44,6 +44,36 @@ manufacturing process simulation, and airport terminal flow.
 This is a solo research project. There is no roadmap commitment or release
 schedule.
 
+### Parallelization
+
+Parallelism is a first-class concern, not an afterthought. The plan has three
+levels:
+
+- **CPU thread-level** (in progress) — crowd force computation runs across all
+  available CPU cores via `Threads.@threads`. SimDES is serial today; a
+  Conservative Parallel DES engine (Chandy-Misra null-message protocol, one
+  logical process per facility) is the planned Tier 2.
+- **GPU** (partial) — crowd simulation uses KernelAbstractions.jl kernels that
+  compile to CUDA or Metal. The same kernel code runs on CPU for correctness
+  testing and on GPU for large-N performance.
+- **Multi-node / MPI** (not started) — Tier 3 target for very large-scale
+  multi-facility networks. Depends on Tier 2 being stable first.
+
+The three-tier architecture (serial → threaded PDES → MPI) is described in the
+internal design document.
+
+---
+
+## Development Approach
+
+This project is developed with significant AI assistance (primarily large language
+models used as a coding and research pair). Every design decision, algorithm
+choice, parameter value, and test assertion goes through human review before being
+committed. The AI is used to accelerate implementation and surface options; the
+human decides what is correct and why. All validation results are independently
+checked against published reference implementations (JuPedSim, RVO2, Menge) and
+peer-reviewed papers.
+
 ---
 
 ## Repository Structure
