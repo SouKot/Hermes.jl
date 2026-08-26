@@ -1,3 +1,11 @@
+# Internal design documentation — not for public repo
+/docs/
+
+# Scratch / diagnostic / pilot test files (development only)
+packages/SimCrowd/test/pilot_*.jl
+packages/SimCrowd/test/scratch_*.jl
+packages/SimCrowd/test/standalone_*.jl
+
 # Julia artefacts
 Manifest.toml
 *.jl.cov
