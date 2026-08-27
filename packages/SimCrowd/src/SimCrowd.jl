@@ -12,12 +12,12 @@ export Position, Velocity, AgentGeometry, MotionParams, SFMParams, Goal, Force, 
 export from_agent_params
 export goal_seeking_force, agent_repulsion, wall_repulsion, gcf_force
 export AbstractNeighborSearch, RadixSpatialHash, CPUNeighborSearch, build_grid!, get_neighbors
-export NavigationField, build_navigation_field, get_desired_direction
+export NavigationField, build_navigation_field, get_nav_direction, get_desired_direction
 export update_navigation_system!, update_social_forces_system!, integrate_physics_system!
 export ORCAParams, update_orca_system!
 export HybridFSMParams, AgentFSMState, update_hybrid_fsm_system!, ORCA_MODE, SFM_MODE
 export CSMParams, AgentCSMState, update_csm_system!
-export CSMParams_V1, CSMParams_V2, CSMParams_V3, CSMParams_JuPedSim
+export CSMParams_Classic, CSMParams_V3, CSMParams_JuPedSim
 export nearest_point_on_segment, nearest_point_on_arc, csm_speed, csm_gap
 export ContactModel, NoContact, Coulomb, Viscous
 # §2.1 ForceModel trait
@@ -278,56 +278,57 @@ AgentFSMState{F}() where {F<:AbstractFloat} = AgentFSMState{F}(Int32(0), zero(F)
 """
     CSMParams{F<:AbstractFloat}
 
-Unified Collision-Free Speed Model parameters (V1/V2/V3 via field selection).
+Unified Collision-Free Speed Model parameters (Classic / V3 via field selection).
 
-Mode equivalences:
-  `a_wall=0, use_rotational_steering=false` → V1 (Tordeux 2016, isotropic repulsion)
-  `a_wall>0, use_rotational_steering=false` → V2 (wall repulsion in direction model)
-  `a_wall>0, use_rotational_steering=true`  → V3 (rotational steering + heading relaxation)
+Model variants:
+  `use_rotational_steering=false` -> CSM-Classic (Tordeux 2016, isotropic repulsion)
+  `use_rotational_steering=true`  -> CSM-V3      (heading relaxation, JuPedSim V3)
 
-All fields are primitive types → `isbits` ✅ → GPU-compatible (Sprint 3L+ kernel).
+All fields are primitive types -> `isbits` -> GPU-compatible.
+
+Sprint 3M changes (2026-08-27):
+  - Removed: a_wall, D_wall (V2 wall repulsion in direction model -- no paper basis)
+  - Added: strength_geo, range_geo (JuPedSim-style contact geometry constraint)
+  - Changed: a_neighbor default 3.0->8.0, D_neighbor default 0.2->0.1 (Tordeux 2016)
+  - Changed: heading_relaxation_tau (was heading_relaxation_tau with unicode) -- same semantics
+  - Repulsion formula: now uses surface-to-surface gap (was center-to-center)
 
 Fields:
-- `v₀`:                      desired free-flow speed (m/s). Weidmann: 1.34 m/s.
-- `T`:                       time-gap parameter (s). Safety headway.
-- `radius`:                  agent body radius (m). Body length ℓ = 2r.
-- `a_neighbor`:              neighbor repulsion strength (m/s).
-- `D_neighbor`:              neighbor repulsion decay length (m).
-- `fov_half_angle`:          forward-cone half-angle (rad). π = full 180° hemisphere.
-                             `cos_fov = cos(fov_half_angle)` precomputed per step.
-- `a_wall`:                  wall repulsion strength (m/s). 0.0 → V1 (no wall repulsion).
-- `D_wall`:                  wall repulsion decay length (m).
-- `use_rotational_steering`: true → V3 (heading relaxation); false → V1/V2.
-- `heading_relaxation_τ`:    heading smoothing time constant (s). 0.5 → 10 steps at dt=0.05.
-- `reverse_speed_floor`:     back-speed allowance (m/s). Reserved for future un-blocking.
-- `neighbor_radius`:         max neighbor search radius (m).
-- `max_neighbors`:           max neighbors considered (informational; O(N) scan uses all).
+- `v0`:                     desired free-flow speed (m/s). Weidmann: 1.34 m/s.
+- `T`:                      time-gap parameter (s). Safety headway.
+- `radius`:                 agent body radius (m). Body length l = 2r.
+- `a_neighbor`:             neighbor repulsion strength (m/s). Tordeux: 8.0.
+- `D_neighbor`:             neighbor repulsion decay length (m). Tordeux: 0.1.
+- `fov_half_angle`:         forward-cone half-angle for SPEED model (rad). pi = full 180.
+- `strength_geo`:           geometry contact constraint strength. JuPedSim: 5.0. 0.0=disabled.
+- `range_geo`:              geometry contact constraint range (m). JuPedSim: 0.02.
+- `use_rotational_steering`:true -> V3 (heading relaxation); false -> Classic.
+- `heading_relaxation_tau`: heading smoothing time constant (s). JuPedSim V3: 0.3.
+- `neighbor_radius`:        max neighbor search radius (m).
+- `max_neighbors`:          informational; O(N) scan uses all within radius.
 """
 Base.@kwdef struct CSMParams{F<:AbstractFloat}
-    # ── V1 core ────────────────────────────────────────────────────────────────
-    v₀                     :: F    = F(1.34)  # desired free-flow speed (m/s)
+    # -- Classic core ----------------------------------------------------------
+    v0                     :: F    = F(1.34)  # desired free-flow speed (m/s)
     T                      :: F    = F(1.0)   # time-gap parameter (s)
-    radius                 :: F    = F(0.20)  # agent body radius (m); ℓ = 2r
+    radius                 :: F    = F(0.20)  # agent body radius (m); l = 2r
 
-    # ── V1/V2: direction model ─────────────────────────────────────────────────
-    a_neighbor             :: F    = F(3.0)   # neighbor repulsion strength (m/s)
-    D_neighbor             :: F    = F(0.2)   # neighbor repulsion decay length (m)
-    fov_half_angle         :: F    = F(π)     # forward cone half-angle (rad); π = 180°
-    #   cos(π) = -1 → condition dot(n,dir) > -1 always true → full hemisphere, zero cost.
-    #   2π/3 (120°), π/2 (90°) available for narrow-cone tests.
+    # -- Direction model -------------------------------------------------------
+    a_neighbor             :: F    = F(8.0)   # neighbor repulsion strength (m/s) -- Tordeux 2016
+    D_neighbor             :: F    = F(0.1)   # neighbor repulsion decay length (m) -- Tordeux 2016
+    fov_half_angle         :: F    = F(pi)    # [LEGACY - unused since Sprint 3N-a] kept for isbits compat
 
-    # ── V2: wall influence in direction model ──────────────────────────────────
-    # a_wall = 0.0 → V1 behavior (no wall repulsion)
-    a_wall                 :: F    = F(0.0)   # wall repulsion strength (m/s)
-    D_wall                 :: F    = F(0.2)   # wall repulsion decay length (m)
+    # -- Geometry contact constraint (JuPedSim approach) -----------------------
+    # Replaces V2 wall repulsion. Contact-level only (range=0.02m).
+    # Applied in ALL directions without filter. Negligible at dist > 0.30m from wall.
+    strength_geo           :: F    = F(5.0)   # geometry constraint strength. 0.0=disabled.
+    range_geo              :: F    = F(0.02)  # geometry constraint range (m). JuPedSim default.
 
-    # ── V3: rotational steering ────────────────────────────────────────────────
-    # use_rotational_steering = false → V1/V2 isotropic repulsion
+    # -- V3: rotational steering -----------------------------------------------
     use_rotational_steering :: Bool = false
-    heading_relaxation_τ   :: F    = F(0.5)   # heading smoothing time constant (s)
-    reverse_speed_floor    :: F    = F(0.0)   # back-speed floor (m/s); reserved
+    heading_relaxation_tau  :: F    = F(0.3)  # heading smoothing tau (s). JuPedSim V3: 0.3s.
 
-    # ── Neighbor search ────────────────────────────────────────────────────────
+    # -- Neighbor search -------------------------------------------------------
     neighbor_radius        :: F    = F(2.0)   # max neighbor search radius (m)
     max_neighbors          :: Int  = 8        # informational; O(N) scan uses all within radius
 end
@@ -335,34 +336,27 @@ end
 # Compile-time GPU-compatibility guard
 @assert isbitstype(CSMParams{Float32})  "CSMParams must remain isbits for KA/GPU compatibility"
 
-# ── Convenience constructors ──────────────────────────────────────────────────
-"""V1: isotropic repulsion, no wall influence. Tordeux 2016 baseline."""
-CSMParams_V1(F=Float32; kw...) = CSMParams{F}(; a_wall=F(0), use_rotational_steering=false, kw...)
 
-"""V2: V1 + wall repulsion in direction model (a_wall>0).
+"""CSM-Classic: Tordeux 2016 faithful implementation. Surface-to-surface gap,
+all neighbors isotropic, contact geometry constraint. Default parameters match
+JuPedSim reference defaults (a=8.0, D=0.1, T=1.0)."""
+CSMParams_Classic(F=Float32; kw...) = CSMParams{F}(; use_rotational_steering=false, kw...)
 
-Default a_wall=2.0 calibrated for T7 bottleneck: achieves flow=1.237 ped/s (≥1.22 target).
-Sweep shows a_wall≤2.0 meets target; a_wall=3.0 causes over-funneling → flow=1.055 ❌.
-Lateral-only filter (Bug 9 fix) required: only includes walls with dot(n_w,dir_goal)≤0.
-"""
-CSMParams_V2(F=Float32; kw...) = CSMParams{F}(; a_wall=F(2.0), D_wall=F(0.2),
-                                                use_rotational_steering=false, kw...)
+"""CSM-V3: Classic + rotational heading relaxation (tau=0.3s). JuPedSim V3 approach.
+Reduces T7 throughput vs Classic -- physical feature (turning cost), not a bug.
+Use for dense crowds, tight corridors, and scenarios requiring physical turning realism."""
+CSMParams_V3(F=Float32; kw...) = CSMParams{F}(; use_rotational_steering=true,
+                                                heading_relaxation_tau=F(0.3), kw...)
 
-"""V3: V2 + rotational steering + heading relaxation. JuPedSim default."""
-CSMParams_V3(F=Float32; kw...) = CSMParams{F}(; a_wall=F(2.0), D_wall=F(0.2),
-                                                use_rotational_steering=true,
-                                                heading_relaxation_τ=F(0.5), kw...)
-
-"""
-JuPedSim reference parameters (JuPedSim v10, T7 notebook).
-Used for cross-validation in the Sprint 3L parameter sweep.
-"""
+"""JuPedSim reference parameters for cross-validation.
+Physically equivalent to CSMParams_Classic with radius=0.15 (JuPedSim default)."""
 CSMParams_JuPedSim(F=Float32) = CSMParams{F}(
-    v₀=F(1.34), T=F(1.0), radius=F(0.15),
+    v0=F(1.34), T=F(1.0), radius=F(0.15),
     a_neighbor=F(8.0), D_neighbor=F(0.1),
-    a_wall=F(5.0), D_wall=F(0.1),
+    strength_geo=F(5.0), range_geo=F(0.02),
     use_rotational_steering=false
 )
+
 
 """
     AgentCSMState{F<:AbstractFloat}

@@ -1,12 +1,29 @@
-# systems/csm.jl — Collision-Free Speed Model (CSM)
+# systems/csm.jl -- Collision-Free Speed Model (CSM)
 #
-# Implements CSM V1/V2/V3 (Tordeux et al. 2016 / JuPedSim GCFVM) as a unified
-# first-order pedestrian model controlled entirely by CSMParams{F}.
+# Implements CSM Classic (Tordeux et al. 2016) and CSM V3 (JuPedSim V3)
+# as a unified first-order pedestrian model.
 #
 # Model variants (controlled by CSMParams fields):
-#   V1:  a_wall=0, use_rotational_steering=false  (Tordeux 2016 baseline)
-#   V2:  a_wall>0, use_rotational_steering=false  (wall repulsion in direction model)
-#   V3:  a_wall>0, use_rotational_steering=true   (rotational steering + heading relaxation)
+#   Classic: use_rotational_steering=false   (Tordeux 2016 -- faithful paper implementation)
+#   V3:      use_rotational_steering=true    (JuPedSim V3 heading relaxation)
+#
+# Key design decisions (Sprint 3M -- 2026-08-27):
+#   - Repulsion formula: a*exp(-gap/D) where gap = surface-to-surface distance (Tordeux 2016).
+#     Previously used center-to-center distance -- 5-54x too weak at relevant gaps.
+#   - ALL neighbors summed isotropically (no nearest-only filter). Symmetric crowds
+#     naturally cancel. Asymmetric situations (near walls, bottleneck) create deflection.
+#   - Geometry constraint: JuPedSim contact-level push-out (strength=5.0, range=0.02m),
+#     applied in ALL directions (no lateral filter). Negligible at >0.30m from wall.
+#   - No safety cap: removed. With correct formula + geometry constraint, cap not needed.
+#   - V2 wall repulsion in direction model: DELETED. Not in Tordeux 2016. Was a workaround.
+#
+# Sprint 3N-a fixes (2026-08-27 -- matching JuPedSim GetSpacing exactly):
+#   - csm_gap: replaced full-360 FOV with JuPedSim forward half-plane + narrow lateral corridor.
+#     JuPedSim GetSpacing: inFront=(dir·Δp≥0) AND inCorridor=(|lat·Δp|≤r_i+r_j).
+#     Old code (fov=π): ALL neighbors counted as speed blockers → everyone slowed → deadlock.
+#   - Computation order: direction e_i computed FIRST, then gap measured in e_i direction.
+#     JuPedSim: direction = normalize(e0 + repulsions), THEN spacing = GetSpacing(dir).
+#     Old code: gap measured in dir_goal, then direction computed separately (inconsistent).
 #
 # Architecture:
 #   - CSM agents carry: Position{F}, Velocity{F}, Goal{F}, CSMParams{F}
@@ -20,14 +37,11 @@
 #   Pass 2: write pos[i] (ECS write-back, own slot)
 #   No locks, no atomics, no race conditions.
 #
-# GPU path (Sprint 3L+):
-#   Structs are isbits. GPU kernel follows orca.jl pattern.
-#   Estimated ~50 registers per thread vs ~280 for ORCA → ~3× higher SM occupancy.
-#
 # References:
 #   Tordeux, A., Chraibi, M., Seyfried, A. (2016). Collision-free speed model for
 #   pedestrian dynamics. In Traffic and Granular Flow '15, 225-232. Springer.
-#   JuPedSim v10.0 — jupedsim.org (GCFVM implementation reference)
+#   JuPedSim v1.4.2 -- libsimulator/src/CollisionFreeSpeedModel.cpp (reference implementation)
+
 
 using Ark
 using StaticArrays
@@ -62,176 +76,156 @@ end
 # ── Forward-cone gap ───────────────────────────────────────────────────────────
 
 """
-    csm_gap(pos_i, dir_ref, i_self, positions, r_all, r_i, cos_fov, nb_radius) → s
+    csm_gap(pos_i, dir, i_self, positions, r_all, r_i, nb_radius) → s
 
-Surface-to-surface gap to the nearest agent in the forward cone.
+Surface-to-surface gap to the nearest agent that blocks movement in direction `dir`.
 
-Only agents within `nb_radius` and with `dot(r_ij/d, dir_ref) > cos_fov` considered.
-Self excluded via `i_self`. Returns `Inf` if no qualifying forward neighbor.
+Matches JuPedSim `GetSpacing` exactly (CollisionFreeSpeedModel.cpp):
+  1. **Forward half-plane**: `dir · Δp ≥ 0`  (Δp = pos_j - pos_i)
+     Only agents ahead in the current movement direction are considered.
+  2. **Lateral corridor**: `|perp(dir) · Δp| ≤ r_i + r_j`
+     Only agents within a corridor of width 2(r_i+r_j) ≈ 0.4m count.
+  3. **Gap**: `|Δp| - (r_i + r_j)` = surface-to-surface distance.
 
-- `r_i`:    radius of querying agent i (m)
-- `r_all`:  radii of all agents (m) — uniform in Sprint 3L
-- `gap`:    max(center_dist - r_i - r_j, 0) — 0 at body surface contact
+Returns `Inf` if no agent qualifies (open path ahead).
+
+## Why this matters (Sprint 3N-a)
+
+Old code used a full-360° FOV (fov_half_angle=π). In a dense crowd with N=80 in
+10×4m, every agent's nearest neighbor is within ~0.3m in SOME direction, making
+gap≈0 for all → speed→0 → deadlock. With JuPedSim's narrow forward corridor,
+an agent in orderly lane flow has a clear lane ahead → normal speed.
 """
 @inline function csm_gap(
     pos_i     :: SVector{2,F},
-    dir_ref   :: SVector{2,F},
+    dir       :: SVector{2,F},   # current movement direction (unit vector)
     i_self    :: Int,
     positions :: Vector{SVector{2,F}},
     r_all     :: Vector{F},
-    r_i       :: F,            # individual radius of agent i (not body length!)
-    cos_fov   :: F,
+    r_i       :: F,
     nb_radius :: F
 ) :: F where {F<:AbstractFloat}
-    min_gap = typemax(F)
+    # Lateral direction (perpendicular to dir, 90° CCW)
+    dir_lat  = SVector{2,F}(-dir[2], dir[1])
+    min_gap  = typemax(F)
     @inbounds for j in eachindex(positions)
         j == i_self && continue
-        r_ij = positions[j] - pos_i
-        d    = norm(r_ij)
+        Δp = positions[j] - pos_i
+        d  = norm(Δp)
         d > nb_radius && continue
-        d > eps(F) || continue
-        dot(r_ij / d, dir_ref) > cos_fov || continue   # forward cone filter
-        gap = max(d - r_i - r_all[j], zero(F))          # surface-to-surface gap
+        d > eps(F)    || continue
+        # 1. Forward half-plane check (JuPedSim: inFront = direction.ScalarProduct(distp12) >= 0)
+        dot(dir, Δp) >= zero(F) || continue
+        # 2. Lateral corridor check (JuPedSim: |left.ScalarProduct(distp12)| <= l)
+        l = r_i + r_all[j]     # contact distance (sum of radii)
+        abs(dot(dir_lat, Δp)) <= l || continue
+        # 3. Surface-to-surface gap
+        gap = max(d - l, zero(F))
         min_gap = min(min_gap, gap)
     end
     return min_gap == typemax(F) ? F(Inf) : min_gap
 end
 
-# ── Direction: isotropic repulsion (V1/V2) ────────────────────────────────────
+# -- Direction: isotropic repulsion (Classic / V3 reference direction) ----------
 
 """
-    csm_direction_isotropic(pos_i, dir_goal, i_self, positions, walls, params, cos_fov) → e
+    csm_direction_isotropic(pos_i, dir_goal, i_self, positions, r_all, r_i, walls, params) -> e
 
-Compute movement direction as goal direction minus repulsion from nearest forward neighbor.
+Compute movement direction: goal direction minus isotropic repulsion from ALL neighbors
+plus all-direction geometry contact constraint.
 
-## Design rationale (diagnostic-driven fix)
+## Algorithm (Tordeux 2016 eq. 3 -- corrected surface-to-surface gap formula)
 
-Diagnostic (diag_3l_csm.jl) showed that summing repulsion over all forward neighbors
-causes total |repulsion| >> 1.0 (goal pull) in dense crowds (25+ neighbors × a×exp(-d/D)).
-This flips 21–26% of agents to point AWAY from the goal at t=0, causing immediate deadlock.
+1. Sum repulsion over ALL neighbors (isotropic, no FOV filter):
+   - In symmetric crowds, opposite repulsions cancel (diagnostic confirmed |net|=0).
+   - Only asymmetric configurations (near walls, bottleneck entry) produce net deflection.
+   - Formula: a * exp(-gap_ij / D) where gap_ij = max(center_dist - r_i - r_j, 0)
+   - Previously used center-to-center distance -- 5-54x weaker than paper specifies.
 
-Fix: only the NEAREST forward neighbor contributes to direction repulsion. This matches
-the spirit of "avoid the nearest obstacle" and prevents accumulation over many neighbors.
-Wall repulsion (V2) is retained as-is (walls are few, contribution is bounded).
+2. All-direction geometry contact constraint (JuPedSim approach):
+   - strength_geo=5.0, range_geo=0.02m (contact-level only)
+   - Applied in ALL directions (no lateral filter needed -- range so small it's negligible at >0.3m)
+   - Formula: strength_geo * exp(-gap_wall / range_geo) toward wall
+   - Subtracted from goal direction (pushes agent away from wall)
 
-Safety cap: total |repulsion| is clamped to < 1.0 so direction can NEVER reverse past 90°
-from goal even in degenerate cases (very close neighbor + wall simultaneously).
+3. No safety cap: removed. With correct formula and contact constraint,
+   direction reversal only occurs in genuinely blocked situations (correct behavior).
 
 ## References
-Tordeux 2016 eq. (3) direction model. JuPedSim v10 GCFVM source.
+Tordeux 2016 eq. (3). JuPedSim v1.4.2 CollisionFreeSpeedModel.cpp lines 69-89, 196-217.
 
-Returns a unit vector.
+Returns a unit vector. Falls back to dir_goal if result is zero.
 """
 @inline function csm_direction_isotropic(
     pos_i    :: SVector{2,F},
     dir_goal :: SVector{2,F},
     i_self   :: Int,
     positions :: Vector{SVector{2,F}},
+    r_all    :: Vector{F},
+    r_i      :: F,
     walls    :: Vector{NTuple{2, SVector{2,F}}},
-    params   :: CSMParams{F},
-    cos_fov  :: F
+    params   :: CSMParams{F}
 ) :: SVector{2,F} where {F<:AbstractFloat}
 
-    # ── Find nearest forward neighbor only ──────────────────────────────────
-    # (Sum over all forward neighbors creates |repulsion| >> 1 in dense crowds,
-    #  reversing direction for 20-30% of agents immediately from t=0.)
-    min_d  = typemax(F)
-    best_j = 0
+    # -- Neighbor repulsion: sum over ALL neighbors isotropically ------------------
+    # Surface-to-surface gap formula: gap = max(center_dist - r_i - r_j, 0)
+    # Symmetric crowds: opposing vectors cancel (diagnostic: |net_sym|=0). Only
+    # asymmetric configurations (door entry, near wall) produce net deflection.
+    nbr_rep = zero(SVector{2,F})
     @inbounds for j in eachindex(positions)
         j == i_self && continue
         r_ij = positions[j] - pos_i
         d    = norm(r_ij)
         d > params.neighbor_radius && continue
-        d > eps(F) || continue
-        dot(r_ij / d, dir_goal) > cos_fov || continue   # forward cone filter
-        if d < min_d
-            min_d  = d
-            best_j = j
-        end
+        d > eps(F)                 || continue
+        n_ij = r_ij / d                                    # unit vector FROM i TO j
+        gap  = max(d - r_i - r_all[j], zero(F))           # surface-to-surface gap
+        nbr_rep = nbr_rep + (params.a_neighbor * exp(-gap / params.D_neighbor)) * n_ij
     end
 
-    # Repulsion from nearest forward neighbor only
-    neighbor_repulsion = zero(SVector{2,F})
-    if best_j > 0
-        r_ij  = positions[best_j] - pos_i
-        n_nbr = r_ij / min_d
-        neighbor_repulsion = (params.a_neighbor * exp(-min_d / params.D_neighbor)) * n_nbr
-    end
-
-    # ── Wall repulsion (V2: a_wall > 0 only) ────────────────────────────────
-    # SIGN: n_w = toward wall. Subtracting deflects agent AWAY from wall.
-    #
-    # LATERAL-ONLY FILTER (Bug 9 fix — diagnosed 2026-08-27):
-    #   Walls where dot(n_w, dir_goal) > 0 are "forward-pointing" — n_w aligns
-    #   with the goal direction. Subtracting such a wall_rep wipes out raw.x:
-    #     A15 @ (9.75,0.75): W3(door-bot) n_w=(1,0)=+x, goal=(0.87,0.49)
-    #     dot=0.87 → wall_rep=(0.88,0) → raw.x = 0.87-0.88 = -0.01 → FROZEN.
-    #
-    #   Forward deceleration is the OV speed model's job (gap→speed).
-    #   The direction model only needs LATERAL steering (n_w ⊥ dir_goal).
-    #   Filter: skip any wall with dot(n_w, dir_goal) > 0.
-    #
-    # Effect on 5 wall types (agents heading rightward toward door):
-    #   W0 (left,  n_w=-x): dot=-0.97 ≤ 0 → INCLUDED  (boosts forward) ✓
-    #   W1 (bot,   n_w=-y): dot=-0.22 ≤ 0 → INCLUDED  (steers up/away) ✓
-    #   W2 (top,   n_w=+y): dot=-0.22 ≤ 0 → INCLUDED  (steers down/away) ✓
-    #   W3 (door-bot,n_w=+x): dot=+0.97 > 0 → SKIPPED (forward → speed) ✓
-    #   W4 (door-top,n_w=+x): dot=+0.97 > 0 → SKIPPED (forward → speed) ✓
-    wall_repulsion = zero(SVector{2,F})
-    if params.a_wall > zero(F)
+    # -- Geometry contact constraint (all-direction, JuPedSim approach) -----------
+    # Contact-level only (range_geo=0.02m). Negligible at dist > 0.30m from wall.
+    # Applied in ALL directions -- no lateral filter needed with small range.
+    geo_rep = zero(SVector{2,F})
+    if params.strength_geo > zero(F)
         for (p1, p2) in walls
             pt, dw, _ = nearest_point_on_segment(p1, p2, pos_i)
-            dw > params.neighbor_radius && continue
             dw < eps(F) && continue
-            n_w = (pt - pos_i) / dw   # unit vector FROM agent TOWARD wall
-            # Lateral-only: skip forward-pointing walls (handled by speed model)
-            dot(n_w, dir_goal) > zero(F) && continue
-            wall_repulsion += (params.a_wall * exp(-dw / params.D_wall)) * n_w
+            n_w   = (pt - pos_i) / dw                     # unit vector TOWARD wall
+            gap_w = max(dw - r_i, zero(F))                # surface-to-surface gap to wall
+            geo_rep = geo_rep + (params.strength_geo * exp(-gap_w / params.range_geo)) * n_w
         end
     end
 
-    repulsion = neighbor_repulsion + wall_repulsion
-
-    # ── Safety cap: clamp |repulsion| < 0.99 ────────────────────────────────
-    # Guarantees raw = dir_goal - repulsion has positive component along dir_goal,
-    # preventing direction reversal even when a single close neighbor is very near.
-    rep_mag = norm(repulsion)
-    if rep_mag >= one(F)
-        repulsion = repulsion * (F(0.99) / rep_mag)
-    end
-
-    # ── Movement direction ───────────────────────────────────────────────────
-    raw      = dir_goal - repulsion
+    # -- Movement direction: normalize (dir_goal - all_repulsion) -----------------
+    # JuPedSim: direction = (desired + neighbor_rep + boundary_rep).Normalized()
+    # Fallback to dir_goal if result is zero (fully symmetric cancellation).
+    raw      = dir_goal - nbr_rep - geo_rep
     raw_norm = norm(raw)
     return raw_norm > eps(F) ? raw / raw_norm : dir_goal
 end
 
-# ── Direction: rotational steering (V3) ───────────────────────────────────────
+# -- Direction: rotational steering (V3) ----------------------------------------
 
 """
-    csm_direction_rotational(pos_i, dir_goal, heading_old, i_self, positions, walls, params, dt)
-    → (new_dir::SVector{2,F}, new_heading::F)
+    csm_direction_rotational(pos_i, dir_goal, heading_old, i_self, positions, r_all, r_i, walls, params, dt)
+    -> (new_dir::SVector{2,F}, new_heading::F)
 
-V3 rotational steering: V2 direction model + first-order heading relaxation.
+V3 rotational steering: isotropic direction model + first-order heading relaxation.
 
-Algorithm (Tordeux 2016 / JuPedSim GCFS model):
-1. Compute e_target using V2's isotropic repulsion (csm_direction_isotropic).
-2. Compute target angle θ_target = atan(e_target[2], e_target[1]).
+Algorithm:
+1. Compute e_target using the corrected isotropic direction model (csm_direction_isotropic).
+2. Compute target heading angle theta_target = atan(e_target[2], e_target[1]).
 3. Apply first-order heading relaxation:
-       θ_new = θ_old + (dt/τ) × Δθ    where Δθ = wrap(θ_target − θ_old)
-4. Return (cos(θ_new), sin(θ_new)), θ_new.
+       theta_new = theta_old + (dt/tau) x Delta_theta    where Delta_theta = wrap(theta_target - theta_old)
+4. Return (cos(theta_new), sin(theta_new)), theta_new.
 
-The heading relaxation τ smooths direction changes over time:
-- τ → 0:  instantaneous heading change (reduces to V2 direction model)
-- τ → ∞:  agents maintain initial heading (degenerate)
-- τ = 0.5s (default): well-damped heading convergence over ~5 steps at dt=0.05s
+The heading relaxation tau smooths direction changes over time:
+- tau = 0:  instantaneous heading change (reduces to Classic direction model)
+- tau = 0.3s (JuPedSim V3 default): well-damped heading convergence
 
-# Bug 12 history (2026-08-27)
-OLD algorithm: "rotate away from nearest forward neighbor's lateral offset."
-Pathology: in a grid crowd, nearest neighbor is always ≈90° off goal direction
-(sp_y=0.486m < sp_x=0.563m). tanh(lateral/d) ≈ tanh(1) ≈ 0.76 → max rotation.
-Diagnostic showed: θ_diff 0→30° in 1s, v̄ 0.097→0.052 → complete deadlock.
-FIX: use V2's isotropic repulsion (proven, working) as target.
+Note: Sprint 3N+O will replace this with the proper JuPedSim V3 rotation
+(relative angle from reference_direction, 2D anisotropic FOV).
 """
 @inline function csm_direction_rotational(
     pos_i       :: SVector{2,F},
@@ -239,21 +233,21 @@ FIX: use V2's isotropic repulsion (proven, working) as target.
     heading_old :: F,
     i_self      :: Int,
     positions   :: Vector{SVector{2,F}},
+    r_all       :: Vector{F},
+    r_i         :: F,
     walls       :: Vector{NTuple{2, SVector{2,F}}},
     params      :: CSMParams{F},
     dt          :: F
 ) :: Tuple{SVector{2,F}, F} where {F<:AbstractFloat}
-    cos_fov = cos(params.fov_half_angle)
-
-    # 1. Target direction = V2 isotropic repulsion (reuse proven V2 model)
-    e_target = csm_direction_isotropic(pos_i, dir_goal, i_self, positions, walls, params, cos_fov)
+    # 1. Target direction = corrected isotropic direction (surface-to-surface gap)
+    e_target = csm_direction_isotropic(pos_i, dir_goal, i_self, positions, r_all, r_i, walls, params)
 
     # 2. Target heading angle
     θ_target = atan(e_target[2], e_target[1])
 
     # 3. First-order heading relaxation
     # θ_new = θ_old + (dt/τ) × Δθ, wrapped to [-π, π]
-    τ   = params.heading_relaxation_τ
+    τ   = params.heading_relaxation_tau
     Δθ  = θ_target - heading_old
     Δθ -= F(2π) * round(Δθ / F(2π))          # wrap to [-π, π]
     α   = min(dt / max(τ, eps(F)), one(F))    # clamp α ∈ [0,1]: no overshoot
@@ -262,7 +256,7 @@ FIX: use V2's isotropic repulsion (proven, working) as target.
     return SVector{2,F}(cos(θ_new), sin(θ_new)), θ_new
 end
 
-# ── V1/V2 update (Threads.@threads double-buffer) ─────────────────────────────
+# -- Classic (V1) update (Threads.@threads double-buffer) ------------------------
 
 function _csm_update_v1v2!(
     all_pos  :: Vector{SVector{2,F}},
@@ -272,35 +266,36 @@ function _csm_update_v1v2!(
     params   :: CSMParams{F},
     new_vel  :: Vector{SVector{2,F}}   # write-only output (own slot per thread)
 ) where {F<:AbstractFloat}
-    N       = length(all_pos)
-    r_i     = params.radius      # individual agent radius (NOT body length)
-    cos_fov = cos(params.fov_half_angle)
+    N   = length(all_pos)
+    r_i = params.radius      # individual agent radius (NOT body length)
 
     Threads.@threads for i in 1:N
         pos_i  = all_pos[i]
         goal_i = all_goal[i]
 
-        # Goal direction (reference for forward-cone filter and repulsion direction)
+        # Goal direction (nominal desired direction -- used by direction model)
         gd       = goal_i - pos_i
         goal_d   = norm(gd)
         dir_goal = goal_d > eps(F) ? gd / goal_d : SVector(one(F), zero(F))
 
-        # Surface-to-surface gap to nearest forward neighbor
-        # r_i = individual radius; gap = max(d - r_i - r_j, 0) [surface contact at gap=0]
-        s_i = csm_gap(pos_i, dir_goal, i, all_pos, r_all, r_i, cos_fov, params.neighbor_radius)
+        # Sprint 3N-a: compute direction FIRST (matches JuPedSim ordering).
+        # JuPedSim: direction = normalize(e0 + repulsions), THEN spacing = GetSpacing(direction).
+        # Gap is measured in e_i direction (repulsion-corrected), NOT dir_goal.
+        e_i = csm_direction_isotropic(pos_i, dir_goal, i, all_pos, r_all, r_i, walls, params)
 
-        # Speed (OV function — Tordeux 2016 eq. 2, no body-length shift)
-        v_i = csm_speed(s_i, params.v₀, params.T)
+        # Surface-to-surface gap to nearest corridor-blocking agent (in e_i direction)
+        s_i = csm_gap(pos_i, e_i, i, all_pos, r_all, r_i, params.neighbor_radius)
 
-        # Direction (isotropic repulsion, V1 = no walls, V2 = with walls)
-        e_i = csm_direction_isotropic(pos_i, dir_goal, i, all_pos, walls, params, cos_fov)
+        # Speed (OV function -- Tordeux 2016 eq. 2)
+        v_i = csm_speed(s_i, params.v0, params.T)
 
-        # Write own velocity slot — thread-safe (no other thread writes new_vel[i])
+        # Write own velocity slot -- thread-safe (no other thread writes new_vel[i])
         new_vel[i] = v_i * e_i
     end
 end
 
-# ── V3 update (Threads.@threads double-buffer) ────────────────────────────────
+
+# -- V3 update (Threads.@threads double-buffer) ----------------------------------
 
 function _csm_update_v3!(
     all_pos      :: Vector{SVector{2,F}},
@@ -323,21 +318,21 @@ function _csm_update_v3!(
         goal_d   = norm(gd)
         dir_goal = goal_d > eps(F) ? gd / goal_d : SVector(one(F), zero(F))
 
-        # Surface-to-surface gap to nearest forward neighbor
-        s_i = csm_gap(pos_i, dir_goal, i, all_pos, r_all, r_i,
-                      cos(params.fov_half_angle), params.neighbor_radius)
+        # Sprint 3N-a: V3 also computes direction (rotational) first, gap in new_dir.
+        new_dir, theta_new = csm_direction_rotational(
+            pos_i, dir_goal, new_headings[i], i, all_pos, r_all, r_i, walls, params, dt)
+
+        # Gap in the rotational-corrected direction (matches JuPedSim ordering)
+        s_i = csm_gap(pos_i, new_dir, i, all_pos, r_all, r_i, params.neighbor_radius)
 
         # Speed (Tordeux 2016 OV function)
-        v_i = csm_speed(s_i, params.v₀, params.T)
-
-        # V3 rotational steering + heading relaxation (target = V2 direction)
-        new_dir, θ_new = csm_direction_rotational(
-            pos_i, dir_goal, new_headings[i], i, all_pos, walls, params, dt)
+        v_i = csm_speed(s_i, params.v0, params.T)
 
         new_vel[i]      = v_i * new_dir
-        new_headings[i] = θ_new   # own slot — thread-safe
+        new_headings[i] = theta_new   # own slot -- thread-safe
     end
 end
+
 
 # ── Top-level entry point ──────────────────────────────────────────────────────
 
@@ -486,6 +481,134 @@ function _update_csm_v3_ecs!(
     # 3. Write back to ECS
     idx = 0
     for (_, pos_col, vel_col, goal_col, _, state_col) in
+            Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}, AgentCSMState{F}))
+        for i in eachindex(pos_col)
+            idx += 1
+            vel_col[i]   = Velocity(new_vel[idx])
+            pos_col[i]   = Position(pos_col[i].p + new_vel[idx] * dt)
+            state_col[i] = AgentCSMState{F}(new_headings[idx])
+        end
+    end
+end
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Sprint 3N-b: Navigation-aware dispatch
+# update_csm_system!(world, dt, nav::NavigationField{F})
+# ════════════════════════════════════════════════════════════════════════════════
+
+"""
+    update_csm_system!(world, dt, nav::NavigationField)
+
+Advance all CSM agents by `dt` seconds using FMM navigation for global routing.
+
+The navigation field replaces raw goal-pointing `(goal-pos)/|.|` with
+`get_nav_direction(nav, pos)` — a precomputed FMM gradient that routes agents
+through the geometry correctly. Local avoidance (neighbor repulsion, geometry
+contact) is identical to the no-nav version.
+
+## Build a nav field
+```julia
+walls = [(wall_col[i].p1, wall_col[i].p2) for i in ...]
+nav   = build_navigation_field(walls, SVector(12f0, 2f0))
+update_csm_system!(world, dt, nav)
+```
+"""
+function update_csm_system!(world::World, dt::F, nav::NavigationField{F}) where {F<:AbstractFloat}
+    n_csm = 0
+    try
+        n_csm = count_entities(Query(world, (CSMParams{F},)))
+    catch e
+        e isa ArgumentError && return; rethrow()
+    end
+    n_csm == 0 && return
+
+    local params::CSMParams{F}
+    for (_, params_col) in Query(world, (CSMParams{F},))
+        params = params_col[1]; break
+    end
+
+    walls = NTuple{2, SVector{2,F}}[]
+    try
+        for (_, wall_col) in Query(world, (WallSegment{F},))
+            for i in eachindex(wall_col)
+                push!(walls, (wall_col[i].p1, wall_col[i].p2))
+            end
+        end
+    catch e
+        e isa ArgumentError || rethrow()
+    end
+
+    if params.use_rotational_steering
+        _update_csm_v3_ecs_nav!(world, walls, params, dt, nav)
+    else
+        _update_csm_v1v2_ecs_nav!(world, walls, params, dt, nav)
+    end
+end
+
+# ── Nav-aware Classic ECS wrapper ─────────────────────────────────────────────
+function _update_csm_v1v2_ecs_nav!(
+    world  :: World, walls :: Vector{NTuple{2, SVector{2,F}}},
+    params :: CSMParams{F}, dt :: F, nav :: NavigationField{F}
+) where {F<:AbstractFloat}
+    all_pos = SVector{2,F}[]; all_goal = SVector{2,F}[]
+    try
+        for (_, pos_col, _, goal_col, _) in
+                Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}))
+            for i in eachindex(pos_col)
+                push!(all_pos, pos_col[i].p); push!(all_goal, goal_col[i].g)
+            end
+        end
+    catch e; e isa ArgumentError && return; rethrow(); end
+    N = length(all_pos); N == 0 && return
+    r_all = fill(params.radius, N)
+    new_vel = Vector{SVector{2,F}}(undef, N)
+    N_i = N; r_i = params.radius
+    Threads.@threads for i in 1:N_i
+        dir_nav = get_nav_direction(nav, all_pos[i])
+        e_i = csm_direction_isotropic(all_pos[i], dir_nav, i, all_pos, r_all, r_i, walls, params)
+        s_i = csm_gap(all_pos[i], e_i, i, all_pos, r_all, r_i, params.neighbor_radius)
+        new_vel[i] = csm_speed(s_i, params.v0, params.T) * e_i
+    end
+    idx = 0
+    for (_, pos_col, vel_col, _, _) in
+            Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}))
+        for i in eachindex(pos_col)
+            idx += 1
+            vel_col[i] = Velocity(new_vel[idx])
+            pos_col[i] = Position(pos_col[i].p + new_vel[idx] * dt)
+        end
+    end
+end
+
+# ── Nav-aware V3 ECS wrapper ──────────────────────────────────────────────────
+function _update_csm_v3_ecs_nav!(
+    world  :: World, walls :: Vector{NTuple{2, SVector{2,F}}},
+    params :: CSMParams{F}, dt :: F, nav :: NavigationField{F}
+) where {F<:AbstractFloat}
+    all_pos = SVector{2,F}[]; all_goal = SVector{2,F}[]; headings = F[]
+    try
+        for (_, pos_col, _, goal_col, _, state_col) in
+                Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}, AgentCSMState{F}))
+            for i in eachindex(pos_col)
+                push!(all_pos, pos_col[i].p); push!(all_goal, goal_col[i].g)
+                push!(headings, state_col[i].heading)
+            end
+        end
+    catch e; e isa ArgumentError && return; rethrow(); end
+    N = length(all_pos); N == 0 && return
+    r_all = fill(params.radius, N)
+    new_vel = Vector{SVector{2,F}}(undef, N); new_headings = copy(headings)
+    N_i = N; r_i = params.radius
+    Threads.@threads for i in 1:N_i
+        dir_nav = get_nav_direction(nav, all_pos[i])
+        new_dir, theta_new = csm_direction_rotational(
+            all_pos[i], dir_nav, new_headings[i], i, all_pos, r_all, r_i, walls, params, dt)
+        s_i = csm_gap(all_pos[i], new_dir, i, all_pos, r_all, r_i, params.neighbor_radius)
+        new_vel[i] = csm_speed(s_i, params.v0, params.T) * new_dir
+        new_headings[i] = theta_new
+    end
+    idx = 0
+    for (_, pos_col, vel_col, _, _, state_col) in
             Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}, AgentCSMState{F}))
         for i in eachindex(pos_col)
             idx += 1
