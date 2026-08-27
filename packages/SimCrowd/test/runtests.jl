@@ -5,6 +5,7 @@ using LinearAlgebra
 using KernelAbstractions
 using Ark
 using CellListMap
+using Printf
 
 @testset "SimCrowd.jl" begin
     
@@ -566,5 +567,91 @@ using CellListMap
         @test norm(old_A) > F(0)
         @test norm(new_A) > F(0)
     end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 3L: Geometry primitives unit tests (geometry.jl)
+# ─────────────────────────────────────────────────────────────────────────────
+@testset "Sprint 3L: geometry.jl unit tests" begin
+
+    # ── nearest_point_on_segment ─────────────────────────────────────────────
+    p1 = SVector(0.0f0, 0.0f0); p2 = SVector(4.0f0, 0.0f0)
+
+    # Query point directly on segment: nearest point = q, dist = 0, t = 0.25
+    pt, d, t = nearest_point_on_segment(p1, p2, SVector(1.0f0, 0.0f0))
+    @test pt ≈ SVector(1.0f0, 0.0f0)
+    @test d ≈ 0.0f0 atol=1e-6
+    @test t ≈ 0.25f0
+
+    # Query point at midpoint perpendicular: nearest = midpoint of segment
+    pt, d, t = nearest_point_on_segment(p1, p2, SVector(2.0f0, 3.0f0))
+    @test pt ≈ SVector(2.0f0, 0.0f0)
+    @test d ≈ 3.0f0 atol=1e-5
+    @test t ≈ 0.5f0
+
+    # Query past p2 end: clamps to p2
+    pt, d, t = nearest_point_on_segment(p1, p2, SVector(6.0f0, 0.0f0))
+    @test pt ≈ p2
+    @test t ≈ 1.0f0
+
+    # Query before p1 end: clamps to p1
+    pt, d, t = nearest_point_on_segment(p1, p2, SVector(-2.0f0, 1.0f0))
+    @test pt ≈ p1
+    @test t ≈ 0.0f0
+
+    # Degenerate segment (p1 == p2): returns p1
+    pt, d, t = nearest_point_on_segment(SVector(3.0f0, 3.0f0), SVector(3.0f0, 3.0f0), SVector(0.0f0, 0.0f0))
+    @test pt ≈ SVector(3.0f0, 3.0f0)
+    @test t == 0.0f0
+
+    # ── nearest_point_on_arc ─────────────────────────────────────────────────
+    center = SVector(0.0f0, 0.0f0); r = 2.0f0
+
+    # External point on x-axis: nearest surface point at (2,0)
+    pt, d = nearest_point_on_arc(center, r, SVector(5.0f0, 0.0f0))
+    @test pt ≈ SVector(2.0f0, 0.0f0)
+    @test d ≈ 3.0f0 atol=1e-5   # |5 - 2| = 3
+
+    # Internal point: dist = |1 - 2| = 1
+    pt, d = nearest_point_on_arc(center, r, SVector(1.0f0, 0.0f0))
+    @test pt ≈ SVector(2.0f0, 0.0f0)
+    @test d ≈ 1.0f0 atol=1e-5
+
+    # Point exactly on circle: dist ≈ 0
+    pt, d = nearest_point_on_arc(center, r, SVector(2.0f0, 0.0f0))
+    @test d ≈ 0.0f0 atol=1e-5
+
+    # ── CSM structs isbits ───────────────────────────────────────────────────
+    @test isbitstype(CSMParams{Float32})
+    @test isbitstype(CSMParams{Float64})
+    @test isbitstype(AgentCSMState{Float32})
+    @test isbitstype(AgentCSMState{Float64})
+
+    # ── CSMParams_V1/V2/V3/JuPedSim constructors ────────────────────────────
+    p1 = CSMParams_V1(Float32)
+    @test p1.a_wall == 0.0f0
+    @test p1.use_rotational_steering == false
+
+    p2 = CSMParams_V2(Float32)
+    @test p2.a_wall > 0.0f0
+    @test p2.use_rotational_steering == false
+
+    p3 = CSMParams_V3(Float32)
+    @test p3.a_wall > 0.0f0
+    @test p3.use_rotational_steering == true
+    @test p3.heading_relaxation_τ > 0.0f0
+
+    pj = CSMParams_JuPedSim(Float32)
+    @test pj.v₀ ≈ 1.34f0
+    @test pj.use_rotational_steering == false
+
+    # ── csm_speed boundary conditions (Tordeux 2016 OV function) ───────────────
+    v₀ = 1.34f0; T = 1.0f0
+    @test csm_speed(Float32(Inf), v₀, T) ≈ v₀          # free flow
+    @test csm_speed(0.0f0, v₀, T) == 0.0f0              # body contact → zero
+    @test csm_speed(T * v₀, v₀, T) ≈ v₀               # at safety gap → v₀
+    @test csm_speed(T * v₀ / 2, v₀, T) ≈ v₀ / 2        # midpoint → v₀/2
+
+    @printf("\nSprint 3L geometry unit tests: PASSED\n")
+end
 
 end  # SimCrowd.jl

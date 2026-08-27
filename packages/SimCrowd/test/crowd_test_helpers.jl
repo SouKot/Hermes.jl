@@ -772,3 +772,103 @@ function run_speed_distribution!(cfg::SpeedDistributionConfig{F}; seed::Int=42) 
         minimum(per_agent_speed)
     )
 end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CSMBottleneckConfig / CSMBottleneckResult / run_csm_bottleneck!
+# Sprint 3L — CSM T7 bottleneck (RiMEA Scenario 7)
+# ─────────────────────────────────────────────────────────────────────────────
+
+"""
+    CSMBottleneckConfig{F<:AbstractFloat}
+
+Configuration for a CSM depletion bottleneck test (RiMEA T7 variant).
+
+Uses depletion mode: N agents start in the room and all must exit through the door.
+Exited agents (x > exit_thresh) are teleported to a parking zone (x = -50) so they
+do not appear as forward neighbors to agents still approaching the door.
+"""
+Base.@kwdef struct CSMBottleneckConfig{F<:AbstractFloat}
+    dt          :: F            = F(0.05)
+    t_max       :: F            = F(120.0)
+    door_x      :: F            = F(10.0)
+    door_lo     :: F            = F(1.5)
+    door_hi     :: F            = F(2.5)
+    exit_thresh :: F            = F(10.5)
+    park_x      :: F            = F(-50.0)
+    park_y      :: F            = F(2.0)
+    goal        :: SVector{2,F} = SVector(F(12.0), F(2.0))
+end
+
+"""
+    CSMBottleneckResult{F}
+
+Output of `run_csm_bottleneck!`.
+
+| Field        | Meaning |
+|--------------|---------|
+| `flow_rate`  | n_passed / t_exit (ped/s). |
+| `t_exit`     | Elapsed time when all agents exit (s), or t_max on deadlock. |
+| `n_passed`   | Agents that passed the door (== N for full pass). |
+| `deadlock`   | true if t ≥ t_max before all agents exit. |
+"""
+struct CSMBottleneckResult{F<:AbstractFloat}
+    flow_rate :: F
+    t_exit    :: F
+    n_passed  :: Int
+    deadlock  :: Bool
+end
+
+"""
+    run_csm_bottleneck!(world, cfg::CSMBottleneckConfig) → CSMBottleneckResult
+
+Run a CSM depletion bottleneck. `world` must have CSM agents (Position, Velocity,
+Goal, CSMParams; V3 additionally AgentCSMState) and WallSegment wall entities.
+
+Per step:
+  1. update_csm_system!(world, dt)
+  2. Exited agents (px ≥ exit_thresh) counted and teleported to park_x (far west).
+
+Parking ensures exited agents are never in forward cones of remaining agents.
+"""
+function run_csm_bottleneck!(world::World, cfg::CSMBottleneckConfig{F}) where {F<:AbstractFloat}
+    t        = zero(F)
+    n_passed = 0
+    N_agents = count_entities(Query(world, (CSMParams{F},)))
+
+    while n_passed < N_agents && t < cfg.t_max
+        update_csm_system!(world, cfg.dt)
+        t += cfg.dt
+
+        for (_, pos_col, vel_col, goal_col) in
+                Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}))
+            for i in eachindex(pos_col)
+                if pos_col[i].p[1] >= cfg.exit_thresh
+                    n_passed += 1
+                    pos_col[i]  = Position(SVector(cfg.park_x, cfg.park_y))
+                    vel_col[i]  = Velocity(zero(SVector{2,F}))
+                    # BUG 10 FIX: old code set goal=cfg.goal=(12,2). Parked agent
+                    # then walked back toward door and crossed exit_thresh again in ~45s
+                    # (distance = 60.5m / v₀=1.34 m/s). Fix: set goal far LEFT so
+                    # parked agents head away from door and never re-cross.
+                    goal_col[i] = Goal(SVector(cfg.park_x - F(100), cfg.park_y))
+                end
+            end
+        end
+    end
+
+    deadlock  = t >= cfg.t_max && n_passed < N_agents
+    flow_rate = n_passed > 0 ? F(n_passed) / t : zero(F)
+    return CSMBottleneckResult{F}(flow_rate, t, n_passed, deadlock)
+end
+
+"""
+    print_csm_result(result; label="", n_total=80)
+
+Print a formatted summary of a `CSMBottleneckResult`.
+"""
+function print_csm_result(r::CSMBottleneckResult{F}; label::String="", n_total::Int=80) where {F}
+    prefix = isempty(label) ? "" : "[$label] "
+    status = r.deadlock ? "DEADLOCK ❌" : "OK ✅"
+    @printf("%s flow=%.3f ped/s  t_exit=%.1fs  passed=%d/%d  %s\n",
+            prefix, r.flow_rate, r.t_exit, r.n_passed, n_total, status)
+end

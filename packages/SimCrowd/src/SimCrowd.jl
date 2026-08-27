@@ -16,6 +16,9 @@ export NavigationField, build_navigation_field, get_desired_direction
 export update_navigation_system!, update_social_forces_system!, integrate_physics_system!
 export ORCAParams, update_orca_system!
 export HybridFSMParams, AgentFSMState, update_hybrid_fsm_system!, ORCA_MODE, SFM_MODE
+export CSMParams, AgentCSMState, update_csm_system!
+export CSMParams_V1, CSMParams_V2, CSMParams_V3, CSMParams_JuPedSim
+export nearest_point_on_segment, nearest_point_on_arc, csm_speed, csm_gap
 export ContactModel, NoContact, Coulomb, Viscous
 # §2.1 ForceModel trait
 export ForceModel, SFMModel, ORCAModel, HybridModel, AgentModel
@@ -270,6 +273,119 @@ AgentFSMState{F}() where {F<:AbstractFloat} = AgentFSMState{F}(Int32(0), zero(F)
 # Compile-time GPU-compatibility guard
 @assert isbitstype(AgentFSMState{Float32}) "AgentFSMState must remain isbits for KA/GPU compatibility"
 
+# ── §3L: CSM (Collision-Free Speed Model) structs ────────────────────────────
+
+"""
+    CSMParams{F<:AbstractFloat}
+
+Unified Collision-Free Speed Model parameters (V1/V2/V3 via field selection).
+
+Mode equivalences:
+  `a_wall=0, use_rotational_steering=false` → V1 (Tordeux 2016, isotropic repulsion)
+  `a_wall>0, use_rotational_steering=false` → V2 (wall repulsion in direction model)
+  `a_wall>0, use_rotational_steering=true`  → V3 (rotational steering + heading relaxation)
+
+All fields are primitive types → `isbits` ✅ → GPU-compatible (Sprint 3L+ kernel).
+
+Fields:
+- `v₀`:                      desired free-flow speed (m/s). Weidmann: 1.34 m/s.
+- `T`:                       time-gap parameter (s). Safety headway.
+- `radius`:                  agent body radius (m). Body length ℓ = 2r.
+- `a_neighbor`:              neighbor repulsion strength (m/s).
+- `D_neighbor`:              neighbor repulsion decay length (m).
+- `fov_half_angle`:          forward-cone half-angle (rad). π = full 180° hemisphere.
+                             `cos_fov = cos(fov_half_angle)` precomputed per step.
+- `a_wall`:                  wall repulsion strength (m/s). 0.0 → V1 (no wall repulsion).
+- `D_wall`:                  wall repulsion decay length (m).
+- `use_rotational_steering`: true → V3 (heading relaxation); false → V1/V2.
+- `heading_relaxation_τ`:    heading smoothing time constant (s). 0.5 → 10 steps at dt=0.05.
+- `reverse_speed_floor`:     back-speed allowance (m/s). Reserved for future un-blocking.
+- `neighbor_radius`:         max neighbor search radius (m).
+- `max_neighbors`:           max neighbors considered (informational; O(N) scan uses all).
+"""
+Base.@kwdef struct CSMParams{F<:AbstractFloat}
+    # ── V1 core ────────────────────────────────────────────────────────────────
+    v₀                     :: F    = F(1.34)  # desired free-flow speed (m/s)
+    T                      :: F    = F(1.0)   # time-gap parameter (s)
+    radius                 :: F    = F(0.20)  # agent body radius (m); ℓ = 2r
+
+    # ── V1/V2: direction model ─────────────────────────────────────────────────
+    a_neighbor             :: F    = F(3.0)   # neighbor repulsion strength (m/s)
+    D_neighbor             :: F    = F(0.2)   # neighbor repulsion decay length (m)
+    fov_half_angle         :: F    = F(π)     # forward cone half-angle (rad); π = 180°
+    #   cos(π) = -1 → condition dot(n,dir) > -1 always true → full hemisphere, zero cost.
+    #   2π/3 (120°), π/2 (90°) available for narrow-cone tests.
+
+    # ── V2: wall influence in direction model ──────────────────────────────────
+    # a_wall = 0.0 → V1 behavior (no wall repulsion)
+    a_wall                 :: F    = F(0.0)   # wall repulsion strength (m/s)
+    D_wall                 :: F    = F(0.2)   # wall repulsion decay length (m)
+
+    # ── V3: rotational steering ────────────────────────────────────────────────
+    # use_rotational_steering = false → V1/V2 isotropic repulsion
+    use_rotational_steering :: Bool = false
+    heading_relaxation_τ   :: F    = F(0.5)   # heading smoothing time constant (s)
+    reverse_speed_floor    :: F    = F(0.0)   # back-speed floor (m/s); reserved
+
+    # ── Neighbor search ────────────────────────────────────────────────────────
+    neighbor_radius        :: F    = F(2.0)   # max neighbor search radius (m)
+    max_neighbors          :: Int  = 8        # informational; O(N) scan uses all within radius
+end
+
+# Compile-time GPU-compatibility guard
+@assert isbitstype(CSMParams{Float32})  "CSMParams must remain isbits for KA/GPU compatibility"
+
+# ── Convenience constructors ──────────────────────────────────────────────────
+"""V1: isotropic repulsion, no wall influence. Tordeux 2016 baseline."""
+CSMParams_V1(F=Float32; kw...) = CSMParams{F}(; a_wall=F(0), use_rotational_steering=false, kw...)
+
+"""V2: V1 + wall repulsion in direction model (a_wall>0).
+
+Default a_wall=2.0 calibrated for T7 bottleneck: achieves flow=1.237 ped/s (≥1.22 target).
+Sweep shows a_wall≤2.0 meets target; a_wall=3.0 causes over-funneling → flow=1.055 ❌.
+Lateral-only filter (Bug 9 fix) required: only includes walls with dot(n_w,dir_goal)≤0.
+"""
+CSMParams_V2(F=Float32; kw...) = CSMParams{F}(; a_wall=F(2.0), D_wall=F(0.2),
+                                                use_rotational_steering=false, kw...)
+
+"""V3: V2 + rotational steering + heading relaxation. JuPedSim default."""
+CSMParams_V3(F=Float32; kw...) = CSMParams{F}(; a_wall=F(2.0), D_wall=F(0.2),
+                                                use_rotational_steering=true,
+                                                heading_relaxation_τ=F(0.5), kw...)
+
+"""
+JuPedSim reference parameters (JuPedSim v10, T7 notebook).
+Used for cross-validation in the Sprint 3L parameter sweep.
+"""
+CSMParams_JuPedSim(F=Float32) = CSMParams{F}(
+    v₀=F(1.34), T=F(1.0), radius=F(0.15),
+    a_neighbor=F(8.0), D_neighbor=F(0.1),
+    a_wall=F(5.0), D_wall=F(0.1),
+    use_rotational_steering=false
+)
+
+"""
+    AgentCSMState{F<:AbstractFloat}
+
+Per-agent state for CSM V3 rotational steering. Updated each step via write-back.
+
+Fields:
+- `heading`: current walking direction angle (radians). Relaxes toward goal direction
+  with time constant `τ = CSMParams.heading_relaxation_τ`.
+
+isbits → GPU-compatible. Same design pattern as `AgentFSMState`.
+Only required for V3 agents (`use_rotational_steering = true`).
+"""
+struct AgentCSMState{F<:AbstractFloat}
+    heading :: F   # current heading angle (radians), initialised to goal direction angle
+end
+
+# Default: heading = 0 (due east). Caller should initialise from goal direction.
+AgentCSMState(F=Float32) = AgentCSMState{F}(zero(F))
+AgentCSMState{F}() where {F<:AbstractFloat} = AgentCSMState{F}(zero(F))
+
+@assert isbitstype(AgentCSMState{Float32}) "AgentCSMState must remain isbits for KA/GPU compatibility"
+
 # ── §2.4 SimConfig (defined here so physics.jl can reference it) ──────────────────
 
 """
@@ -295,6 +411,7 @@ SimConfig(dt::F) where {F<:AbstractFloat} = SimConfig(dt, F(5.0))
 include("forces.jl")
 include("neighbor_search.jl")
 include("navigation.jl")
+include("geometry.jl")
 
 # Systems
 include("systems/physics.jl")
@@ -303,6 +420,7 @@ include("systems/orca_math.jl")
 include("systems/orca.jl")
 # Note: orca_cpu.jl was deleted in Sprint 3K-a — all features ported into orca.jl.
 include("systems/hybrid_fsm.jl")
+include("systems/csm.jl")
 
 # ── §2.1 ForceModel Trait ─────────────────────────────────────────────────────
 # Marker types that declare which force model an agent uses.
@@ -383,54 +501,63 @@ System order:
 2. SFM social forces — `update_social_forces_system!` (resets + accumulates Force)
 3. ORCA velocity update — `update_orca_system!` (O(N×k) spatial hash; CPU+GPU; §1.7 walls, §1.8 responsibility)
 4. Physics integration — `integrate_physics_system!` (vel/pos update + speed clamp)
+5. Hybrid FSM dispatch — `update_hybrid_fsm_system!` (density-triggered ORCA↔SFM per agent)
+6. CSM update — `update_csm_system!` (first-order; sets vel+pos directly; σ=0 deterministic)
 """
 function step!(scene::SimScene{F}) where {F}
     dt = scene.config.dt
-    # Guard: Ark.Query throws ArgumentError if a component type was never registered
-    # (i.e. the world has no entities). Return early rather than crashing.
-    local n_force::Int
-    try
-        n_force = count_entities(Query(scene.world, (Force{F},)))
-    catch e
-        e isa ArgumentError && return scene
-        rethrow()
-    end
-    n_force == 0 && return scene
-    # 1. Reset Force components to zero — must happen BEFORE any force accumulation.
-    #    §2.5 FIX: nav was called before reset, which silently wiped the driving force.
-    for (_, force_col) in Query(scene.world, (Force{F},))
-        for i in eachindex(force_col)
-            force_col[i] = Force(zero(SVector{2,F}))
+
+    # ── Count agent types ────────────────────────────────────────────────────
+    # Guard: Ark.Query throws ArgumentError if a component type was never registered.
+    local n_force::Int  = 0
+    local n_csm::Int    = 0
+    try; n_force = count_entities(Query(scene.world, (Force{F},)));      catch e; e isa ArgumentError || rethrow(); end
+    try; n_csm   = count_entities(Query(scene.world, (CSMParams{F},)));  catch e; e isa ArgumentError || rethrow(); end
+
+    # Nothing to do if no force-based agents AND no CSM agents
+    (n_force == 0 && n_csm == 0) && return scene
+
+    # ── Force-based pipeline (SFM / ORCA / Hybrid) ───────────────────────────
+    if n_force > 0
+        # 1. Reset Force components to zero — must happen BEFORE any force accumulation.
+        #    §2.5 FIX: nav was called before reset, which silently wiped the driving force.
+        for (_, force_col) in Query(scene.world, (Force{F},))
+            for i in eachindex(force_col)
+                force_col[i] = Force(zero(SVector{2,F}))
+            end
         end
+        # 2. Navigation: ADD F_drive from Eikonal field (if present)
+        if scene.nav_field !== nothing
+            update_navigation_system!(scene.world, scene.nav_field)
+        end
+        # 3. SFM agent-agent + wall forces (only for agents with SFMParams)
+        local n_sfm::Int = 0
+        try; n_sfm = count_entities(Query(scene.world, (SFMParams{F},))); catch; n_sfm = 0; end
+        if n_sfm > 0
+            update_social_forces_system!(scene.world, scene.search, CPU())
+        end
+        # 4. ORCA velocity update (only for agents with ORCAParams)
+        # W=16: max wall segments per agent (covers all RiMEA geometries; see assert_wall_budget).
+        local n_orca::Int = 0
+        try; n_orca = count_entities(Query(scene.world, (ORCAParams{F},))); catch; n_orca = 0; end
+        if n_orca > 0
+            update_orca_system!(scene.world, scene.search, CPU(), dt; W=16)
+        end
+        # 5. Hybrid FSM dispatch (agents with HybridFSMParams — neither SFMParams nor ORCAParams)
+        local n_hybrid::Int = 0
+        try; n_hybrid = count_entities(Query(scene.world, (HybridFSMParams{F},))); catch; n_hybrid = 0; end
+        if n_hybrid > 0
+            update_hybrid_fsm_system!(scene.world, scene.search, CPU(), dt)
+        end
+        # 6. Integrate: velocity + position update with speed clamp from config
+        integrate_physics_system!(scene.world, scene.config)
     end
-    # 2. Navigation: ADD F_drive from Eikonal field (if present)
-    #    Runs after reset so the driving force is preserved through the rest of the step.
-    if scene.nav_field !== nothing
-        update_navigation_system!(scene.world, scene.nav_field)
+
+    # ── CSM pipeline (first-order; sets vel+pos directly; no Force needed) ────
+    if n_csm > 0
+        update_csm_system!(scene.world, dt)
     end
-    # 3. SFM agent-agent + wall forces (only for agents with SFMParams)
-    local n_sfm::Int
-    try; n_sfm = count_entities(Query(scene.world, (SFMParams{F},))); catch; n_sfm = 0; end
-    if n_sfm > 0
-        update_social_forces_system!(scene.world, scene.search, CPU())
-    end
-    # 4. ORCA velocity update (only for agents with ORCAParams)
-    # Uses unified orca.jl (O(N×k) spatial hash — same RadixSpatialHash built by step 3).
-    # W=16: max wall segments per agent (covers all RiMEA geometries; see assert_wall_budget).
-    local n_orca::Int
-    try; n_orca = count_entities(Query(scene.world, (ORCAParams{F},))); catch; n_orca = 0; end
-    if n_orca > 0
-        update_orca_system!(scene.world, scene.search, CPU(), dt; W=16)
-    end
-    # 5. Hybrid FSM dispatch (agents with HybridFSMParams — neither SFMParams nor ORCAParams)
-    # Steps 3 and 4 above skip Hybrid agents automatically (different ECS archetype).
-    local n_hybrid::Int
-    try; n_hybrid = count_entities(Query(scene.world, (HybridFSMParams{F},))); catch; n_hybrid = 0; end
-    if n_hybrid > 0
-        update_hybrid_fsm_system!(scene.world, scene.search, CPU(), dt)
-    end
-    # 6. Integrate: velocity + position update with speed clamp from config
-    integrate_physics_system!(scene.world, scene.config)
+
     return scene
 end
 
