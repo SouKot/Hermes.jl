@@ -627,21 +627,19 @@ using Printf
     @test isbitstype(AgentCSMState{Float64})
 
     # ── CSMParams_V1/V2/V3/JuPedSim constructors ────────────────────────────
-    p1 = CSMParams_V1(Float32)
-    @test p1.a_wall == 0.0f0
+    p1 = CSMParams_Classic(Float32)
     @test p1.use_rotational_steering == false
-
-    p2 = CSMParams_V2(Float32)
-    @test p2.a_wall > 0.0f0
-    @test p2.use_rotational_steering == false
+    @test p1.a_neighbor == 8.0f0
+    @test p1.D_neighbor == 0.1f0
+    @test p1.strength_geo > 0.0f0
+    @test p1.range_geo > 0.0f0
 
     p3 = CSMParams_V3(Float32)
-    @test p3.a_wall > 0.0f0
     @test p3.use_rotational_steering == true
-    @test p3.heading_relaxation_τ > 0.0f0
+    @test p3.heading_relaxation_tau > 0.0f0
 
     pj = CSMParams_JuPedSim(Float32)
-    @test pj.v₀ ≈ 1.34f0
+    @test pj.v0 ≈ 1.34f0
     @test pj.use_rotational_steering == false
 
     # ── csm_speed boundary conditions (Tordeux 2016 OV function) ───────────────
