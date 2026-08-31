@@ -207,3 +207,131 @@ end
     end
 
 end
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 3K-3O: Hybrid FSM + FMM NavigationField — T7 bottleneck
+#
+# WHAT THIS VALIDATES:
+#   update_hybrid_fsm_system!(world, search, CPU(), dt, nav::NavigationField)
+#   routes agents through FMM directions (not straight goal-pointing).
+#   Agents approach the door at FMM-guided angles → better spread → ≥ 1.22 ped/s.
+#
+# DESIGN NOTES:
+#   - Virtual goal pattern: goal_eff = pos_i + get_nav_direction(nav, pos_i) * 10m
+#   - _hybrid_orca_force and _hybrid_sfm_force are UNCHANGED (no signature change).
+#   - SimScene.step! passes nav_field unconditionally; ::Nothing overload handles no-nav.
+#   - AbstractNavigationField{F} — any future nav type accepted by all dispatch methods.
+#
+# ASSERTION RATIONALE:
+#   Without nav: 3K achieves ≥ 1.0 ped/s (ORCA vel_j=0 queueing).
+#   With FMM nav: agents approach door from better angles → weaker arch → ≥ 1.22 ped/s.
+#   1.22 ped/s = Weidmann 1993 T7 85th percentile floor (same as CSM+nav target).
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "3K-3O: Hybrid FSM + FMM NavigationField (T7)" begin
+    F      = Float32
+    N      = 80
+    dt     = F(0.05)
+    v_pref = F(1.4)
+    r_body = F(0.2)
+    mass   = F(80.0)
+
+    door_center = F(2.0)
+    door_half   = F(0.5)
+
+    # ── Build FMM navigation field for T7 geometry ────────────────────────────
+    t7_walls_fsm = NTuple{2, SVector{2,F}}[
+        (SVector{2,F}(0, 0),    SVector{2,F}(10, 0)),         # bottom
+        (SVector{2,F}(0, 4),    SVector{2,F}(10, 4)),         # top
+        (SVector{2,F}(0, 0),    SVector{2,F}(0,  4)),         # left
+        (SVector{2,F}(10, 0),   SVector{2,F}(10, door_center - door_half)),  # door wall bottom
+        (SVector{2,F}(10, door_center + door_half), SVector{2,F}(10, 4)),    # door wall top
+    ]
+    goal_nav_fsm = SVector{2,F}(12, 2)
+    nav_fsm = build_navigation_field(t7_walls_fsm, goal_nav_fsm, F(0.05))
+
+    @test nav_fsm.dims[1] > 0 && nav_fsm.dims[2] > 0   # nav field built
+    # Direction at center-left of room should have strong +x component (pointing toward door)
+    d_mid = get_nav_direction(nav_fsm, SVector{2,F}(5, 2))
+    @test d_mid[1] > F(0.5)   # majority +x component
+
+    # ── to_device(nav, CPU()) must be a no-op (identity) ─────────────────────
+    nav_cpu = to_device(nav_fsm, CPU())
+    @test nav_cpu === nav_fsm   # to_device(nav, CPU()) returns same object
+
+    # ── Build Hybrid FSM world (T7 geometry, same as 3K test) ─────────────────
+    world_3o = World(
+        Position{F}, Velocity{F}, AgentGeometry{F}, MotionParams{F},
+        Goal{F}, Force{F}, WallSegment{F},
+        HybridFSMParams{F}, AgentFSMState{F}
+    )
+
+    new_entity!(world_3o, (WallSegment(SVector(0f0, 0f0), SVector(0f0, 4f0)),))
+    new_entity!(world_3o, (WallSegment(SVector(0f0, 0f0), SVector(10f0, 0f0)),))
+    new_entity!(world_3o, (WallSegment(SVector(0f0, 4f0), SVector(10f0, 4f0)),))
+    new_entity!(world_3o, (WallSegment(SVector(10f0, 0f0), SVector(10f0, door_center - door_half)),))
+    new_entity!(world_3o, (WallSegment(SVector(10f0, door_center + door_half), SVector(10f0, 4f0)),))
+
+    hybrid_p_3o = HybridFSMParams{F}(
+        ρ_on           = F(1.8),
+        ρ_off          = F(0.2),
+        density_radius = F(2.0),
+        sfm_params     = SFMParams{F}(),
+        orca_params    = ORCAParams(F(2.0), F(0.5), 10, F(15.0), r_body, v_pref, F(0.5), mass)
+    )
+
+    rng_3o = MersenneTwister(42)
+    for i in 1:N
+        x   = F(0.5) + rand(rng_3o, F) * F(9.0)
+        y   = F(0.3) + rand(rng_3o, F) * F(3.4)
+        new_entity!(world_3o, (
+            Position(SVector(x, y)),
+            Velocity(zero(SVector{2,F})),
+            AgentGeometry(r_body, r_body * F(2/3)),
+            MotionParams(mass, v_pref, F(0.5), F(0.3)),
+            Goal(SVector(F(12), door_center)),
+            Force(zero(SVector{2,F})),
+            hybrid_p_3o,
+            AgentFSMState{F}()
+        ))
+    end
+
+    search_3o = RadixSpatialHash(CPU(), N, SVector(-1f0, -1f0), SVector(13f0, 5f0), 2f0)
+    config_3o = SimConfig(dt)
+    # SimScene with nav_field — step! will pass nav_fsm to update_hybrid_fsm_system!
+    scene_3o  = SimScene(world_3o, search_3o, nav_fsm, config_3o)
+
+    # ── Bottleneck loop ───────────────────────────────────────────────────────
+    t_3o = F(0); t_max_3o = F(120); n_passed_3o = 0
+    exit_x_3o = F(10.5); park_x_3o = F(-60); park_y_3o = F(2)
+
+    while n_passed_3o < N && t_3o < t_max_3o
+        step!(scene_3o)
+        t_3o += dt
+        for (_, pos_col, vel_col, goal_col) in
+                Query(world_3o, (Position{F}, Velocity{F}, Goal{F}, HybridFSMParams{F}))
+            for i in eachindex(pos_col)
+                if pos_col[i].p[1] >= exit_x_3o
+                    n_passed_3o += 1
+                    pos_col[i]  = Position(SVector(park_x_3o, park_y_3o))
+                    vel_col[i]  = Velocity(zero(SVector{2,F}))
+                    goal_col[i] = Goal(SVector(park_x_3o - F(100), park_y_3o))
+                end
+            end
+        end
+    end
+
+    deadlock_3o  = t_3o >= t_max_3o && n_passed_3o < N
+    flow_rate_3o = n_passed_3o > 0 ? F(n_passed_3o) / t_3o : zero(F)
+
+    @printf("\n3K-3O Hybrid FSM + FMM nav (N=%d, 1m door, dt=%.3fs):\n", N, dt)
+    @printf("  Passed %d/%d agents in t=%.1fs\n", n_passed_3o, N, t_3o)
+    @printf("  Flow rate: %.3f ped/s (target >= 1.22 ped/s, Weidmann T7)\n", flow_rate_3o)
+    @printf("  Deadlock: %s\n\n", deadlock_3o ? "YES" : "no")
+
+    # ── Assertions ────────────────────────────────────────────────────────────
+    @test n_passed_3o == N           # 3K-3O: all 80 agents exit
+    @test !deadlock_3o               # 3K-3O: no deadlock
+    @test flow_rate_3o >= F(1.22)    # 3K-3O: FMM nav achieves T7 target
+end

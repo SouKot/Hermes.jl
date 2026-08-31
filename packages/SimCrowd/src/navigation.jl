@@ -1,23 +1,36 @@
 # systems/navigation.jl -- NavigationField (Fast Marching Method)
 #
 # Sprint 3N-b (2026-08-27): Modular navigation layer shared by CSM and Hybrid FSM.
+# Sprint 3O   (2026-08-31): AbstractNavigationField{F} trait + GPU-forward parameterized storage.
 #
 # Architecture:
-#   - NavigationField{F}: immutable struct holding precomputed direction grid.
-#   - build_navigation_field(...): constructs field from WallSegments + goal.
-#   - get_nav_direction(nav, pos): bilinear-interpolated direction at any position.
+#   - AbstractNavigationField{F}: trait — only required method is get_nav_direction(nav, pos).
+#   - NavigationField{F, A}: FMM concrete implementation, dirs stored as Array{F,3} (2,nx,ny).
+#   - build_navigation_field(...): CPU build from WallSegments + goal → NavigationField{F,Array{F,3}}.
+#   - to_device(nav, backend): upload precomputed dirs to GPU → NavigationField{F, DevArray}.
+#   - get_nav_direction(nav, pos): bilinear-interpolated direction; @inline for KA kernel inlining.
 #   - update_csm_system!(world, dt, nav): CSM dispatch using nav for direction.
-#   - update_navigation_system!(world, nav): SFM/Force-based dispatch (existing).
+#   - update_navigation_system!(world, nav): SFM/Force-based dispatch.
 #
-# Algorithm:
-#   1. Rasterize WallSegments onto a binary obstacle grid (Bresenham line + radius buffer).
-#   2. Run Eikonal.jl FastMarching from the goal cell outward through free cells.
-#   3. Compute -∇T at every free cell → unit direction toward goal avoiding obstacles.
-#   4. At query time: bilinear interpolation from the grid; fallback to direct goal.
+# dirs layout: (2, nx, ny) — plain Float array, GPU-uploadable, SIMD-friendly.
+#   dirs[1, ix, iy] = x-component of unit direction at grid cell (ix, iy)
+#   dirs[2, ix, iy] = y-component of unit direction at grid cell (ix, iy)
 #
-# Bug fixed from previous version:
-#   - OLD: speeds[obstacle_mask] .= 1e5  (obstacles were FAST -- wrong!)
-#   - NEW: speeds[obstacle_mask] .= 0.0  (obstacles are impassable -- correct)
+# GPU path:
+#   cpu_nav = build_navigation_field(walls, goal, 0.05f0)   # CPU-only (Eikonal.jl)
+#   gpu_nav = to_device(cpu_nav, CUDABackend())              # upload once
+#   scene   = SimScene(world, gpu_search, gpu_nav, config)  # works unchanged
+#
+# Extension:
+#   struct MyNavField{F} <: AbstractNavigationField{F}; ...; end
+#   get_nav_direction(nav::MyNavField{F}, pos::SVector{2,F}) where F = ...
+#   # All update_*_system! calls accept it automatically.
+#
+# Eikonal.jl semantics (CRITICAL):
+#   fmm.v = SLOWNESS (cost per unit length), NOT speed.
+#   v=1.0  → free space  (|∇T|=1, T = Euclidean distance)
+#   v=1e9  → impassable  (obstacle cells have extremely high travel cost)
+#   v=1e-9 → transparent (obstacles WRONG -- FMM routes through walls!)
 #
 # Reference:
 #   Sethian, J.A. (1999). Level Set Methods and Fast Marching Methods.
@@ -26,34 +39,78 @@
 using Eikonal
 using StaticArrays
 using LinearAlgebra
+using KernelAbstractions
 
-# ── Struct ────────────────────────────────────────────────────────────────────
+# ── Abstract interface ────────────────────────────────────────────────────────
 
 """
-    NavigationField{F<:AbstractFloat}
+    AbstractNavigationField{F<:AbstractFloat}
 
-Precomputed FMM-based direction field for pedestrian routing.
+Abstract supertype for all navigation field implementations.
 
-Stores a 2D grid of unit direction vectors `-∇T / |∇T|` where T is the
-Eikonal travel-time from every free cell to the goal. Agents query their
-desired direction at any position via bilinear interpolation.
+## Required interface
+
+    get_nav_direction(nav::AbstractNavigationField{F}, pos::SVector{2,F}) → SVector{2,F}
+
+Return a unit vector pointing toward the goal at world position `pos`.
+All update systems (`update_csm_system!`, `update_hybrid_fsm_system!`,
+`update_navigation_system!`) accept any subtype — zero changes when
+switching between FMM, NavMesh, or hierarchical routing.
+
+## Extension pattern
+
+    struct MyNavField{F} <: AbstractNavigationField{F}
+        ...
+    end
+    @inline get_nav_direction(nav::MyNavField{F}, pos::SVector{2,F}) where F = ...
+
+## Concrete implementations
+
+- `NavigationField{F, A}` — FMM (Eikonal) precomputed grid (this file)
+"""
+abstract type AbstractNavigationField{F<:AbstractFloat} end
+
+
+# ── Concrete FMM implementation ───────────────────────────────────────────────
+
+"""
+    NavigationField{F<:AbstractFloat, A<:AbstractArray{F}} <: AbstractNavigationField{F}
+
+Precomputed FMM-based direction field for pedestrian routing. Stores the
+unit direction grid `-∇T / |∇T|` as a plain numeric array — GPU-uploadable
+and SIMD-friendly.
 
 ## Fields
 - `grid_min`:  world-coordinate of grid origin (bottom-left corner of cell [1,1])
 - `cell_size`: side length of each grid cell (m)
-- `dims`:      (nx, ny) number of cells
-- `dirs`:      nx × ny matrix of unit direction vectors (zero at obstacles/walls)
-- `goal_pos`:  goal position in world coordinates (used as fallback)
+- `dims`:      `(nx, ny)` number of grid cells
+- `dirs`:      `Array{F,3}` of shape `(2, nx, ny)` — plain floats, no SVector boxing.
+               `dirs[1, ix, iy]` = x-component, `dirs[2, ix, iy]` = y-component.
+- `goal_pos`:  goal position in world coordinates (fallback when pos is out of grid)
+
+## Storage layout: `(2, nx, ny)`
+
+In Julia (column-major), dim 1 varies fastest:
+- `dirs[1, ix, iy]` and `dirs[2, ix, iy]` are adjacent in memory → one cache line
+  fetches both components for a cell (AoS within a cell).
+- No `SVector` boxing → directly `copyto!`-able to `CuArray` / `ROCArray`.
+- `@inline get_nav_direction` compiles into KA GPU kernels without overhead.
+
+## Type aliases
+
+    NavigationField{F, Array{F,3}}     — CPU  (from build_navigation_field)
+    NavigationField{F, CuArray{F,3}}   — GPU  (from to_device(nav, CUDABackend()))
 
 ## Notes
-- Not `isbits`: holds a `Matrix`. Pass by reference to update functions.
-- Precomputed once per scenario. Rebuild if geometry or goal changes.
+- Not `isbits`: holds a heap array. Pass by reference to update functions.
+- Precomputed once per scenario. Rebuild via `build_navigation_field` if geometry changes.
+- FMM solve is always CPU-only (Eikonal.jl). Use `to_device` for GPU upload.
 """
-struct NavigationField{F<:AbstractFloat}
+struct NavigationField{F<:AbstractFloat, A<:AbstractArray{F}} <: AbstractNavigationField{F}
     grid_min  :: SVector{2, F}
     cell_size :: F
     dims      :: Tuple{Int, Int}
-    dirs      :: Matrix{SVector{2, F}}   # (nx, ny), unit vectors toward goal
+    dirs      :: A              # shape (2, nx, ny) — dirs[1,ix,iy]=dx, dirs[2,ix,iy]=dy
     goal_pos  :: SVector{2, F}
 end
 
@@ -198,8 +255,10 @@ function build_navigation_field(
 
     # ── 5. Compute gradient and direction field ───────────────────────────────
     # fmm.t has size (nx+1, ny+1) — valid indices are 1:nx, 1:ny
-    T   = fmm.t   # travel time (potential)
-    dirs = fill(zero(SVector{2,F}), nx, ny)
+    # dirs layout: (2, nx, ny) plain Float array — GPU-uploadable, no SVector boxing.
+    #   dirs[1, ix, iy] = x-component,  dirs[2, ix, iy] = y-component
+    T    = fmm.t   # travel time (potential)
+    dirs = zeros(F, 2, nx, ny)
 
     h = Float64(cell_size)
     for iy in 1:ny
@@ -219,26 +278,28 @@ function build_navigation_field(
             mag  = sqrt(gx_f^2 + gy_f^2)
 
             if isfinite(mag) && mag > F(1e-9)
-                dirs[ix, iy] = SVector{2,F}(gx_f / mag, gy_f / mag)
+                dirs[1, ix, iy] = gx_f / mag
+                dirs[2, ix, iy] = gy_f / mag
             end
         end
     end
 
-    return NavigationField{F}(grid_min, cell_size, (nx, ny), dirs, goal_pos)
+    return NavigationField{F, Array{F,3}}(grid_min, cell_size, (nx, ny), dirs, goal_pos)
 end
 
 
 """
-    build_navigation_field(walls, goal_pos, cell_size; kwargs...) → NavigationField{F}
+    build_navigation_field(walls, goal_pos, cell_size; kwargs...) → NavigationField{F, Array{F,3}}
 
 Convenience variant that auto-computes bounds from the wall geometry + 1m padding.
+Always returns a CPU navigation field. Use `to_device(nav, backend)` to upload to GPU.
 """
 function build_navigation_field(
     walls     :: Vector{NTuple{2, SVector{2,F}}},
     goal_pos  :: SVector{2,F},
     cell_size :: F = F(0.05);
     kwargs...
-) :: NavigationField{F} where {F<:AbstractFloat}
+) :: NavigationField{F, Array{F,3}} where {F<:AbstractFloat}
     if isempty(walls)
         # Fallback: small box around goal
         pad = F(2.0)
@@ -258,12 +319,12 @@ end
 # ── Legacy backwards-compatible overload ─────────────────────────────────────
 
 """
-    build_navigation_field(grid_min, grid_max, cell_size, goal_pos, obstacle_mask) → NavigationField{F}
+    build_navigation_field(grid_min, grid_max, cell_size, goal_pos, obstacle_mask) → NavigationField{F, Array{F,3}}
 
 **Backwards-compatible** overload matching the original 5-argument signature.
 
 Accepts a precomputed Boolean `obstacle_mask` (nx × ny, true = obstacle) and
-converts it to a wall-list form, then builds the NavigationField.
+builds the NavigationField via FMM directly from the mask.
 
 Called by existing runtests.jl tests (CRW-S-02, §2.5). Sprint 3N-b preferred
 API uses the `build_navigation_field(walls, goal, ...)` variant instead.
@@ -274,7 +335,7 @@ function build_navigation_field(
     cell_size     :: F,
     goal_pos      :: SVector{2, F},
     obstacle_mask :: Matrix{Bool}
-) :: NavigationField{F} where {F<:AbstractFloat}
+) :: NavigationField{F, Array{F,3}} where {F<:AbstractFloat}
     nx = size(obstacle_mask, 1)
     ny = size(obstacle_mask, 2)
     dims = (nx, ny)
@@ -295,9 +356,9 @@ function build_navigation_field(
     init!(fmm, (gx0, gy0))
     march!(fmm)
 
-    # Compute direction grid
+    # Compute direction grid — (2, nx, ny) layout, plain floats (GPU-uploadable)
     T    = fmm.t
-    dirs = fill(zero(SVector{2,F}), nx, ny)
+    dirs = zeros(F, 2, nx, ny)
     h    = Float64(cell_size)
     for iy in 1:ny
         for ix in 1:nx
@@ -309,13 +370,44 @@ function build_navigation_field(
             gx_f = F(-dTdx); gy_f = F(-dTdy)
             mag  = sqrt(gx_f^2 + gy_f^2)
             if isfinite(mag) && mag > F(1e-9)
-                dirs[ix, iy] = SVector{2,F}(gx_f / mag, gy_f / mag)
+                dirs[1, ix, iy] = gx_f / mag
+                dirs[2, ix, iy] = gy_f / mag
             end
         end
     end
 
-    return NavigationField{F}(grid_min, cell_size, dims, dirs, goal_pos)
+    return NavigationField{F, Array{F,3}}(grid_min, cell_size, dims, dirs, goal_pos)
 end
+
+
+# ── GPU upload ────────────────────────────────────────────────────────────────
+
+"""
+    to_device(nav::NavigationField{F, Array{F,3}}, backend::Backend) → NavigationField{F, DevArray}
+
+Upload a CPU-built NavigationField to the specified KernelAbstractions backend
+(CUDABackend, ROCmBackend, MetalBackend). The FMM solve always runs on CPU
+(Eikonal.jl is CPU-only); this function copies the precomputed `dirs` grid.
+
+Call once after `build_navigation_field`. Store the returned GPU nav field
+in `SimScene` for use with GPU kernels.
+
+# Example
+
+    cpu_nav = build_navigation_field(walls, goal, 0.05f0)
+    gpu_nav = to_device(cpu_nav, CUDABackend())
+    scene   = SimScene(world, gpu_search, gpu_nav, config)
+"""
+function to_device(nav::NavigationField{F, Array{F,3}}, backend::Backend) where {F}
+    dev_dirs = KernelAbstractions.zeros(backend, F, 2, nav.dims[1], nav.dims[2])
+    KernelAbstractions.copyto!(backend, dev_dirs, nav.dirs)
+    KernelAbstractions.synchronize(backend)
+    return NavigationField{F, typeof(dev_dirs)}(
+        nav.grid_min, nav.cell_size, nav.dims, dev_dirs, nav.goal_pos)
+end
+
+# CPU() is a no-op — field is already on CPU
+to_device(nav::NavigationField{F, Array{F,3}}, ::CPU) where {F} = nav
 
 
 # ── Query ─────────────────────────────────────────────────────────────────────
@@ -328,6 +420,9 @@ from the precomputed direction grid.
 
 Falls back to direct goal-pointing if `pos` is outside the grid or the
 interpolated direction is degenerate (e.g., obstacle cells nearby).
+
+`@inline` ensures this compiles directly into KA GPU kernels when `nav.dirs`
+is a device array — no runtime dispatch overhead.
 """
 @inline function get_nav_direction(
     nav :: NavigationField{F},
@@ -343,19 +438,18 @@ interpolated direction is degenerate (e.g., obstacle cells nearby).
     ix0 = floor(Int, fx);  iy0 = floor(Int, fy)
     tx  = fx - ix0;         ty  = fy - iy0
 
-    ix1 = ix0 + 1;  iy1 = iy0 + 1
-
-    # Convert to 1-based and clamp
+    # Convert to 1-based indices
     i0 = ix0 + 1;  i1 = i0 + 1
     j0 = iy0 + 1;  j1 = j0 + 1
 
     in_bounds = (i0 >= 1 && i1 <= nx && j0 >= 1 && j1 <= ny)
 
     if in_bounds
-        g00 = nav.dirs[i0, j0]
-        g10 = nav.dirs[i1, j0]
-        g01 = nav.dirs[i0, j1]
-        g11 = nav.dirs[i1, j1]
+        # Read plain floats from (2, nx, ny) array — no SVector boxing
+        g00 = SVector(nav.dirs[1, i0, j0], nav.dirs[2, i0, j0])
+        g10 = SVector(nav.dirs[1, i1, j0], nav.dirs[2, i1, j0])
+        g01 = SVector(nav.dirs[1, i0, j1], nav.dirs[2, i0, j1])
+        g11 = SVector(nav.dirs[1, i1, j1], nav.dirs[2, i1, j1])
 
         w00 = (F(1) - tx) * (F(1) - ty)
         w10 = tx           * (F(1) - ty)
@@ -389,7 +483,7 @@ based on the FMM navigation field.
 
 For CSM agents, use `update_csm_system!(world, dt, nav)` instead.
 """
-function update_navigation_system!(world::World, nav::NavigationField{F}) where {F}
+function update_navigation_system!(world::World, nav::AbstractNavigationField{F}) where {F}
     for (_, pos_col, vel_col, params_col, force_col) in
             Query(world, (Position{F}, Velocity{F}, MotionParams{F}, Force{F}))
         Threads.@threads for i in eachindex(pos_col)

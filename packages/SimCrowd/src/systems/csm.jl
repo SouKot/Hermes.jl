@@ -493,11 +493,11 @@ end
 
 # ════════════════════════════════════════════════════════════════════════════════
 # Sprint 3N-b: Navigation-aware dispatch
-# update_csm_system!(world, dt, nav::NavigationField{F})
+# update_csm_system!(world, dt, nav::AbstractNavigationField{F})
 # ════════════════════════════════════════════════════════════════════════════════
 
 """
-    update_csm_system!(world, dt, nav::NavigationField)
+    update_csm_system!(world, dt, nav::AbstractNavigationField)
 
 Advance all CSM agents by `dt` seconds using FMM navigation for global routing.
 
@@ -506,6 +506,8 @@ The navigation field replaces raw goal-pointing `(goal-pos)/|.|` with
 through the geometry correctly. Local avoidance (neighbor repulsion, geometry
 contact) is identical to the no-nav version.
 
+Accepts any `AbstractNavigationField` subtype — FMM, NavMesh, or custom.
+
 ## Build a nav field
 ```julia
 walls = [(wall_col[i].p1, wall_col[i].p2) for i in ...]
@@ -513,7 +515,7 @@ nav   = build_navigation_field(walls, SVector(12f0, 2f0))
 update_csm_system!(world, dt, nav)
 ```
 """
-function update_csm_system!(world::World, dt::F, nav::NavigationField{F}) where {F<:AbstractFloat}
+function update_csm_system!(world::World, dt::F, nav::AbstractNavigationField{F}) where {F<:AbstractFloat}
     n_csm = 0
     try
         n_csm = count_entities(Query(world, (CSMParams{F},)))
@@ -548,7 +550,7 @@ end
 # ── Nav-aware Classic ECS wrapper ─────────────────────────────────────────────
 function _update_csm_v1v2_ecs_nav!(
     world  :: World, walls :: Vector{NTuple{2, SVector{2,F}}},
-    params :: CSMParams{F}, dt :: F, nav :: NavigationField{F}
+    params :: CSMParams{F}, dt :: F, nav :: AbstractNavigationField{F}
 ) where {F<:AbstractFloat}
     all_pos = SVector{2,F}[]; all_goal = SVector{2,F}[]
     try
@@ -583,7 +585,7 @@ end
 # ── Nav-aware V3 ECS wrapper ──────────────────────────────────────────────────
 function _update_csm_v3_ecs_nav!(
     world  :: World, walls :: Vector{NTuple{2, SVector{2,F}}},
-    params :: CSMParams{F}, dt :: F, nav :: NavigationField{F}
+    params :: CSMParams{F}, dt :: F, nav :: AbstractNavigationField{F}
 ) where {F<:AbstractFloat}
     all_pos = SVector{2,F}[]; all_goal = SVector{2,F}[]; headings = F[]
     try

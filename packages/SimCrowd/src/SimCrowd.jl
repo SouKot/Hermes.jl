@@ -12,7 +12,8 @@ export Position, Velocity, AgentGeometry, MotionParams, SFMParams, Goal, Force, 
 export from_agent_params
 export goal_seeking_force, agent_repulsion, wall_repulsion, gcf_force
 export AbstractNeighborSearch, RadixSpatialHash, CPUNeighborSearch, build_grid!, get_neighbors
-export NavigationField, build_navigation_field, get_nav_direction, get_desired_direction
+export AbstractNavigationField, NavigationField, build_navigation_field,
+       get_nav_direction, get_desired_direction, to_device
 export update_navigation_system!, update_social_forces_system!, integrate_physics_system!
 export ORCAParams, update_orca_system!
 export HybridFSMParams, AgentFSMState, update_hybrid_fsm_system!, ORCA_MODE, SFM_MODE
@@ -541,7 +542,7 @@ function step!(scene::SimScene{F}) where {F}
         local n_hybrid::Int = 0
         try; n_hybrid = count_entities(Query(scene.world, (HybridFSMParams{F},))); catch; n_hybrid = 0; end
         if n_hybrid > 0
-            update_hybrid_fsm_system!(scene.world, scene.search, CPU(), dt)
+            update_hybrid_fsm_system!(scene.world, scene.search, CPU(), dt, scene.nav_field)
         end
         # 6. Integrate: velocity + position update with speed clamp from config
         integrate_physics_system!(scene.world, scene.config)

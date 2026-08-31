@@ -162,6 +162,135 @@ function update_hybrid_fsm_system!(world::World,
     end
 end
 
+# ── Nothing overload (no-nav — routes to existing 4-arg body) ─────────────────
+# Called by SimScene.step! unconditionally: update_hybrid_fsm_system!(world, search, backend, dt, scene.nav_field)
+# When nav_field = nothing (no nav field in scene), routes to the original 4-arg method.
+# Type-stable: no runtime branch in step!.
+function update_hybrid_fsm_system!(world::World, search::AbstractNeighborSearch,
+                                   backend::Backend, dt, ::Nothing)
+    update_hybrid_fsm_system!(world, search, backend, dt)
+end
+
+
+# ── Nav dispatch (AbstractNavigationField) ────────────────────────────────────
+
+"""
+    update_hybrid_fsm_system!(world, search, backend, dt, nav::AbstractNavigationField)
+
+FMM-guided variant of the Hybrid FSM dispatch. Identical to the no-nav form
+except the preferred direction for each agent is `get_nav_direction(nav, pos_i)`
+instead of `normalize(goal_i - pos_i)`.  Avoidance logic (ORCA half-planes,
+SFM contact forces, density-triggered switching) is unchanged.
+
+Accepts any `AbstractNavigationField` subtype — FMM, NavMesh, GPU-uploaded, etc.
+
+## Virtual goal pattern
+
+Both `_hybrid_orca_force` and `_hybrid_sfm_force` internally compute direction
+as `normalize(goal - pos)`. We pass a **virtual goal 10m in the nav direction**:
+
+    dir_nav  = get_nav_direction(nav, pos_i)   # unit vector from FMM
+    goal_eff = pos_i + dir_nav * F(10)         # normalize(goal_eff - pos_i) = dir_nav ✓
+
+This requires **zero changes** to the inner helper functions.
+"""
+function update_hybrid_fsm_system!(world::World,
+                                   search::AbstractNeighborSearch,
+                                   backend::Backend,
+                                   dt::F,
+                                   nav::AbstractNavigationField{F}) where {F<:AbstractFloat}
+
+    # ── 0. Guard: no hybrid agents → return immediately ─────────────────────
+    n_hybrid = 0
+    try
+        n_hybrid = count_entities(Query(world, (HybridFSMParams{F},)))
+    catch e
+        e isa ArgumentError && return
+        rethrow()
+    end
+    n_hybrid == 0 && return
+
+    # ── 1. Collect ALL agent positions + velocities for density & ORCA ───────
+    all_positions  = SVector{2,F}[]
+    all_velocities = SVector{2,F}[]
+    for (_, pos_col, vel_col) in Query(world, (Position{F}, Velocity{F}))
+        for i in eachindex(pos_col)
+            push!(all_positions,  pos_col[i].p)
+            push!(all_velocities, vel_col[i].v)
+        end
+    end
+    N_all = length(all_positions)
+
+    # ── 2. Collect wall segments ────────────────────────────────────────────
+    walls = NTuple{2, SVector{2,F}}[]
+    for (_, wall_col) in Query(world, (WallSegment{F},))
+        for i in eachindex(wall_col)
+            push!(walls, (wall_col[i].p1, wall_col[i].p2))
+        end
+    end
+
+    # ── 3. Per-hybrid-agent dispatch ────────────────────────────────────────
+    for (entities, pos_col, vel_col, motion_col, goal_col, force_col,
+                  params_col, state_col) in
+            Query(world, (Position{F}, Velocity{F}, MotionParams{F},
+                          Goal{F}, Force{F}, HybridFSMParams{F}, AgentFSMState{F}))
+        for i in eachindex(pos_col)
+            pos_i    = pos_col[i].p
+            vel_i    = vel_col[i].v
+            params   = params_col[i]
+            state    = state_col[i]
+            motion_i = motion_col[i]
+
+            # ── 3a. FMM navigation: virtual goal in nav direction ───────────
+            # Placing the virtual goal 10m ahead gives normalize(goal_eff - pos_i) = dir_nav
+            # exactly, regardless of agent position. Both ORCA and SFM helpers
+            # will compute direction correctly via their normalize(goal - pos) internals.
+            dir_nav  = get_nav_direction(nav, pos_i)
+            goal_eff = pos_i + dir_nav * F(10)
+
+            # ── 3b. Density estimation ──────────────────────────────────────
+            r_density = params.density_radius
+            r_sq      = r_density * r_density
+            n_nearby  = 0
+            for j in 1:N_all
+                d_sq = sum(abs2, all_positions[j] - pos_i)
+                if d_sq > F(1e-8) && d_sq < r_sq
+                    n_nearby += 1
+                end
+            end
+            ρ_local = F(n_nearby) / (F(π) * r_sq)
+
+            # ── 3c. EMA density smoothing (α = 0.33 ≈ 3-step time constant) ──
+            α = F(0.33)
+            ρ_ema_new = α * ρ_local + (one(F) - α) * state.ρ_ema
+
+            # ── 3d. FSM transition (hysteresis band) ────────────────────────
+            new_mode = state.mode
+            if state.mode == ORCA_MODE && ρ_ema_new >= params.ρ_on
+                new_mode = SFM_MODE
+            elseif state.mode == SFM_MODE && ρ_ema_new < params.ρ_off
+                new_mode = ORCA_MODE
+            end
+
+            # ── 3e. Force dispatch (using goal_eff instead of goal_i) ────────
+            if new_mode == ORCA_MODE
+                F_agent = _hybrid_orca_force(
+                    pos_i, vel_i, goal_eff, params.orca_params,
+                    all_positions, all_velocities, walls, dt, F)
+            else
+                F_agent = _hybrid_sfm_force(
+                    pos_i, vel_i, goal_eff, motion_i, params.orca_params.radius,
+                    params.sfm_params, all_positions, all_velocities, walls, F)
+            end
+
+            # ── 3f. Write force and updated state ───────────────────────────
+            force_col[i] = Force(F_agent)
+            state_col[i] = AgentFSMState{F}(new_mode, ρ_ema_new, Int32(0))
+        end
+    end
+end
+
+
 # ── ORCA force for a single Hybrid agent ──────────────────────────────────────
 # Single-agent ORCA LP solve using actual neighbour velocities and k-nearest selection.
 #
