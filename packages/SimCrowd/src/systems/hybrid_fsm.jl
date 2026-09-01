@@ -485,21 +485,20 @@ At typical parameters (r=0.2m, dt=0.05s) this demands vx ≤ -3.8 m/s, which
 is outside the LP disc (v_pref=1.4 m/s) → LP3 cannot satisfy it → falls back
 to goal-seeking velocity rightward through the wall.
 
-This function applies the standard RVO2/Menge geometric non-penetration fix:
-  1. If agent centre is within `r_body` of a wall segment, push position back
-     perpendicular to the wall by `r_body - d_seg` (to restore contact-free state).
-  2. Zero out the velocity component pointing INTO the wall so the agent does not
-     immediately re-penetrate on the next step.
+This function applies the standard RVO2/Menge geometric non-penetration fix
+by delegating each wall-pair check to `apply_wall_penetration_correction`
+(in `orca_math.jl`) — the same helper used by the GPU ORCA kernel.
 
 Scientific basis:
-  - This implements the \"non-penetration constraint\" from rigid-body dynamics.
-  - Equivalent to applying an infinite-stiffness elastic wall at distance r_body.
+  - Non-penetration constraint from rigid-body dynamics.
+  - Equivalent to an infinite-stiffness elastic wall at distance r_body.
   - Used in: Menge (Curtis & Manocha 2016), RVO2 reference (Berg 2011 §4).
-  - Specifically handles the \"infeasible collision-escape\" regime documented in the
+  - Specifically handles the "infeasible collision-escape" regime documented in the
     Sprint 3P diagnostic (v5 output, 2026-08-31): n_cont=1 at steps immediately
     before wall crossing in all 5 wall-pass agents.
 
-CPU-only: GPU path requires this logic inside the ORCA kernel (Sprint 3Q planned).
+GPU path: `apply_wall_penetration_correction` is called directly inside
+`compute_orca_kernel!` at the end of each thread (Sprint 3Q).
 """
 function wall_penetration_correction!(
     world::World,
@@ -514,25 +513,7 @@ function wall_penetration_correction!(
             r_i = geom_col[i].social_radius  # ORCA uses social_radius as body radius
 
             for (p1, p2) in walls
-                seg = p2 - p1
-                l2  = dot(seg, seg)
-                t   = l2 < F(1e-10) ? zero(F) :
-                      clamp(dot(pos - p1, seg) / l2, zero(F), one(F))
-                q   = p1 + t * seg
-                rel = pos - q             # vector from wall surface point → agent
-                d   = norm(rel)
-
-                # Only correct if genuinely inside the body radius (not just ORCA zone)
-                if d < r_i && d > F(1e-6)
-                    n_out = rel / d          # outward unit normal
-                    # 1. Position correction: push agent back to surface
-                    pos = q + n_out * r_i
-                    # 2. Velocity correction: remove inward component (prevents re-penetration)
-                    v_into = dot(vel, -n_out)   # positive = going INTO wall
-                    if v_into > zero(F)
-                        vel = vel + v_into * n_out  # cancel inward part
-                    end
-                end
+                pos, vel = apply_wall_penetration_correction(pos, vel, r_i, p1, p2)
             end
 
             pos_col[i] = Position(pos)

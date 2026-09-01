@@ -20,9 +20,12 @@ export HybridFSMParams, AgentFSMState, update_hybrid_fsm_system!, wall_penetrati
 export CSMParams, AgentCSMState, update_csm_system!
 export CSMParams_Classic, CSMParams_V3, CSMParams_JuPedSim
 export nearest_point_on_segment, nearest_point_on_arc, csm_speed, csm_gap
+export apply_wall_penetration_correction
 export ContactModel, NoContact, Coulomb, Viscous
 # §2.1 ForceModel trait
 export ForceModel, SFMModel, ORCAModel, HybridModel, AgentModel
+# §2.3 Shared GPU infrastructure (Sprint 3Q-arch)
+export BaseGPUContext, stage_and_sort_base!
 # §2.4 SimConfig + SimScene
 export SimConfig, SimScene, step!, run!
 
@@ -410,6 +413,7 @@ include("geometry.jl")
 
 # Systems
 include("systems/physics.jl")
+include("gpu_context.jl")              # BaseGPUContext + stage_and_sort_base! (Sprint 3Q-arch)
 include("systems/social.jl")
 include("systems/orca_math.jl")
 include("systems/orca.jl")

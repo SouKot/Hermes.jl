@@ -304,7 +304,10 @@ end
 
     # ── Bottleneck loop ───────────────────────────────────────────────────────
     t_3o = F(0); t_max_3o = F(120); n_passed_3o = 0
+    wall_passes = 0    # 3P regression guard: agents exiting OUTSIDE the door gap
     exit_x_3o = F(10.5); park_x_3o = F(-60); park_y_3o = F(2)
+    door_lo = door_center - door_half  # 1.5f0
+    door_hi = door_center + door_half  # 2.5f0
 
     while n_passed_3o < N && t_3o < t_max_3o
         step!(scene_3o)
@@ -314,6 +317,11 @@ end
             for i in eachindex(pos_col)
                 if pos_col[i].p[1] >= exit_x_3o
                     n_passed_3o += 1
+                    # Wall penetration check: was this a door-gap exit or a wall pass?
+                    py = pos_col[i].p[2]
+                    if py < door_lo || py > door_hi
+                        wall_passes += 1
+                    end
                     pos_col[i]  = Position(SVector(park_x_3o, park_y_3o))
                     vel_col[i]  = Velocity(zero(SVector{2,F}))
                     goal_col[i] = Goal(SVector(park_x_3o - F(100), park_y_3o))
@@ -322,15 +330,18 @@ end
         end
     end
 
-    deadlock_3o  = t_3o >= t_max_3o && n_passed_3o < N
+    deadlock_3o = t_3o >= t_max_3o && n_passed_3o < N
+    # Flow uses total exits (gap + any wall passes) — wall_passes should be 0
     flow_rate_3o = n_passed_3o > 0 ? F(n_passed_3o) / t_3o : zero(F)
 
     @printf("\n3K-3O Hybrid FSM + FMM nav (N=%d, 1m door, dt=%.3fs):\n", N, dt)
     @printf("  Passed %d/%d agents in t=%.1fs\n", n_passed_3o, N, t_3o)
     @printf("  Flow rate: %.3f ped/s (target >= 1.22 ped/s, Weidmann T7)\n", flow_rate_3o)
+    @printf("  Wall passes (3P regression guard): %d  (must be 0)\n", wall_passes)
     @printf("  Deadlock: %s\n\n", deadlock_3o ? "YES" : "no")
 
     # ── Assertions ────────────────────────────────────────────────────────────
+    @test wall_passes == 0           # 3P regression guard: zero wall penetration
     @test n_passed_3o == N           # 3K-3O: all 80 agents exit
     @test !deadlock_3o               # 3K-3O: no deadlock
     @test flow_rate_3o >= F(1.22)    # 3K-3O: FMM nav achieves T7 target

@@ -19,13 +19,19 @@ using CellListMap
 
 # ── Context Struct ─────────────────────────────────────────────────────────────
 
+"""
+    ORCAGPUContext
+
+GPU staging context for the ORCA system. Embeds `BaseGPUContext` for the shared
+positions/velocities/radii/wall fields (Sprint 3Q-arch). ORCA-specific fields
+(v_prefs, lp_radii, taus, time_horizons, responsibilities, etc.) are separate.
+"""
 struct ORCAGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector, ICPU<:AbstractVector,
-                        VGPU<:AbstractVector, SGPU<:AbstractVector}
+                         VGPU<:AbstractVector, SGPU<:AbstractVector, BGPU<:AbstractVector}
     N::Int
-    # ── CPU staging buffers (written from ECS each step, then copyto! → device) ──
-    cpu_positions::VCPU
-    cpu_velocities::VCPU
-    cpu_radii::SCPU
+    # ── Shared base fields (positions, velocities, radii, walls, rebuild state) ─
+    base::BaseGPUContext{F, VCPU, SCPU, VGPU, SGPU, BGPU}
+    # ── ORCA-specific CPU staging ─────────────────────────────────────────────
     cpu_forces::VCPU
     cpu_v_prefs::VCPU          # preferred velocity vector (SVector{2}) — direction × scalar
     cpu_lp_radii::SCPU         # LP velocity-disc radius = v_pref scalar (max speed)
@@ -36,10 +42,7 @@ struct ORCAGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector, ICPU<:Abstr
     cpu_responsibilities::SCPU    # §1.8: per-agent velocity-change fraction
     cpu_neighbor_dists::SCPU      # per-agent search radius
     cpu_max_neighbors::ICPU       # per-agent neighbor cap (stored as Int32 for device)
-    # ── Device buffers (unsorted, written from CPU) ──────────────────────────────
-    dev_positions::VGPU
-    dev_velocities::VGPU
-    dev_radii::SGPU
+    # ── ORCA-specific device buffers ──────────────────────────────────────────
     dev_forces::VGPU
     dev_v_prefs::VGPU
     dev_lp_radii::SGPU         # LP radius = v_pref scalar
@@ -50,10 +53,7 @@ struct ORCAGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector, ICPU<:Abstr
     dev_responsibilities::SGPU    # §1.8
     dev_neighbor_dists::SGPU
     dev_max_neighbors::SGPU       # stored as F on device (Int32 not available on all KA backends)
-    # ── Sorted device buffers (Morton-ordered for coalesced access) ──────────────
-    sorted_dev_positions::VGPU
-    sorted_dev_velocities::VGPU
-    sorted_dev_radii::SGPU
+    # ── ORCA-specific sorted device buffers ───────────────────────────────────
     sorted_dev_v_prefs::VGPU
     sorted_dev_lp_radii::SGPU
     sorted_dev_taus::SGPU
@@ -63,17 +63,9 @@ struct ORCAGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector, ICPU<:Abstr
     sorted_dev_responsibilities::SGPU    # §1.8
     sorted_dev_neighbor_dists::SGPU
     sorted_dev_max_neighbors::SGPU
-    # ── Wall segments: uploaded once at first step (static for a scene run) ───────
-    # Allocated for max_wall_segs capacity; resized lazily when scene changes.
-    dev_wall_p1s::VGPU
-    dev_wall_p2s::VGPU
-    cpu_wall_p1s::VCPU
-    cpu_wall_p2s::VCPU
-    max_wall_segs::Int     # allocated capacity (≥ actual n_walls in the scene)
-    # ── Grid rebuild state ────────────────────────────────────────────────────────
-    last_build_positions::VGPU
+    # ── Grid rebuild: last-sorted positions (separate from base.last_build_positions) ─
     sorted_last_positions::VGPU
-    needs_rebuild::AbstractArray{Bool, 1}
+    max_wall_segs::Int     # allocated capacity (≥ actual n_walls in the scene)
 end
 
 function ORCAGPUContext(backend, F, N::Int, max_wall_segs::Int = 64)
@@ -81,10 +73,10 @@ function ORCAGPUContext(backend, F, N::Int, max_wall_segs::Int = 64)
     SCPU = Vector{F}
     ICPU = Vector{Int32}
 
-    # CPU staging
-    cpu_positions          = VCPU(undef, N)
-    cpu_velocities         = VCPU(undef, N)
-    cpu_radii              = SCPU(undef, N)
+    # Shared base (positions, velocities, radii, walls, rebuild tracking)
+    base = BaseGPUContext(backend, F, N, max_wall_segs)
+
+    # ORCA-specific CPU staging
     cpu_forces             = VCPU(undef, N)
     cpu_v_prefs            = VCPU(undef, N)
     cpu_lp_radii           = SCPU(undef, N)
@@ -96,10 +88,7 @@ function ORCAGPUContext(backend, F, N::Int, max_wall_segs::Int = 64)
     cpu_neighbor_dists     = SCPU(undef, N)
     cpu_max_neighbors      = ICPU(undef, N)
 
-    # Unsorted device buffers
-    dev_positions          = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    dev_velocities         = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    dev_radii              = KernelAbstractions.zeros(backend, F, N)
+    # ORCA-specific device buffers
     dev_forces             = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     dev_v_prefs            = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     dev_lp_radii           = KernelAbstractions.zeros(backend, F, N)
@@ -111,10 +100,7 @@ function ORCAGPUContext(backend, F, N::Int, max_wall_segs::Int = 64)
     dev_neighbor_dists     = KernelAbstractions.zeros(backend, F, N)
     dev_max_neighbors      = KernelAbstractions.zeros(backend, F, N)  # F, not Int — KA-generic
 
-    # Sorted device buffers
-    sorted_dev_positions          = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    sorted_dev_velocities         = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    sorted_dev_radii              = KernelAbstractions.zeros(backend, F, N)
+    # ORCA-specific sorted device buffers
     sorted_dev_v_prefs            = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     sorted_dev_lp_radii           = KernelAbstractions.zeros(backend, F, N)
     sorted_dev_taus               = KernelAbstractions.zeros(backend, F, N)
@@ -125,35 +111,24 @@ function ORCAGPUContext(backend, F, N::Int, max_wall_segs::Int = 64)
     sorted_dev_neighbor_dists     = KernelAbstractions.zeros(backend, F, N)
     sorted_dev_max_neighbors      = KernelAbstractions.zeros(backend, F, N)
 
-    # Wall segment buffers (capacity = max_wall_segs)
-    dev_wall_p1s = KernelAbstractions.zeros(backend, SVector{2,F}, max_wall_segs)
-    dev_wall_p2s = KernelAbstractions.zeros(backend, SVector{2,F}, max_wall_segs)
-    cpu_wall_p1s = VCPU(undef, max_wall_segs)
-    cpu_wall_p2s = VCPU(undef, max_wall_segs)
-
-    last_build_positions  = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     sorted_last_positions = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    needs_rebuild = KernelAbstractions.ones(backend, Bool, 1)
 
-    VGPU = typeof(dev_positions)
-    SGPU = typeof(dev_radii)
+    VGPU = typeof(base.dev_positions)
+    SGPU = typeof(base.dev_radii)
+    BGPU = typeof(base.needs_rebuild)
 
-    return ORCAGPUContext{F, VCPU, SCPU, ICPU, VGPU, SGPU}(
-        N,
-        cpu_positions, cpu_velocities, cpu_radii, cpu_forces,
-        cpu_v_prefs, cpu_lp_radii, cpu_taus, cpu_masses,
+    return ORCAGPUContext{F, VCPU, SCPU, ICPU, VGPU, SGPU, BGPU}(
+        N, base,
+        cpu_forces, cpu_v_prefs, cpu_lp_radii, cpu_taus, cpu_masses,
         cpu_time_horizons, cpu_time_horizons_obst,
         cpu_responsibilities, cpu_neighbor_dists, cpu_max_neighbors,
-        dev_positions, dev_velocities, dev_radii, dev_forces,
-        dev_v_prefs, dev_lp_radii, dev_taus, dev_masses,
+        dev_forces, dev_v_prefs, dev_lp_radii, dev_taus, dev_masses,
         dev_time_horizons, dev_time_horizons_obst,
         dev_responsibilities, dev_neighbor_dists, dev_max_neighbors,
-        sorted_dev_positions, sorted_dev_velocities, sorted_dev_radii,
         sorted_dev_v_prefs, sorted_dev_lp_radii, sorted_dev_taus, sorted_dev_masses,
         sorted_dev_time_horizons, sorted_dev_time_horizons_obst,
         sorted_dev_responsibilities, sorted_dev_neighbor_dists, sorted_dev_max_neighbors,
-        dev_wall_p1s, dev_wall_p2s, cpu_wall_p1s, cpu_wall_p2s, max_wall_segs,
-        last_build_positions, sorted_last_positions, needs_rebuild
+        sorted_last_positions, max_wall_segs
     )
 end
 
@@ -432,9 +407,9 @@ function update_orca_system!(world::World, search::AbstractNeighborSearch, backe
     F = typeof(search.cell_size)
     ctx = get_orca_gpu_context(world, backend, F, num_agents, 64)
 
-    positions          = ctx.cpu_positions
-    velocities         = ctx.cpu_velocities
-    radii              = ctx.cpu_radii
+    positions          = ctx.base.cpu_positions
+    velocities         = ctx.base.cpu_velocities
+    radii              = ctx.base.cpu_radii
     v_prefs            = ctx.cpu_v_prefs
     lp_radii           = ctx.cpu_lp_radii
     taus               = ctx.cpu_taus
@@ -475,8 +450,8 @@ function update_orca_system!(world::World, search::AbstractNeighborSearch, backe
     for (_, wall_col) in Query(world, (WallSegment{F},))
         for i in eachindex(wall_col)
             n_walls += 1
-            ctx.cpu_wall_p1s[n_walls] = wall_col[i].p1
-            ctx.cpu_wall_p2s[n_walls] = wall_col[i].p2
+            ctx.base.cpu_wall_p1s[n_walls] = wall_col[i].p1
+            ctx.base.cpu_wall_p2s[n_walls] = wall_col[i].p2
         end
     end
     # n_walls == 0 is fine (no wall constraints generated)
@@ -502,9 +477,13 @@ function _update_orca_impl!(
     N = length(positions)
 
     # Upload per-agent data to device
-    copyto!(ctx.dev_positions,          positions)
-    copyto!(ctx.dev_velocities,         velocities)
-    copyto!(ctx.dev_radii,              radii)
+    # 1. Shared base fields (positions, velocities, radii, walls) → stage_and_sort_base!
+    #    stage_and_sort_base! also handles the lazy grid rebuild (build_grid! before reorder!)
+    stage_and_sort_base!(ctx.base, positions, velocities, radii,
+                         ctx.base.cpu_wall_p1s, ctx.base.cpu_wall_p2s, n_walls,
+                         search, backend, ctx.sorted_last_positions)
+
+    # 2. ORCA-specific fields
     copyto!(ctx.dev_v_prefs,            v_prefs)
     copyto!(ctx.dev_lp_radii,           lp_radii)
     copyto!(ctx.dev_taus,               taus)
@@ -518,36 +497,8 @@ function _update_orca_impl!(
         ctx.dev_max_neighbors[i] = F(max_neighbors[i])
     end
 
-    # Upload wall segments (only the n_walls valid entries)
-    if n_walls > 0
-        copyto!(ctx.dev_wall_p1s, @view ctx.cpu_wall_p1s[1:n_walls])
-        copyto!(ctx.dev_wall_p2s, @view ctx.cpu_wall_p2s[1:n_walls])
-    end
-
-    # Lazy grid rebuild check
-    sq_skin_radius = F(2.0)^2
-    kernel_check! = check_rebuild_kernel!(backend)
-    kernel_check!(ctx.needs_rebuild, ctx.dev_positions, ctx.last_build_positions,
-                  sq_skin_radius, ndrange=N)
-    KernelAbstractions.synchronize(backend)
-
-    cpu_needs_rebuild = Vector{Bool}(undef, 1)
-    copyto!(cpu_needs_rebuild, ctx.needs_rebuild)
-
+    # 3. Reorder ORCA-specific arrays (base arrays + rebuild handled by stage_and_sort_base!)
     kernel_reorder! = reorder_array_kernel!(backend)
-
-    if cpu_needs_rebuild[1]
-        copyto!(ctx.last_build_positions, ctx.dev_positions)
-        build_grid!(search, ctx.dev_positions, backend)
-        kernel_reorder!(ctx.sorted_last_positions, ctx.last_build_positions,
-                        search.agent_indices, ndrange=N)
-        fill!(ctx.needs_rebuild, false)
-    end
-
-    # Reorder all per-agent arrays to Morton order for coalesced GPU access
-    kernel_reorder!(ctx.sorted_dev_positions,          ctx.dev_positions,          search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_velocities,         ctx.dev_velocities,         search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_radii,              ctx.dev_radii,              search.agent_indices, ndrange=N)
     kernel_reorder!(ctx.sorted_dev_v_prefs,            ctx.dev_v_prefs,            search.agent_indices, ndrange=N)
     kernel_reorder!(ctx.sorted_dev_lp_radii,           ctx.dev_lp_radii,           search.agent_indices, ndrange=N)
     kernel_reorder!(ctx.sorted_dev_taus,               ctx.dev_taus,               search.agent_indices, ndrange=N)
@@ -565,7 +516,7 @@ function _update_orca_impl!(
     kernel! = compute_orca_kernel!(backend)
     kernel!(
         ctx.dev_forces,
-        ctx.sorted_dev_positions, ctx.sorted_dev_velocities, ctx.sorted_dev_radii,
+        ctx.base.sorted_dev_positions, ctx.base.sorted_dev_velocities, ctx.base.sorted_dev_radii,
         ctx.sorted_dev_v_prefs, ctx.sorted_dev_lp_radii, ctx.sorted_dev_taus, ctx.sorted_dev_masses,
         ctx.sorted_dev_time_horizons,
         ctx.sorted_dev_time_horizons_obst,   # §1.7
@@ -573,7 +524,7 @@ function _update_orca_impl!(
         ctx.sorted_dev_neighbor_dists,
         ctx.sorted_dev_max_neighbors,
         ctx.sorted_last_positions,
-        ctx.dev_wall_p1s, ctx.dev_wall_p2s, n_walls,
+        ctx.base.dev_wall_p1s, ctx.base.dev_wall_p2s, n_walls,
         search.grid_min, search.grid_dims, search.cell_size,
         search.cell_starts, search.cell_ends, search.agent_indices,
         dt,

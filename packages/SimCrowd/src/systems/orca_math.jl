@@ -456,3 +456,77 @@ GPU-safe: @inline, no heap allocation, all inputs isbits.
     return Line(vel_i + u, dir)              # full responsibility
 end
 
+"""
+    apply_wall_penetration_correction(pos, vel, r_i, p1, p2)
+        → (corrected_pos, corrected_vel)
+
+Model-agnostic geometric non-penetration correction for a single wall segment.
+
+If the agent body (centre `pos`, radius `r_i`) overlaps the wall segment [p1, p2],
+push `pos` back to the surface and zero out the velocity component directed into
+the wall. Returns unchanged `(pos, vel)` if no penetration.
+
+## Scientific basis
+
+Standard non-penetration constraint from rigid-body dynamics (RVO2 §4, Menge —
+Curtis & Manocha 2016). Equivalent to an infinite-stiffness elastic wall at
+distance `r_i` from the wall segment.
+
+## Properties
+
+- **GPU-safe**: `@inline`, no heap allocation, all inputs/outputs are `isbits`
+  (`SVector{2,F}` and `F`).
+- **Model-agnostic**: no ECS types, no archetype query. Callable from any GPU
+  kernel (`compute_orca_kernel!`, `compute_csm_kernel!`, …) or CPU ECS loop.
+- **Idempotent**: applying it twice gives the same result as once (convergence
+  to the contact surface).
+
+## CPU ECS usage
+
+```julia
+for (p1, p2) in walls
+    pos, vel = apply_wall_penetration_correction(pos, vel, r_i, p1, p2)
+end
+```
+
+## GPU kernel usage
+
+```julia
+@inbounds for w in 1:n_walls
+    corrected_pos, corrected_vel =
+        apply_wall_penetration_correction(corrected_pos, corrected_vel, r_i,
+                                          wall_p1s[w], wall_p2s[w])
+end
+```
+
+Replaces the per-model `wall_penetration_correction!` CPU ECS loops in
+`hybrid_fsm.jl` and `csm.jl` — those loops call this function for each wall pair.
+"""
+@inline function apply_wall_penetration_correction(
+    pos::SVector{2,F},
+    vel::SVector{2,F},
+    r_i::F,
+    p1::SVector{2,F},
+    p2::SVector{2,F}
+) :: Tuple{SVector{2,F}, SVector{2,F}} where {F<:AbstractFloat}
+    seg = p2 - p1
+    l2  = dot(seg, seg)
+    t   = l2 < F(1e-10) ? zero(F) : clamp(dot(pos - p1, seg) / l2, zero(F), one(F))
+    q   = p1 + t * seg
+    rel = pos - q             # vector from wall surface point → agent centre
+    d   = norm(rel)
+
+    # Only correct if agent body genuinely overlaps wall (not just ORCA exclusion zone)
+    if d < r_i && d > F(1e-6)
+        n_out  = rel / d          # outward unit normal (away from wall)
+        # 1. Position: push agent back to contact surface
+        pos    = q + n_out * r_i
+        # 2. Velocity: cancel any inward component (prevents immediate re-penetration)
+        v_into = dot(vel, -n_out)  # positive = agent moving INTO wall
+        if v_into > zero(F)
+            vel = vel + v_into * n_out
+        end
+    end
+    return pos, vel
+end
+
