@@ -255,7 +255,8 @@ Val{W}: compile-time wall-line bound (16 by default, configurable per scene)
     dt,
     ::Val{K},   # compile-time: max agent-agent neighbors
     ::Val{W},   # compile-time: max wall segments visible per agent
-) where {K, W}
+    ::Val{WE},  # compile-time: max wall ORCA lines (≤ 3×W: segment + up to 2 endpoints)
+) where {K, W, WE}
     i = @index(Global, Linear)
 
     @inbounds begin
@@ -280,8 +281,11 @@ Val{W}: compile-time wall-line bound (16 by default, configurable per scene)
         # ── §1.7: Wall ORCA lines (MVector: GPU-safe, no heap allocation) ─────────
         # Wall lines are PREPENDED so LP3 treats them as hard constraints
         # (wall cannot be passed through, unlike agent-agent constraints).
-        wall_lines     = MVector{W, Line{typeof(r_i)}}(undef)
+        # WE = 3×W: each segment emits ≤ 3 lines (segment + 2 endpoints).
+        # See van den Berg 2011 §3.2 and compute_orca_line_endpoint in orca_math.jl.
+        wall_lines     = MVector{WE, Line{typeof(r_i)}}(undef)
         num_wall_lines = 0
+        interaction_r  = r_i + typeof(r_i)(2)   # 2m slack (same for segment + endpoints)
 
         for w in 1:n_walls
             p1 = wall_p1s[w]
@@ -292,11 +296,24 @@ Val{W}: compile-time wall-line bound (16 by default, configurable per scene)
                   clamp(dot(pos_i - p1, seg) / l2, zero(typeof(r_i)), one(typeof(r_i)))
             q   = p1 + t * seg
             dist_to_wall = norm(q - pos_i)
-            # Interaction radius: agent radius + 2m slack (matches orca_cpu.jl §1.7)
-            if dist_to_wall < r_i + typeof(r_i)(2) && num_wall_lines < W
+            # Interaction radius: agent radius + 2m slack
+            if dist_to_wall < interaction_r && num_wall_lines < WE
                 num_wall_lines += 1
                 wall_lines[num_wall_lines] = compute_orca_line_wall(
                     pos_i, vel_i, r_i, p1, p2, time_h_obst_i, dt)
+
+                # §3P: endpoint vertex constraints (van den Berg 2011 §3.2)
+                # Each exposed wall endpoint generates a separate point-obstacle VO.
+                # This prevents agents from arcing through door corners when the
+                # FMM preferred velocity is diagonal toward the corner.
+                for qe in (p1, p2)
+                    dist_ep = norm(qe - pos_i)
+                    if dist_ep > typeof(r_i)(1e-6) && dist_ep < interaction_r && num_wall_lines < WE
+                        num_wall_lines += 1
+                        wall_lines[num_wall_lines] = compute_orca_line_endpoint(
+                            pos_i, vel_i, r_i, qe, time_h_obst_i, dt)
+                    end
+                end
             end
         end
 
@@ -343,8 +360,8 @@ Val{W}: compile-time wall-line bound (16 by default, configurable per scene)
         K_eff = min(best_count, max_nb_i)
 
         # ── Build combined constraint set: [wall lines | agent lines] ─────────────
-        # Size: W walls + K agents = K+W total. Both bounds are compile-time → isbits.
-        lines    = MVector{K + W, Line{typeof(r_i)}}(undef)
+        # Size: WE wall lines + K agent lines. Both bounds are compile-time → isbits.
+        lines    = MVector{K + WE, Line{typeof(r_i)}}(undef)
         num_lines = 0
 
         # 1. Wall lines first (hard constraints in LP3)
@@ -406,7 +423,7 @@ indicate crowd density is exceeding ORCA's guaranteed-feasibility threshold).
 the scene geometry. Use `assert_wall_budget` at scene construction to verify.
 """
 function update_orca_system!(world::World, search::AbstractNeighborSearch, backend::Backend,
-                              dt::AbstractFloat; W::Int = 16)
+                              dt::AbstractFloat; W::Int = 16, WE::Int = 3*W)
     num_agents = count_entities(Query(world, (ORCAParams{Float32},)))
     if num_agents == 0
         return 0
@@ -467,7 +484,7 @@ function update_orca_system!(world::World, search::AbstractNeighborSearch, backe
     return _update_orca_impl!(world, search, positions, velocities, radii, v_prefs,
                                lp_radii, taus, masses, time_horizons, time_horizons_obst,
                                responsibilities, neighbor_dists, max_neighbors,
-                               n_walls, F(dt), backend, ctx, Val(W))
+                               n_walls, F(dt), backend, ctx, Val(W), Val(WE))
 end
 
 # ── Core Implementation ────────────────────────────────────────────────────────
@@ -480,8 +497,8 @@ function _update_orca_impl!(
     taus, masses, time_horizons, time_horizons_obst,
     responsibilities, neighbor_dists, max_neighbors,
     n_walls::Int, dt::F, backend, ctx::ORCAGPUContext,
-    ::Val{W}
-) where {AT, F, W}
+    ::Val{W}, ::Val{WE}
+) where {AT, F, W, WE}
     N = length(positions)
 
     # Upload per-agent data to device
@@ -562,6 +579,7 @@ function _update_orca_impl!(
         dt,
         Val(K),
         Val(W),
+        Val(WE),   # §3P: total wall-line budget = 3×W (segment + 2 endpoints)
         ndrange=N
     )
     KernelAbstractions.synchronize(backend)

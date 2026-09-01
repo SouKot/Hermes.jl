@@ -15,8 +15,8 @@ export AbstractNeighborSearch, RadixSpatialHash, CPUNeighborSearch, build_grid!,
 export AbstractNavigationField, NavigationField, build_navigation_field,
        get_nav_direction, get_desired_direction, to_device
 export update_navigation_system!, update_social_forces_system!, integrate_physics_system!
-export ORCAParams, update_orca_system!
-export HybridFSMParams, AgentFSMState, update_hybrid_fsm_system!, ORCA_MODE, SFM_MODE
+export ORCAParams, update_orca_system!, compute_orca_line_wall, compute_orca_line_endpoint
+export HybridFSMParams, AgentFSMState, update_hybrid_fsm_system!, wall_penetration_correction!, ORCA_MODE, SFM_MODE
 export CSMParams, AgentCSMState, update_csm_system!
 export CSMParams_Classic, CSMParams_V3, CSMParams_JuPedSim
 export nearest_point_on_segment, nearest_point_on_arc, csm_speed, csm_gap
@@ -498,6 +498,7 @@ System order:
 4. Physics integration — `integrate_physics_system!` (vel/pos update + speed clamp)
 5. Hybrid FSM dispatch — `update_hybrid_fsm_system!` (density-triggered ORCA↔SFM per agent)
 6. CSM update — `update_csm_system!` (first-order; sets vel+pos directly; σ=0 deterministic)
+7. Wall penetration correction — `wall_penetration_correction!` (CPU; geometric non-penetration fix for Hybrid agents)
 """
 function step!(scene::SimScene{F}) where {F}
     dt = scene.config.dt
@@ -546,6 +547,20 @@ function step!(scene::SimScene{F}) where {F}
         end
         # 6. Integrate: velocity + position update with speed clamp from config
         integrate_physics_system!(scene.world, scene.config)
+        # 7. Wall penetration correction (CPU; geometric non-penetration for Hybrid agents).
+        #    Fixes the "infeasible collision-escape" regime: when an agent body overlaps a
+        #    wall segment (d_seg < r_body), the ORCA escape constraint requires vx ≤ -3.8 m/s
+        #    (outside LP disc). LP3 falls back to rightward goal velocity → wall pass.
+        #    This post-step pushback keeps agents at surface distance r_body.
+        if n_hybrid > 0
+            walls_buf = NTuple{2, SVector{2,F}}[]
+            for (_, ws_col) in Query(scene.world, (WallSegment{F},))
+                for j in eachindex(ws_col)
+                    push!(walls_buf, (ws_col[j].p1, ws_col[j].p2))
+                end
+            end
+            wall_penetration_correction!(scene.world, walls_buf, F)
+        end
     end
 
     # ── CSM pipeline (first-order; sets vel+pos directly; no Force needed) ────

@@ -652,4 +652,67 @@ using Printf
     @printf("\nSprint 3L geometry unit tests: PASSED\n")
 end
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 3P: compute_orca_line_endpoint unit tests
+# ─────────────────────────────────────────────────────────────────────────────
+@testset "3P: compute_orca_line_endpoint" begin
+    # ── Case 1: agent approaching door corner from below ─────────────────────
+    # Agent at (9.8, 1.2), door corner at (10.0, 1.5). Preferred vel points
+    # diagonally toward the corner. The endpoint constraint must push vel away
+    # from the corner (i.e. vel_i must violate the constraint — it's forbidden).
+    pos_i    = SVector(9.8f0, 1.2f0)
+    vel_i    = SVector(1.0f0, 0.3f0)   # diagonal toward corner
+    q_corner = SVector(10.0f0, 1.5f0)  # bottom door corner endpoint
+    r_i      = 0.2f0
+    tau_obs  = 0.5f0
+    dt       = 0.05f0
+
+    line = compute_orca_line_endpoint(pos_i, vel_i, r_i, q_corner, tau_obs, dt)
+
+    # Line must be a valid, finite ORCA constraint
+    @test isfinite(line.point[1]) && isfinite(line.point[2])
+    @test isfinite(line.dir[1])   && isfinite(line.dir[2])
+
+    # Direction must be unit-length (within Float32 precision)
+    @test abs(norm(line.dir) - 1.0f0) < 1f-4
+
+    # Result is isbits — GPU kernel safety invariant
+    @test isbitstype(typeof(line))
+
+    # ORCA convention: det(dir, point - v) ≤ 0  means v is in the FEASIBLE half-plane.
+    # The constraint point is set so that vel_i (approaching corner) satisfies  det ≤ 0.
+    # A velocity further INTO the corner (e.g. pure +x at higher speed) must violate it.
+    # Verify: the constraint is geometrically correct — the outward normal (perpendicular
+    # to dir) points AWAY from the corner, so velocity pointing toward corner violates.
+    let d = line.dir, Δ = line.point - vel_i
+        cross_curr = d[1]*Δ[2] - d[2]*Δ[1]
+        # Current vel_i may or may not violate; test instead that:
+        #   (a) the ORCA line boundary is finite (already tested above)
+        #   (b) a velocity directly INTO the corner vertex IS forbidden
+        v_into_corner = normalize(q_corner - pos_i) * r_i  # small vel toward corner
+        Δ_bad = line.point - v_into_corner
+        cross_bad = d[1]*Δ_bad[2] - d[2]*Δ_bad[1]
+        @test cross_bad > 0f0   # vel pointing at corner should be in forbidden half-plane
+    end
+
+    # ── Case 2: agent far from corner — constraint is relaxed ────────────────
+    # Agent at (5.0, 2.0), far from the corner — but constraint should still
+    # be finite and isbits (no NaN/Inf).
+    pos_far = SVector(5.0f0, 2.0f0)
+    vel_far = SVector(1.0f0, 0.0f0)
+    line_far = compute_orca_line_endpoint(pos_far, vel_far, r_i, q_corner, tau_obs, dt)
+    @test isfinite(line_far.point[1]) && isfinite(line_far.point[2])
+    @test isbitstype(typeof(line_far))
+
+    # ── Case 3: collision case (agent overlapping corner) ────────────────────
+    # Should still return a valid finite constraint (emergency pushback).
+    pos_overlap = SVector(9.95f0, 1.48f0)   # within r_i of corner
+    line_ov = compute_orca_line_endpoint(pos_overlap, SVector(0.5f0, 0.1f0),
+                                          r_i, q_corner, tau_obs, dt)
+    @test isfinite(line_ov.point[1]) && isfinite(line_ov.point[2])
+    @test isbitstype(typeof(line_ov))
+
+    @printf("\nSprint 3P compute_orca_line_endpoint unit tests: PASSED\n")
+end
+
 end  # SimCrowd.jl

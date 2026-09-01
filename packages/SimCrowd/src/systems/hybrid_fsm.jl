@@ -328,10 +328,25 @@ end
         l2  = dot(seg, seg)
         t   = l2 < F(1e-10) ? zero(F) : clamp(dot(pos_i - p1, seg) / l2, zero(F), one(F))
         q   = p1 + t * seg
-        if norm(q - pos_i) < op.radius + F(2)
+        interaction_r = op.radius + F(2)
+        if norm(q - pos_i) < interaction_r
             push!(lines, compute_orca_line_wall(pos_i, vel_i, op.radius, p1, p2,
                                                  op.time_horizon_obst, dt))
             num_wall_lines += 1
+
+            # §3P: endpoint vertex constraints (van den Berg 2011 §3.2)
+            # Emit a separate point-obstacle VO for each wall segment endpoint.
+            # Prevents agents from arcing through door corners when FMM nav
+            # preferred velocity is diagonal toward the corner endpoint.
+            # CPU path uses heap Vector — no MVector budget limit here.
+            for qe in (p1, p2)
+                dist_ep = norm(qe - pos_i)
+                if dist_ep > F(1e-6) && dist_ep < interaction_r
+                    push!(lines, compute_orca_line_endpoint(pos_i, vel_i, op.radius, qe,
+                                                             op.time_horizon_obst, dt))
+                    num_wall_lines += 1
+                end
+            end
         end
     end
 
@@ -457,4 +472,71 @@ end
     end
 
     return F_total
+end
+
+"""
+    wall_penetration_correction!(world, walls, dt)
+
+Post-integration geometric correction for Hybrid FSM agents.
+
+The ORCA collision-escape constraint for static walls requires a velocity
+`vx ≤ -(r/dt - d_seg)` when the agent body overlaps a segment (d_seg < r).
+At typical parameters (r=0.2m, dt=0.05s) this demands vx ≤ -3.8 m/s, which
+is outside the LP disc (v_pref=1.4 m/s) → LP3 cannot satisfy it → falls back
+to goal-seeking velocity rightward through the wall.
+
+This function applies the standard RVO2/Menge geometric non-penetration fix:
+  1. If agent centre is within `r_body` of a wall segment, push position back
+     perpendicular to the wall by `r_body - d_seg` (to restore contact-free state).
+  2. Zero out the velocity component pointing INTO the wall so the agent does not
+     immediately re-penetrate on the next step.
+
+Scientific basis:
+  - This implements the \"non-penetration constraint\" from rigid-body dynamics.
+  - Equivalent to applying an infinite-stiffness elastic wall at distance r_body.
+  - Used in: Menge (Curtis & Manocha 2016), RVO2 reference (Berg 2011 §4).
+  - Specifically handles the \"infeasible collision-escape\" regime documented in the
+    Sprint 3P diagnostic (v5 output, 2026-08-31): n_cont=1 at steps immediately
+    before wall crossing in all 5 wall-pass agents.
+
+CPU-only: GPU path requires this logic inside the ORCA kernel (Sprint 3Q planned).
+"""
+function wall_penetration_correction!(
+    world::World,
+    walls::Vector{NTuple{2, SVector{2,F}}},
+    ::Type{F}
+) where {F<:AbstractFloat}
+    for (_, pos_col, vel_col, geom_col) in
+            Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}, HybridFSMParams{F}))
+        for i in eachindex(pos_col)
+            pos = pos_col[i].p
+            vel = vel_col[i].v
+            r_i = geom_col[i].social_radius  # ORCA uses social_radius as body radius
+
+            for (p1, p2) in walls
+                seg = p2 - p1
+                l2  = dot(seg, seg)
+                t   = l2 < F(1e-10) ? zero(F) :
+                      clamp(dot(pos - p1, seg) / l2, zero(F), one(F))
+                q   = p1 + t * seg
+                rel = pos - q             # vector from wall surface point → agent
+                d   = norm(rel)
+
+                # Only correct if genuinely inside the body radius (not just ORCA zone)
+                if d < r_i && d > F(1e-6)
+                    n_out = rel / d          # outward unit normal
+                    # 1. Position correction: push agent back to surface
+                    pos = q + n_out * r_i
+                    # 2. Velocity correction: remove inward component (prevents re-penetration)
+                    v_into = dot(vel, -n_out)   # positive = going INTO wall
+                    if v_into > zero(F)
+                        vel = vel + v_into * n_out  # cancel inward part
+                    end
+                end
+            end
+
+            pos_col[i] = Position(pos)
+            vel_col[i] = Velocity(vel)
+        end
+    end
 end

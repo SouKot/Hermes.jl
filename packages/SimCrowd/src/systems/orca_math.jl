@@ -384,3 +384,75 @@ Algorithm follows van den Berg 2011 (ORCA) §3.1 with obstacle responsibility = 
     u         = dot_w_dir * dir - vel_i
     return Line(vel_i + u, dir)  # full responsibility
 end
+
+"""
+    compute_orca_line_endpoint(pos_i, vel_i, r_i, q, time_horizon_obst, dt)
+
+Compute the ORCA half-plane constraint imposed by a **wall segment endpoint** (a
+zero-radius point obstacle at `q`) on agent i.
+
+This is the correct treatment of convex obstacle vertices per van den Berg (2011)
+§3.2 "Static Obstacles" and the RVO2 reference implementation (`Agent.cpp`,
+`computeNewVelocity`, obstacle-vertex section). Each endpoint of a wall segment
+must generate its own constraint, independent of the segment interior constraint,
+to prevent agents from arcing through corners.
+
+Mathematically identical to `compute_orca_line_wall` with `p1 = p2 = q`
+(i.e. the degenerate case where the nearest point is always the endpoint itself).
+
+Full agent responsibility (no 0.5 factor): the point obstacle cannot adapt velocity.
+
+GPU-safe: @inline, no heap allocation, all inputs isbits.
+"""
+@inline function compute_orca_line_endpoint(
+    pos_i::SVector{2,F}, vel_i::SVector{2,F}, r_i::F,
+    q::SVector{2,F},
+    time_horizon_obst::F, dt::F
+) where {F<:AbstractFloat}
+    relative_pos = q - pos_i
+    dist_sq      = sum(abs2, relative_pos)
+
+    # ── Collision right now (agent overlaps endpoint) ─────────────────────────
+    if dist_sq <= r_i^2
+        dist   = sqrt(dist_sq)
+        unit_w = if dist < F(1e-6)
+            SVector{2,F}(one(F), zero(F))   # degenerate: push right
+        else
+            -relative_pos / dist             # outward (away from point)
+        end
+        dir = SVector(unit_w[2], -unit_w[1])
+        u   = (r_i / dt - dist) * unit_w
+        return Line(vel_i + u, dir)          # full responsibility
+    end
+
+    # ── No current collision — truncated velocity obstacle ────────────────────
+    w        = vel_i - relative_pos / time_horizon_obst
+    w_len_sq = sum(abs2, w)
+    dot_wp   = dot(w, relative_pos)
+
+    if dot_wp < zero(F) && dot_wp^2 > r_i^2 * w_len_sq
+        # Inside VO cone — project on cut-off circle
+        w_len  = sqrt(max(w_len_sq, F(1e-12)))
+        unit_w = w / w_len
+        dir    = SVector(unit_w[2], -unit_w[1])
+        u      = (r_i / time_horizon_obst - w_len) * unit_w
+        return Line(vel_i + u, dir)          # full responsibility
+    end
+
+    # ── Project on VO cone legs ───────────────────────────────────────────────
+    leg = sqrt(max(zero(F), dist_sq - r_i^2))
+    if det(relative_pos, w) > zero(F)
+        dir = SVector(
+             relative_pos[1]*leg - relative_pos[2]*r_i,
+             relative_pos[1]*r_i  + relative_pos[2]*leg
+        ) / dist_sq
+    else
+        dir = -SVector(
+              relative_pos[1]*leg + relative_pos[2]*r_i,
+             -relative_pos[1]*r_i  + relative_pos[2]*leg
+        ) / dist_sq
+    end
+    u = dot(vel_i, dir) * dir - vel_i
+    return Line(vel_i + u, dir)              # full responsibility
+end
+
