@@ -977,7 +977,8 @@ end
 GPU CSM dispatch. Builds the sorted spatial hash, then launches `compute_csm_kernel!`.
 """
 function update_csm_system!(world::World, search::RadixSpatialHash{AT,F},
-                             backend::Backend, dt::F) where {AT,F}
+                             backend::Backend, dt::F;
+                             n_iters_corr::Int = 8) where {AT,F}
     n_csm = 0
     try
         n_csm = count_entities(Query(world, (CSMParams{F},)))
@@ -1048,16 +1049,46 @@ function update_csm_system!(world::World, search::RadixSpatialHash{AT,F},
             ndrange=N)
     KernelAbstractions.synchronize(backend)
 
+    # ── Sprint 3T-GPU-fix: GPU position integration + Jacobi correction ───────
+    # 1. Reorder dev_new_vels (ECS order) → sorted_dev_new_vels (Morton order)
+    kernel_reorder!(ctx.sorted_dev_new_vels, ctx.dev_new_vels, search.agent_indices, ndrange=N)
+    KernelAbstractions.synchronize(backend)
+
+    # 2. Integrate positions on device: sorted_pos[i] += sorted_new_vel[i] * dt
+    #    Now sorted_dev_positions holds POST-STEP positions.
+    kern_integrate = integrate_positions_kernel!(backend)
+    kern_integrate(ctx.base.sorted_dev_positions, ctx.sorted_dev_new_vels,
+                   dt, Int32(N); ndrange=N)
+    KernelAbstractions.synchronize(backend)
+
+    # 3. Jacobi agent non-penetration correction on post-step positions
+    apply_agent_correction_gpu!(ctx.base, search, backend; n_iters=n_iters_corr)
+
+    # ── Scatter-back: corrected positions from device, new vels from kernel ───
+    # sorted_dev_positions now holds post-step, Jacobi-corrected positions.
+    # dev_new_vels holds new velocities in ECS (unsorted) order.
+    cpu_new_pos      = Vector{SVector{2,F}}(undef, N)
     cpu_new_vels     = Vector{SVector{2,F}}(undef, N)
     cpu_new_headings = Vector{F}(undef, N)
+    # Scatter sorted corrected positions back to ECS order via agent_indices
+    cpu_sorted_pos = Vector{SVector{2,F}}(undef, N)
+    copyto!(cpu_sorted_pos,   ctx.base.sorted_dev_positions)
     copyto!(cpu_new_vels,     ctx.dev_new_vels)
     copyto!(cpu_new_headings, ctx.dev_new_headings)
+
+    # Invert Morton permutation: cpu_new_pos[original_i] = cpu_sorted_pos[sorted_i]
+    cpu_agent_indices = Vector{Int32}(undef, N)
+    copyto!(cpu_agent_indices, search.agent_indices)
+    for sorted_i in 1:N
+        original_i = Int(cpu_agent_indices[sorted_i])
+        cpu_new_pos[original_i] = cpu_sorted_pos[sorted_i]
+    end
 
     idx = 1
     for (_, pos_col, vel_col, _, _) in Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}))
         for i in eachindex(pos_col)
             vel_col[i] = Velocity(cpu_new_vels[idx])
-            pos_col[i] = Position(pos_col[i].p + cpu_new_vels[idx] * dt)
+            pos_col[i] = Position(cpu_new_pos[idx])   # corrected post-step position
             idx += 1
         end
     end

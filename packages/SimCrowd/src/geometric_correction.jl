@@ -114,7 +114,7 @@ end
 
 """
     apply_agent_correction_cpu!(world, search::CPUNeighborSearch, ::Type{F};
-                                n_iters::Int = 2)
+                                n_iters=8, tol=1f-3)
 
 Jacobi agent non-penetration correction. O(N×k) per iteration via CellListMap.
 
@@ -122,25 +122,25 @@ Queries `(Position{F}, Velocity{F}, AgentGeometry{F})` — **model-agnostic**: w
 for SFM, ORCA, CSM, HybridFSM agents and any mixture thereof, as long as agents
 have an `AgentGeometry` component.
 
-## Jacobi pattern
+## Convergence criterion (adaptive stopping)
 
-Uses CellListMap `pairwise!` to iterate all pairs (i,j) with d < cutoff.
-The correction for pair (i,j) is accumulated into Δpos[i] and Δpos[j] atomically
-via a SpinLock per agent slot. This is the same pattern as CellListMap output
-buffer accumulation in `update_social_forces_system!`.
+After each Jacobi pass the maximum body overlap across all contacting pairs is
+measured: `max_overlap = max(0, (r_i + r_j) - d_ij)`. Iteration stops when:
+  - `max_overlap ≤ tol`  (converged — all contacts below tolerance), or
+  - `n_iters` passes have been completed (safety cap)
 
-## Caller note
+Default `tol = 1e-3 m` (1 mm): effectively zero physical overlap at crowd
+simulation scales. `tol = 0` forces exactly `n_iters` passes.
 
-`n_iters=0` is a no-op (used by pure ORCA scenes where LP prevents penetration).
-`n_iters=2` is the default (sufficient for bottleneck scenarios up to N≈10,000).
 For N > 50,000 or extreme density, consider PGS+graph-colouring — see
 `docs/2026-08-14_future_directions.md §7`.
 """
 function apply_agent_correction_cpu!(
-    world  :: World,
-    search :: CPUNeighborSearch,
+    world   :: World,
+    search  :: CPUNeighborSearch,
     ::Type{F};
-    n_iters :: Int = 2
+    n_iters :: Int = 8,
+    tol     :: F   = F(1e-3)
 ) where {F<:AbstractFloat}
     n_iters == 0 && return
 
@@ -160,29 +160,34 @@ function apply_agent_correction_cpu!(
     N = length(pos_arr)
     N == 0 && return
 
-    # Update CellListMap with current positions (O(N) rebuild — same as social forces).
+    # Update CellListMap with current positions (O(N) rebuild).
     build_grid!(search, pos_arr, CPU())
 
     acc_pos = [zero(SVector{2,F}) for _ in 1:N]
     acc_vel = [zero(SVector{2,F}) for _ in 1:N]
     # Per-agent SpinLocks: protect concurrent writes to the same accumulator slot.
-    # CellListMap's parallel pairwise! may process multiple pairs for the same agent concurrently.
     lk = [Base.Threads.SpinLock() for _ in 1:N]
+    # Atomic for thread-safe max_overlap reduction inside parallel pairwise!
+    atomic_max_ov = Threads.Atomic{F}(zero(F))
 
     for _ in 1:n_iters
-        # Reset accumulators
         fill!(acc_pos, zero(SVector{2,F}))
         fill!(acc_vel, zero(SVector{2,F}))
+        Threads.atomic_xchg!(atomic_max_ov, zero(F))
 
         # ── Jacobi compute via CellListMap pairwise! ─────────────────────────
-        # pairwise! calls our closure for every (i,j) pair within cutoff.
-        # We handle both i→j and j→i directions in one call.
         local_pos = pos_arr; local_vel = vel_arr; local_rad = rad_arr
         function accumulate_pair!(pair, _output)
             (; i, j, d) = pair
             d < F(1e-6) && return _output
             pi = local_pos[i]; vi = local_vel[i]; ri = local_rad[i]
-            pj = local_pos[j]; vj = local_vel[j]; rj = local_rad[j]
+            pj = local_pos[j]; rj = local_rad[j]
+            # Track max overlap for convergence check
+            ov = ri + rj - d
+            if ov > zero(F)
+                Threads.atomic_max!(atomic_max_ov, ov)
+            end
+            vj = local_vel[j]
             dp_i, dv_i = apply_agent_pair_correction(pi, vi, ri, pj, rj)
             dp_j, dv_j = apply_agent_pair_correction(pj, vj, rj, pi, ri)
             lock(lk[i]); acc_pos[i] = acc_pos[i] + dp_i; acc_vel[i] = acc_vel[i] + dv_i; unlock(lk[i])
@@ -196,6 +201,9 @@ function apply_agent_correction_cpu!(
             pos_arr[i] = pos_arr[i] + acc_pos[i]
             vel_arr[i] = vel_arr[i] + acc_vel[i]
         end
+
+        # ── Convergence check — stop early if all contacts resolved ───────────
+        atomic_max_ov[] ≤ tol && break
     end
 
     # ── Write corrections back to ECS ─────────────────────────────────────────
@@ -210,28 +218,30 @@ function apply_agent_correction_cpu!(
 end
 
 """
-    apply_agent_correction_cpu!(world, search::RadixSpatialHash, ::Type{F}; n_iters=2)
+    apply_agent_correction_cpu!(world, search::RadixSpatialHash, ::Type{F};
+                                n_iters=8, tol=1f-3)
 
 Jacobi agent non-penetration correction using the `RadixSpatialHash` grid.
 O(N×k) per iteration via `get_neighbors` (Morton-coded 3×3 cell neighbourhood).
 
-Used by `step!` when `scene.search isa RadixSpatialHash` (i.e., GPU model path
-where scatter-back has already written corrected positions to ECS before this call).
+## Convergence criterion (adaptive stopping)
+
+Same as the `CPUNeighborSearch` overload: tracks `max_overlap` per-thread
+during the pair loop, reduces to global max, breaks when `max_overlap ≤ tol`.
+No atomics needed — each thread writes to its own `local_max_ov[i]` slot,
+then `maximum()` reduces after the threaded loop. Zero-overhead vs fixed n_iters.
 
 ## Jacobi pattern
 
-Thread-per-agent (Threads.@threads for i in 1:N): each thread accumulates Δpos[i]
-and Δvel[i] only for agent i — read-only snapshot of neighbours, write to own slot.
-No atomics, no SpinLocks. Identical to the GPU `agent_correction_kernel!` pattern.
-
-After accumulation, `build_grid!` is called with `CPU()` (KA CPU backend) to rebuild
-the Morton hash for the next iteration.
+Thread-per-agent: each thread i accumulates Δpos[i] and Δvel[i] only for
+agent i (read-only snapshot of neighbours, write to own slot). No SpinLocks.
 """
 function apply_agent_correction_cpu!(
-    world  :: World,
-    search :: RadixSpatialHash,
+    world   :: World,
+    search  :: RadixSpatialHash,
     ::Type{F};
-    n_iters :: Int = 2
+    n_iters :: Int = 8,
+    tol     :: F   = F(1e-3)
 ) where {F<:AbstractFloat}
     n_iters == 0 && return
 
@@ -251,8 +261,9 @@ function apply_agent_correction_cpu!(
     N = length(pos_arr)
     N == 0 && return
 
-    acc_pos = Vector{SVector{2,F}}(undef, N)
-    acc_vel = Vector{SVector{2,F}}(undef, N)
+    acc_pos      = Vector{SVector{2,F}}(undef, N)
+    acc_vel      = Vector{SVector{2,F}}(undef, N)
+    local_max_ov = Vector{F}(undef, N)   # per-thread max overlap (thread i writes local_max_ov[i])
 
     for _ in 1:n_iters
         # Rebuild hash with current positions (O(N) Morton sort + CSR)
@@ -260,20 +271,30 @@ function apply_agent_correction_cpu!(
 
         fill!(acc_pos, zero(SVector{2,F}))
         fill!(acc_vel, zero(SVector{2,F}))
+        fill!(local_max_ov, zero(F))
 
         # ── Jacobi compute: thread-per-agent, write-to-own-slot only ──────────
         Threads.@threads for i in 1:N
             pos_i = pos_arr[i]; vel_i = vel_arr[i]; r_i = rad_arr[i]
             dp_acc = zero(SVector{2,F})
             dv_acc = zero(SVector{2,F})
+            max_ov_i = zero(F)
             for j in get_neighbors(search, pos_i)
                 j == i && continue
-                dp, dv = apply_agent_pair_correction(pos_i, vel_i, r_i, pos_arr[j], rad_arr[j])
+                r_j = rad_arr[j]
+                dp, dv = apply_agent_pair_correction(pos_i, vel_i, r_i, pos_arr[j], r_j)
                 dp_acc = dp_acc + dp
                 dv_acc = dv_acc + dv
+                # Track overlap for convergence check
+                d_ij = norm(pos_i - pos_arr[j])
+                ov   = r_i + r_j - d_ij
+                if ov > max_ov_i
+                    max_ov_i = ov
+                end
             end
-            acc_pos[i] = dp_acc
-            acc_vel[i] = dv_acc
+            acc_pos[i]      = dp_acc
+            acc_vel[i]      = dv_acc
+            local_max_ov[i] = max_ov_i
         end
 
         # ── Apply accumulated corrections ─────────────────────────────────────
@@ -281,6 +302,9 @@ function apply_agent_correction_cpu!(
             pos_arr[i] = pos_arr[i] + acc_pos[i]
             vel_arr[i] = vel_arr[i] + acc_vel[i]
         end
+
+        # ── Convergence check — O(N) reduction, zero allocation ───────────────
+        maximum(local_max_ov) ≤ tol && break
     end
 
     # ── Write corrections back to ECS ─────────────────────────────────────────
@@ -332,6 +356,70 @@ function apply_wall_correction_cpu!(
             pos_col[i] = Position(pos)
             vel_col[i] = Velocity(vel)
         end
+    end
+end
+
+# ── §3T-d-pre: GPU position integration kernels ──────────────────────────────
+#
+# These kernels compute post-step positions on device BEFORE apply_agent_correction_gpu!
+# so that the Jacobi correction operates on physically correct (integrated) positions,
+# not pre-step sorted positions.
+#
+# CSM path:  sorted_pos[i] += sorted_new_vel[i] * dt
+# HybridFSM: sorted_vel[i] += sorted_force[i] / sorted_mass[i] * dt
+#             sorted_pos[i] += sorted_vel[i] * dt
+
+"""
+    integrate_positions_kernel!(sorted_positions, sorted_new_vels, dt, N)
+
+GPU CSM position integration: updates sorted positions in-place using new velocities
+from `compute_csm_kernel!` (already reordered to sorted order).
+
+`sorted_positions[i] += sorted_new_vels[i] * dt`
+
+Called after `compute_csm_kernel!` and velocity reordering, before
+`apply_agent_correction_gpu!`. Makes sorted_dev_positions hold post-step positions
+so the Jacobi correction acts on the physically correct state.
+"""
+@kernel function integrate_positions_kernel!(
+    positions     :: AbstractVector,
+    @Const(new_vels :: AbstractVector),
+    dt            :: Float32,
+    N             :: Int32
+)
+    i = @index(Global, Linear)
+    if i <= N
+        positions[i] = positions[i] + new_vels[i] * dt
+    end
+end
+
+"""
+    integrate_vel_pos_kernel!(sorted_positions, sorted_velocities,
+                              sorted_forces, sorted_masses, dt, N)
+
+GPU HybridFSM vel+pos integration. Applies combined SFM+ORCA forces (uploaded
+from CPU after CPU ORCA pass) to update sorted velocities and positions in-place:
+
+    sorted_vel[i] += sorted_force[i] / sorted_mass[i] * dt
+    sorted_pos[i] += sorted_vel[i] * dt
+
+Called after combined CPU+GPU forces are uploaded to device and sorted, before
+`apply_agent_correction_gpu!`.
+"""
+@kernel function integrate_vel_pos_kernel!(
+    positions  :: AbstractVector,
+    velocities :: AbstractVector,
+    @Const(forces  :: AbstractVector),
+    @Const(masses  :: AbstractVector),
+    dt         :: Float32,
+    N          :: Int32
+)
+    i = @index(Global, Linear)
+    if i <= N
+        m_i   = masses[i]
+        v_new = velocities[i] + forces[i] * (dt / m_i)
+        velocities[i] = v_new
+        positions[i]  = positions[i] + v_new * dt
     end
 end
 
@@ -455,7 +543,7 @@ function apply_agent_correction_gpu!(
             base.dev_delta_pos, base.dev_delta_vel,
             base.sorted_dev_positions, base.sorted_dev_velocities, base.sorted_dev_radii,
             search.cell_starts, search.cell_ends,
-            search.cell_origin, search.cell_size, search.grid_dims, N;
+            search.grid_min, search.cell_size, SVector{2,Int32}(search.grid_dims), N;
             ndrange = Int(N)
         )
         KernelAbstractions.synchronize(backend)

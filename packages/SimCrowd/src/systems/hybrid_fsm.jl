@@ -699,7 +699,8 @@ This is the correct architecture: SFM benefits most from GPU (embarrassingly par
 while ORCA's bottleneck is the LP solver, not the neighbor search.
 """
 function update_hybrid_fsm_system!(world::World, search::RadixSpatialHash{AT,F},
-                                    backend::Backend, dt::F) where {AT,F}
+                                    backend::Backend, dt::F;
+                                    n_iters_corr::Int = 8) where {AT,F}
     n_hybrid = 0
     try
         n_hybrid = count_entities(Query(world, (HybridFSMParams{F},)))
@@ -872,16 +873,54 @@ function update_hybrid_fsm_system!(world::World, search::RadixSpatialHash{AT,F},
         end
     end
 
-    # ── Write back to ECS ─────────────────────────────────────────────────────
+    # ── Sprint 3T-GPU-fix: GPU force upload + integration + Jacobi correction ──
+    # 1. Combine SFM (GPU) + ORCA (CPU) forces in CPU, upload to device
+    cpu_combined = [cpu_sfm_forces[i] + cpu_orca_forces[i] for i in 1:N]
+    copyto!(ctx.dev_combined_forces, cpu_combined)
+
+    # 2. Sort combined forces and masses to Morton order for integration kernel
+    kernel_reorder! = reorder_array_kernel!(backend)
+    kernel_reorder!(ctx.sorted_dev_combined_forces, ctx.dev_combined_forces,
+                    search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_masses_all, ctx.dev_masses,
+                    search.agent_indices, ndrange=N)
+    KernelAbstractions.synchronize(backend)
+
+    # 3. Integrate vel + pos on device: vel += F/m*dt; pos += vel*dt
+    kern_integrate = integrate_vel_pos_kernel!(backend)
+    kern_integrate(ctx.base.sorted_dev_positions, ctx.base.sorted_dev_velocities,
+                   ctx.sorted_dev_combined_forces, ctx.sorted_dev_masses_all,
+                   dt, Int32(N); ndrange=N)
+    KernelAbstractions.synchronize(backend)
+
+    # 4. Jacobi agent non-penetration correction on post-step positions
+    apply_agent_correction_gpu!(ctx.base, search, backend; n_iters=n_iters_corr)
+
+    # ── Scatter-back: read corrected sorted positions/velocities from device ───
+    cpu_sorted_pos = Vector{SVector{2,F}}(undef, N)
+    cpu_sorted_vel = Vector{SVector{2,F}}(undef, N)
+    copyto!(cpu_sorted_pos, ctx.base.sorted_dev_positions)
+    copyto!(cpu_sorted_vel, ctx.base.sorted_dev_velocities)
+
+    # Invert Morton permutation: original_i = agent_indices[sorted_i]
+    cpu_agent_indices = Vector{Int32}(undef, N)
+    copyto!(cpu_agent_indices, search.agent_indices)
+    cpu_new_pos = Vector{SVector{2,F}}(undef, N)
+    cpu_new_vel = Vector{SVector{2,F}}(undef, N)
+    for sorted_i in 1:N
+        original_i = Int(cpu_agent_indices[sorted_i])
+        cpu_new_pos[original_i] = cpu_sorted_pos[sorted_i]
+        cpu_new_vel[original_i] = cpu_sorted_vel[sorted_i]
+    end
+
     idx = 1
-    for (_, _, _, _, _, force_col, _, state_col) in
+    for (_, pos_col, vel_col, _, _, force_col, _, state_col) in
             Query(world, (Position{F}, Velocity{F}, MotionParams{F},
                           Goal{F}, Force{F}, HybridFSMParams{F}, AgentFSMState{F}))
         for i in eachindex(force_col)
-            # Combine SFM (GPU) + ORCA (CPU) forces
-            total_f = cpu_sfm_forces[idx] + cpu_orca_forces[idx]
-            force_col[i] = Force(force_col[i].f + total_f)
-            # Update FSM state (new mode + ρ_ema from GPU)
+            pos_col[i]   = Position(cpu_new_pos[idx])     # corrected post-step position
+            vel_col[i]   = Velocity(cpu_new_vel[idx])     # corrected post-step velocity
+            force_col[i] = Force(zero(SVector{2,F}))      # reset forces for next step
             state_col[i] = AgentFSMState{F}(cpu_new_modes[idx], cpu_new_rho_ema[idx], Int32(0))
             idx += 1
         end

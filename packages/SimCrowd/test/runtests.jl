@@ -979,20 +979,27 @@ end
     @printf("\nSprint 3T n_iters=0 no-op: PASSED\n")
 end
 
-@testset "Sprint 3T: SimConfig agent_correction_iters" begin
-    # Default: 2
+@testset "Sprint 3T/3T-GPU-fix: SimConfig convergence criterion" begin
+    # Default: n_iters=8, tol=1e-3m (Sprint 3T-GPU-fix: changed from n_iters=2)
     cfg = SimConfig()
-    @test cfg.agent_correction_iters == 2
+    @test cfg.agent_correction_iters == 8
+    @test cfg.agent_correction_tol   ≈ 1f-3
 
-    # Explicit 3-arg constructor
+    # Explicit 3-arg constructor: iters=0 means disabled, tol defaults to 1e-3
     cfg2 = SimConfig(0.05f0, 5.0f0, 0)
     @test cfg2.agent_correction_iters == 0
+    @test cfg2.agent_correction_tol   ≈ 1f-3
 
-    # 2-arg convenience constructor defaults to n_iters=2
+    # 2-arg convenience constructor defaults to n_iters=8
     cfg3 = SimConfig(0.05f0, 5.0f0)
-    @test cfg3.agent_correction_iters == 2
+    @test cfg3.agent_correction_iters == 8
 
-    @printf("\nSprint 3T SimConfig.agent_correction_iters: PASSED\n")
+    # 4-arg explicit constructor: custom tol
+    cfg4 = SimConfig(0.05f0, 5.0f0, 10, 5f-3)
+    @test cfg4.agent_correction_iters == 10
+    @test cfg4.agent_correction_tol   ≈ 5f-3
+
+    @printf("\nSprint 3T SimConfig.agent_correction_iters + tol: PASSED\n")
 end
 
 

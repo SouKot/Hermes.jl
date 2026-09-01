@@ -218,11 +218,12 @@ struct CSMGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector,
     # ── CSM-specific device buffers ──────────────────────────────────────────
     dev_goals::VGPU
     dev_headings::SGPU
-    dev_new_vels::VGPU         # output: new velocities (written by kernel)
+    dev_new_vels::VGPU         # output: new velocities (written by kernel, ECS order)
     dev_new_headings::SGPU     # output: new headings (V3)
     # ── Sorted ───────────────────────────────────────────────────────────────
     sorted_dev_goals::VGPU
     sorted_dev_headings::SGPU
+    sorted_dev_new_vels::VGPU  # Sprint 3T-GPU-fix: sorted new vels for GPU pos integration
     sorted_last_positions::VGPU
     max_wall_segs::Int
 end
@@ -241,8 +242,9 @@ function CSMGPUContext(backend, F, N::Int, max_wall_segs::Int = 64)
     dev_new_vels     = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     dev_new_headings = KernelAbstractions.zeros(backend, F, N)
 
-    sorted_dev_goals     = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    sorted_dev_headings  = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_goals      = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    sorted_dev_headings   = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_new_vels   = KernelAbstractions.zeros(backend, SVector{2,F}, N)  # Sprint 3T-GPU-fix
     sorted_last_positions = KernelAbstractions.zeros(backend, SVector{2,F}, N)
 
     VGPU = typeof(base.dev_positions)
@@ -253,7 +255,7 @@ function CSMGPUContext(backend, F, N::Int, max_wall_segs::Int = 64)
         N, base,
         cpu_goals, cpu_headings,
         dev_goals, dev_headings, dev_new_vels, dev_new_headings,
-        sorted_dev_goals, sorted_dev_headings, sorted_last_positions,
+        sorted_dev_goals, sorted_dev_headings, sorted_dev_new_vels, sorted_last_positions,
         max_wall_segs
     )
 end
@@ -314,7 +316,8 @@ struct HybridFSMGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector,
     dev_density_radii::SGPU
     dev_rho_on::SGPU
     dev_rho_off::SGPU
-    dev_forces::VGPU               # output forces (written by SFM/ORCA kernel)
+    dev_forces::VGPU               # SFM forces (written by GPU kernel)
+    dev_combined_forces::VGPU      # Sprint 3T-GPU-fix: combined SFM+ORCA forces (uploaded from CPU)
     # ── Sorted ───────────────────────────────────────────────────────────────
     sorted_dev_goals::VGPU
     sorted_dev_v_prefs::SGPU
@@ -322,6 +325,8 @@ struct HybridFSMGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector,
     sorted_dev_masses::SGPU
     sorted_dev_time_horizons::SGPU
     sorted_dev_responsibilities::SGPU
+    sorted_dev_combined_forces::VGPU  # Sprint 3T-GPU-fix: sorted combined forces for GPU integration
+    sorted_dev_masses_all::SGPU       # Sprint 3T-GPU-fix: sorted masses for GPU integration
     sorted_last_positions::VGPU
     max_wall_segs::Int
 end
@@ -357,14 +362,17 @@ function HybridFSMGPUContext(backend, F, N::Int, max_wall_segs::Int = 64)
     dev_rho_on          = KernelAbstractions.zeros(backend, F, N)
     dev_rho_off         = KernelAbstractions.zeros(backend, F, N)
     dev_forces          = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    dev_combined_forces = KernelAbstractions.zeros(backend, SVector{2,F}, N)  # Sprint 3T-GPU-fix
 
-    sorted_dev_goals           = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    sorted_dev_v_prefs         = KernelAbstractions.zeros(backend, F, N)
-    sorted_dev_taus            = KernelAbstractions.zeros(backend, F, N)
-    sorted_dev_masses          = KernelAbstractions.zeros(backend, F, N)
-    sorted_dev_time_horizons   = KernelAbstractions.zeros(backend, F, N)
-    sorted_dev_responsibilities = KernelAbstractions.zeros(backend, F, N)
-    sorted_last_positions      = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    sorted_dev_goals              = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    sorted_dev_v_prefs            = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_taus               = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_masses             = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_time_horizons      = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_responsibilities   = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_combined_forces    = KernelAbstractions.zeros(backend, SVector{2,F}, N)  # Sprint 3T-GPU-fix
+    sorted_dev_masses_all         = KernelAbstractions.zeros(backend, F, N)             # Sprint 3T-GPU-fix
+    sorted_last_positions         = KernelAbstractions.zeros(backend, SVector{2,F}, N)
 
     VGPU = typeof(base.dev_positions)
     SGPU = typeof(base.dev_radii)
@@ -379,9 +387,10 @@ function HybridFSMGPUContext(backend, F, N::Int, max_wall_segs::Int = 64)
         dev_goals, dev_rho_ema, dev_modes,
         dev_v_prefs, dev_taus, dev_masses, dev_time_horizons, dev_responsibilities,
         dev_density_radii, dev_rho_on, dev_rho_off,
-        dev_forces,
+        dev_forces, dev_combined_forces,
         sorted_dev_goals, sorted_dev_v_prefs, sorted_dev_taus, sorted_dev_masses,
         sorted_dev_time_horizons, sorted_dev_responsibilities,
+        sorted_dev_combined_forces, sorted_dev_masses_all,
         sorted_last_positions, max_wall_segs
     )
 end

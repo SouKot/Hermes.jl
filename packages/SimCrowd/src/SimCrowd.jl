@@ -32,7 +32,7 @@ export CSMGPUContext, compute_csm_kernel!
 export HybridFSMGPUContext, compute_density_mode_kernel!, compute_hybrid_sfm_kernel!
 # Sprint 3T: Geometric non-penetration correction (agent-agent + unified wall)
 export apply_agent_pair_correction, apply_agent_correction_cpu!, apply_agent_correction_gpu!
-export apply_wall_correction_cpu!
+export apply_wall_correction_cpu!, integrate_positions_kernel!, integrate_vel_pos_kernel!
 # §2.4 SimConfig + SimScene
 export SimConfig, SimScene, step!, run!
 
@@ -420,14 +420,21 @@ Fields:
 struct SimConfig{F<:AbstractFloat}
     dt                     :: F
     max_speed              :: F
-    agent_correction_iters :: Int   # Jacobi passes per step (0 = disabled)
+    agent_correction_iters :: Int   # Jacobi max passes per step (0 = disabled)
+    agent_correction_tol   :: F     # convergence criterion ε (metres of max body overlap)
+                                    # CPU path: stops early when max_overlap ≤ tol.
+                                    # GPU path: runs exactly agent_correction_iters passes
+                                    #   (avoids per-iteration GPU→CPU sync for the check).
+                                    # Set to 0 to always run the full max_iters.
 end
 
-# Convenience constructors
-SimConfig{F}() where {F<:AbstractFloat} = SimConfig(F(0.05), F(5.0), 2)
+# Convenience constructors — tol default = 1e-3 m (1mm, effectively zero physical overlap)
+SimConfig{F}() where {F<:AbstractFloat} = SimConfig(F(0.05), F(5.0), 8, F(1e-3))
 SimConfig() = SimConfig{Float32}()
-SimConfig(dt::F) where {F<:AbstractFloat} = SimConfig(dt, F(5.0), 2)
-SimConfig(dt::F, max_speed::F) where {F<:AbstractFloat} = SimConfig(dt, max_speed, 2)
+SimConfig(dt::F) where {F<:AbstractFloat} = SimConfig(dt, F(5.0), 8, F(1e-3))
+SimConfig(dt::F, max_speed::F) where {F<:AbstractFloat} = SimConfig(dt, max_speed, 8, F(1e-3))
+SimConfig(dt::F, max_speed::F, iters::Int) where {F<:AbstractFloat} =
+    SimConfig(dt, max_speed, iters, F(1e-3))
 
 include("forces.jl")
 include("neighbor_search.jl")
@@ -633,14 +640,13 @@ function step!(scene::SimScene{F}) where {F}
     #    as thin wrappers in hybrid_fsm.jl / csm.jl — to be removed in Sprint 3U.
     apply_wall_correction_cpu!(scene.world, walls_buf, F)
 
-    # 8. Agent body non-penetration correction (Jacobi; configurable n_iters)
-    #    Dispatches on search type:
-    #    - CPUNeighborSearch: CellListMap pairwise! with SpinLock accumulators
-    #    - RadixSpatialHash: Morton hash get_neighbors, lock-free per-thread Jacobi
-    #    Disabled by default (n_iters=0) for pure ORCA scenes where the LP solve
-    #    prevents penetration. Enabled (n_iters=2) for SFM/CSM/HybridFSM paths.
+    # 8. Agent body non-penetration correction (adaptive Jacobi; Sprint 3T-GPU-fix)
+    #    CPU path: adaptive — stops early when max_overlap ≤ tol (from SimConfig).
+    #    GPU path: handled inside update_csm_system!/update_hybrid_fsm_system! (fixed cap).
     if n_iters > 0
-        apply_agent_correction_cpu!(scene.world, scene.search, F; n_iters=n_iters)
+        apply_agent_correction_cpu!(scene.world, scene.search, F;
+                                    n_iters=n_iters,
+                                    tol=scene.config.agent_correction_tol)
     end
 
     return scene
