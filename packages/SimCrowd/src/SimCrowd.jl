@@ -26,6 +26,10 @@ export ContactModel, NoContact, Coulomb, Viscous
 export ForceModel, SFMModel, ORCAModel, HybridModel, AgentModel
 # §2.3 Shared GPU infrastructure (Sprint 3Q-arch)
 export BaseGPUContext, stage_and_sort_base!
+# Sprint 3R: CSM GPU context
+export CSMGPUContext, compute_csm_kernel!
+# Sprint 3S: Hybrid FSM GPU context
+export HybridFSMGPUContext, compute_density_mode_kernel!, compute_hybrid_sfm_kernel!
 # §2.4 SimConfig + SimScene
 export SimConfig, SimScene, step!, run!
 

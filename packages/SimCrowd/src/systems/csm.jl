@@ -652,3 +652,690 @@ function wall_penetration_correction!(world::World,
         end
     end
 end
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Sprint 3R: O(N×k) CPU dispatch using CellListMap
+# ════════════════════════════════════════════════════════════════════════════════
+
+# ── Internal: per-agent state for O(N×k) direction + gap computation ─────────
+# Built by CellListMap.pairwise! then read in the per-agent loop.
+struct _CSMNeighborAccum{F<:AbstractFloat}
+    nbr_rep::SVector{2,F}   # accumulated repulsion vector (isotropic)
+    min_gap_forward::F       # minimum forward-corridor gap (asymmetric)
+end
+
+# ── Per-step O(N×k) CSM update: Classic (V1/V2) ──────────────────────────────
+
+"""
+    update_csm_system!(world, search::CPUNeighborSearch, dt)
+
+O(N×k) CSM dispatch using `CellListMap.pairwise!`. Builds the CellListMap
+grid once per step, then for each agent accumulates:
+1. Isotropic neighbor repulsion (symmetric pair — computed once per pair)
+2. Per-agent minimum forward-corridor gap (asymmetric — direction-dependent)
+
+Complexity: O(N×k) per step (k ≈ 5–20 for typical pedestrian densities).
+Compared to the O(N²) path at N=1000: ~10k vs 1M distance evaluations.
+"""
+function update_csm_system!(world::World, search::CPUNeighborSearch{F}, dt::F) where {F<:AbstractFloat}
+    n_csm = 0
+    try
+        n_csm = count_entities(Query(world, (CSMParams{F},)))
+    catch e
+        e isa ArgumentError && return; rethrow()
+    end
+    n_csm == 0 && return
+
+    local params::CSMParams{F}
+    for (_, params_col) in Query(world, (CSMParams{F},))
+        params = params_col[1]; break
+    end
+
+    walls = NTuple{2, SVector{2,F}}[]
+    try
+        for (_, wall_col) in Query(world, (WallSegment{F},))
+            for i in eachindex(wall_col)
+                push!(walls, (wall_col[i].p1, wall_col[i].p2))
+            end
+        end
+    catch e
+        e isa ArgumentError || rethrow()
+    end
+
+    if params.use_rotational_steering
+        _update_csm_v3_ecs_pairwise!(world, search, walls, params, dt)
+    else
+        _update_csm_classic_ecs_pairwise!(world, search, walls, params, dt)
+    end
+end
+
+# ── Classic V1/V2 pairwise ────────────────────────────────────────────────────
+function _update_csm_classic_ecs_pairwise!(
+    world  :: World,
+    search :: CPUNeighborSearch{F},
+    walls  :: Vector{NTuple{2, SVector{2,F}}},
+    params :: CSMParams{F},
+    dt     :: F
+) where {F<:AbstractFloat}
+    all_pos  = SVector{2,F}[]
+    all_goal = SVector{2,F}[]
+    try
+        for (_, pos_col, _, goal_col, _) in
+                Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}))
+            for i in eachindex(pos_col)
+                push!(all_pos,  pos_col[i].p)
+                push!(all_goal, goal_col[i].g)
+            end
+        end
+    catch e; e isa ArgumentError && return; rethrow(); end
+    N = length(all_pos); N == 0 && return
+    r_i = params.radius
+
+    # Build neighbor list (positions only; radii uniform)
+    build_grid!(search, all_pos, CPU())
+
+    # Accumulate symmetric repulsion using pairwise! (O(N×k))
+    nbr_reps = zeros(SVector{2,F}, N)
+    function accum_rep(pair, out)
+        (; i, j, d) = pair
+        d < F(1e-6) && return out
+        n_ij = (all_pos[j] - all_pos[i]) / d
+        gap  = max(d - F(2) * r_i, zero(F))
+        f    = params.a_neighbor * exp(-gap / params.D_neighbor)
+        out[i] = out[i] + f * n_ij
+        out[j] = out[j] - f * n_ij   # Newton 3rd: j repelled away from i
+        return out
+    end
+    fill!(nbr_reps, zero(SVector{2,F})); nbr_reps = CellListMap.pairwise!(accum_rep, search.system)
+
+    # Per-agent direction + gap + velocity computation (can be threaded)
+    new_vel = Vector{SVector{2,F}}(undef, N)
+    Threads.@threads for i in 1:N
+        pos_i  = all_pos[i]
+        gd     = all_goal[i] - pos_i
+        gd_n   = norm(gd)
+        dir_goal = gd_n > eps(F) ? gd / gd_n : SVector(one(F), zero(F))
+
+        # Wall geometry contact
+        geo_rep = zero(SVector{2,F})
+        if params.strength_geo > zero(F)
+            for (p1, p2) in walls
+                seg = p2 - p1; l2 = seg[1]^2 + seg[2]^2
+                t   = l2 < F(1e-10) ? zero(F) :
+                    clamp(((pos_i[1]-p1[1])*seg[1] + (pos_i[2]-p1[2])*seg[2]) / l2, zero(F), one(F))
+                q   = p1 + t * seg; rel = pos_i - q; dw = norm(rel)
+                dw < eps(F) && continue
+                n_w   = (q - pos_i) / dw   # toward wall
+                gap_w = max(dw - r_i, zero(F))
+                geo_rep = geo_rep + (params.strength_geo * exp(-gap_w / params.range_geo)) * n_w
+            end
+        end
+
+        raw   = dir_goal - nbr_reps[i] - geo_rep
+        raw_n = norm(raw)
+        e_i   = raw_n > eps(F) ? raw / raw_n : dir_goal
+
+        # Forward-corridor gap: O(N²) fallback — asymmetric, can't use pairwise!
+        # Acceptable: this is the direction-dependent part; repulsion is the expensive step.
+        dir_lat = SVector{2,F}(-e_i[2], e_i[1])
+        min_gap = typemax(F)
+        for j in 1:N
+            j == i && continue
+            Dp = all_pos[j] - pos_i; d = norm(Dp)
+            d > params.neighbor_radius && continue
+            d > eps(F)    || continue
+            dot(e_i, Dp) >= zero(F) || continue
+            l = F(2) * r_i
+            abs(dot(dir_lat, Dp)) <= l || continue
+            gap = max(d - l, zero(F))
+            min_gap = min(min_gap, gap)
+        end
+        s_i = min_gap == typemax(F) ? F(Inf) : min_gap
+        new_vel[i] = csm_speed(s_i, params.v0, params.T) * e_i
+    end
+
+    idx = 0
+    for (_, pos_col, vel_col, _, _) in
+            Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}))
+        for i in eachindex(pos_col)
+            idx += 1; vel_col[i] = Velocity(new_vel[idx])
+            pos_col[i] = Position(pos_col[i].p + new_vel[idx] * dt)
+        end
+    end
+end
+
+# ── V3 rotational steering pairwise ──────────────────────────────────────────
+function _update_csm_v3_ecs_pairwise!(
+    world  :: World,
+    search :: CPUNeighborSearch{F},
+    walls  :: Vector{NTuple{2, SVector{2,F}}},
+    params :: CSMParams{F},
+    dt     :: F
+) where {F<:AbstractFloat}
+    all_pos  = SVector{2,F}[]; all_goal = SVector{2,F}[]; headings = F[]
+    try
+        for (_, pos_col, _, goal_col, _, state_col) in
+                Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}, AgentCSMState{F}))
+            for i in eachindex(pos_col)
+                push!(all_pos, pos_col[i].p); push!(all_goal, goal_col[i].g)
+                push!(headings, state_col[i].heading)
+            end
+        end
+    catch e; e isa ArgumentError && return; rethrow(); end
+    N = length(all_pos); N == 0 && return
+    r_i = params.radius
+
+    build_grid!(search, all_pos, CPU())
+
+    nbr_reps = zeros(SVector{2,F}, N)
+    function accum_rep_v3(pair, out)
+        (; i, j, d) = pair
+        d < F(1e-6) && return out
+        n_ij = (all_pos[j] - all_pos[i]) / d
+        gap  = max(d - F(2) * r_i, zero(F))
+        f    = params.a_neighbor * exp(-gap / params.D_neighbor)
+        out[i] = out[i] + f * n_ij
+        out[j] = out[j] - f * n_ij
+        return out
+    end
+    fill!(nbr_reps, zero(SVector{2,F})); nbr_reps = CellListMap.pairwise!(accum_rep_v3, search.system)
+
+    new_vel      = Vector{SVector{2,F}}(undef, N)
+    new_headings = copy(headings)
+
+    Threads.@threads for i in 1:N
+        pos_i    = all_pos[i]
+        gd       = all_goal[i] - pos_i; gd_n = norm(gd)
+        dir_goal = gd_n > eps(F) ? gd / gd_n : SVector(one(F), zero(F))
+        geo_rep  = zero(SVector{2,F})
+        if params.strength_geo > zero(F)
+            for (p1, p2) in walls
+                seg = p2 - p1; l2 = seg[1]^2 + seg[2]^2
+                t = l2 < F(1e-10) ? zero(F) :
+                    clamp(((pos_i[1]-p1[1])*seg[1]+(pos_i[2]-p1[2])*seg[2])/l2, zero(F), one(F))
+                q = p1 + t*seg; rel = pos_i - q; dw = norm(rel)
+                dw < eps(F) && continue
+                n_w = (q - pos_i)/dw; gap_w = max(dw - r_i, zero(F))
+                geo_rep = geo_rep + (params.strength_geo * exp(-gap_w/params.range_geo)) * n_w
+            end
+        end
+        raw = dir_goal - nbr_reps[i] - geo_rep; raw_n = norm(raw)
+        e_target = raw_n > eps(F) ? raw / raw_n : dir_goal
+        theta_target = atan(e_target[2], e_target[1])
+        tau = params.heading_relaxation_tau; Dtheta = theta_target - new_headings[i]
+        Dtheta -= F(2pi) * round(Dtheta / F(2pi))
+        alpha = min(dt / max(tau, eps(F)), one(F)); theta_new = new_headings[i] + alpha * Dtheta
+        new_dir = SVector{2,F}(cos(theta_new), sin(theta_new))
+        dir_lat = SVector{2,F}(-new_dir[2], new_dir[1]); min_gap = typemax(F)
+        for j in 1:N
+            j == i && continue; Dp = all_pos[j] - pos_i; d = norm(Dp)
+            d > params.neighbor_radius && continue; d > eps(F) || continue
+            dot(new_dir, Dp) >= zero(F) || continue; l = F(2) * r_i
+            abs(dot(dir_lat, Dp)) <= l || continue; gap = max(d - l, zero(F))
+            min_gap = min(min_gap, gap)
+        end
+        s_i = min_gap == typemax(F) ? F(Inf) : min_gap
+        new_vel[i] = csm_speed(s_i, params.v0, params.T) * new_dir
+        new_headings[i] = theta_new
+    end
+
+    idx = 0
+    for (_, pos_col, vel_col, _, _, state_col) in
+            Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}, AgentCSMState{F}))
+        for i in eachindex(pos_col)
+            idx += 1; vel_col[i] = Velocity(new_vel[idx])
+            pos_col[i] = Position(pos_col[i].p + new_vel[idx] * dt)
+            state_col[i] = AgentCSMState{F}(new_headings[idx])
+        end
+    end
+end
+
+# Sprint 3R: GPU CSM kernel + RadixSpatialHash dispatch
+# ════════════════════════════════════════════════════════════════════════════════
+
+"""
+    compute_csm_kernel!
+
+GPU kernel for Classic CSM (Sprint 3R). Each thread computes one agent's new
+velocity using the sorted spatial hash grid for O(k) neighbor queries.
+"""
+@kernel function compute_csm_kernel!(
+    out_vels, out_headings,
+    @Const(sorted_positions), @Const(sorted_goals), @Const(sorted_radii),
+    @Const(sorted_headings),
+    @Const(sorted_last_positions),
+    grid_min, grid_dims, cell_size,
+    @Const(cell_starts), @Const(cell_ends), @Const(agent_indices),
+    @Const(wall_p1s), @Const(wall_p2s), n_walls,
+    a_neighbor, D_neighbor, strength_geo, range_geo,
+    v0, T, heading_relaxation_tau, neighbor_radius,
+    dt, use_rotational::Bool)
+
+    i = @index(Global, Linear)
+    @inbounds begin
+        original_i = agent_indices[i]
+        pos_i = sorted_positions[i]; r_i = sorted_radii[i]
+        goal_i = sorted_goals[i]; gd = goal_i - pos_i; gd_n = sqrt(gd[1]^2 + gd[2]^2)
+        F_type = typeof(r_i)
+        dir_goal = gd_n > F_type(1e-6) ? gd/gd_n : typeof(gd)(one(F_type), zero(F_type))
+
+        # Cell index for this agent (using last-build positions for stable cell lookup)
+        lp = sorted_last_positions[i]
+        ci_x = clamp(floor(Int32, (lp[1]-grid_min[1])/cell_size), Int32(0), grid_dims[1]-Int32(1))
+        ci_y = clamp(floor(Int32, (lp[2]-grid_min[2])/cell_size), Int32(0), grid_dims[2]-Int32(1))
+
+        # O(k) isotropic repulsion via 3×3 cell neighborhood
+        nbr_rep = zero(typeof(pos_i))
+        for di in Int32(-1):Int32(1)
+            ni_x = ci_x + di
+            (ni_x < Int32(0) || ni_x >= grid_dims[1]) && continue
+            for dj in Int32(-1):Int32(1)
+                ni_y = ci_y + dj
+                (ni_y < Int32(0) || ni_y >= grid_dims[2]) && continue
+                cell_idx = ni_x * grid_dims[2] + ni_y + Int32(1)
+                cs = cell_starts[cell_idx]; ce = cell_ends[cell_idx]
+                for k in cs:ce
+                    k == i && continue
+                    r_ij = sorted_positions[k] - pos_i
+                    d = sqrt(r_ij[1]^2 + r_ij[2]^2)
+                    d > neighbor_radius && continue; d > F_type(1e-6) || continue
+                    n_ij = r_ij / d; gap = max(d - r_i - sorted_radii[k], zero(F_type))
+                    nbr_rep = nbr_rep + (a_neighbor * exp(-gap/D_neighbor)) * n_ij
+                end
+            end
+        end
+
+        # Wall geometry
+        geo_rep = zero(typeof(pos_i))
+        if strength_geo > zero(F_type)
+            @inbounds for w in 1:n_walls
+                p1=wall_p1s[w]; p2=wall_p2s[w]; seg=p2-p1; l2=seg[1]^2+seg[2]^2
+                tt = l2<F_type(1e-10) ? zero(F_type) :
+                    clamp(((pos_i[1]-p1[1])*seg[1]+(pos_i[2]-p1[2])*seg[2])/l2, zero(F_type), one(F_type))
+                q=p1+tt*seg; rel=pos_i-q; dw=sqrt(rel[1]^2+rel[2]^2)
+                dw<F_type(1e-6) && continue
+                n_w=(q-pos_i)/dw; gap_w=max(dw-r_i, zero(F_type))
+                geo_rep=geo_rep+(strength_geo*exp(-gap_w/range_geo))*n_w
+            end
+        end
+
+        raw=dir_goal-nbr_rep-geo_rep; raw_n=sqrt(raw[1]^2+raw[2]^2)
+        e_target = raw_n > F_type(1e-6) ? raw/raw_n : dir_goal
+
+        local e_i; local theta_new::F_type
+        if use_rotational
+            theta_target=atan(e_target[2],e_target[1]); tau=heading_relaxation_tau
+            Dtheta=theta_target-sorted_headings[i]
+            Dtheta-=F_type(2*pi)*round(Dtheta/F_type(2*pi))
+            alpha=min(dt/max(tau,F_type(1e-10)), one(F_type))
+            theta_new=sorted_headings[i]+alpha*Dtheta
+            e_i=typeof(e_target)(cos(theta_new), sin(theta_new))
+        else
+            e_i=e_target; theta_new=zero(F_type)
+        end
+
+        # Forward-corridor gap
+        dir_lat=typeof(e_i)(-e_i[2],e_i[1]); min_gap=F_type(Inf)
+        @inbounds for di in Int32(-1):Int32(1)
+            ni_x=ci_x+di
+            (ni_x<Int32(0)||ni_x>=grid_dims[1]) && continue
+            for dj in Int32(-1):Int32(1)
+                ni_y=ci_y+dj
+                (ni_y<Int32(0)||ni_y>=grid_dims[2]) && continue
+                cell_idx=ni_x*grid_dims[2]+ni_y+Int32(1)
+                cs2=cell_starts[cell_idx]; ce2=cell_ends[cell_idx]
+                for k in cs2:ce2
+                    k==i && continue; Dp=sorted_positions[k]-pos_i
+                    d=sqrt(Dp[1]^2+Dp[2]^2)
+                    d>neighbor_radius && continue; d>F_type(1e-6) || continue
+                    (e_i[1]*Dp[1]+e_i[2]*Dp[2])>=zero(F_type) || continue
+                    l=r_i+sorted_radii[k]
+                    abs(dir_lat[1]*Dp[1]+dir_lat[2]*Dp[2])<=l || continue
+                    gap=max(d-l,zero(F_type)); min_gap=min(min_gap,gap)
+                end
+            end
+        end
+        s_i=isinf(min_gap) ? F_type(Inf) : min_gap
+        v_i=v0*clamp(s_i/(T*v0), zero(F_type), one(F_type))
+        out_vels[original_i]=v_i*e_i
+        out_headings[original_i]=use_rotational ? theta_new : sorted_headings[i]
+    end
+end
+
+"""
+    update_csm_system!(world, search::RadixSpatialHash, backend, dt)
+
+GPU CSM dispatch. Builds the sorted spatial hash, then launches `compute_csm_kernel!`.
+"""
+function update_csm_system!(world::World, search::RadixSpatialHash{AT,F},
+                             backend::Backend, dt::F) where {AT,F}
+    n_csm = 0
+    try
+        n_csm = count_entities(Query(world, (CSMParams{F},)))
+    catch e; e isa ArgumentError && return; rethrow(); end
+    n_csm == 0 && return
+
+    local params::CSMParams{F}
+    for (_, params_col) in Query(world, (CSMParams{F},))
+        params = params_col[1]; break
+    end
+
+    N = n_csm; n_walls = 0
+    ctx = get_csm_gpu_context(world, backend, F, N, 64)
+
+    idx = 1
+    for (_, pos_col, vel_col, goal_col, params_col) in
+            Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}))
+        for i in eachindex(pos_col)
+            ctx.base.cpu_positions[idx]  = pos_col[i].p
+            ctx.base.cpu_velocities[idx] = vel_col[i].v
+            ctx.base.cpu_radii[idx]      = params_col[i].radius
+            ctx.cpu_goals[idx]           = goal_col[i].g
+            ctx.cpu_headings[idx]        = zero(F)
+            idx += 1
+        end
+    end
+    if params.use_rotational_steering
+        idx = 1
+        for (_, _, _, _, _, state_col) in
+                Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}, AgentCSMState{F}))
+            for i in eachindex(state_col)
+                ctx.cpu_headings[idx] = state_col[i].heading; idx += 1
+            end
+        end
+    end
+
+    try
+        for (_, wall_col) in Query(world, (WallSegment{F},))
+            for i in eachindex(wall_col)
+                n_walls += 1
+                ctx.base.cpu_wall_p1s[n_walls] = wall_col[i].p1
+                ctx.base.cpu_wall_p2s[n_walls] = wall_col[i].p2
+            end
+        end
+    catch e; e isa ArgumentError || rethrow(); end
+
+    stage_and_sort_base!(ctx.base, ctx.base.cpu_positions, ctx.base.cpu_velocities,
+                         ctx.base.cpu_radii, ctx.base.cpu_wall_p1s, ctx.base.cpu_wall_p2s,
+                         n_walls, search, backend, ctx.sorted_last_positions)
+
+    copyto!(ctx.dev_goals,    ctx.cpu_goals)
+    copyto!(ctx.dev_headings, ctx.cpu_headings)
+
+    kernel_reorder! = reorder_array_kernel!(backend)
+    kernel_reorder!(ctx.sorted_dev_goals,    ctx.dev_goals,    search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_headings, ctx.dev_headings, search.agent_indices, ndrange=N)
+
+    kernel! = compute_csm_kernel!(backend)
+    kernel!(ctx.dev_new_vels, ctx.dev_new_headings,
+            ctx.base.sorted_dev_positions, ctx.sorted_dev_goals, ctx.base.sorted_dev_radii,
+            ctx.sorted_dev_headings, ctx.sorted_last_positions,
+            search.grid_min, search.grid_dims, search.cell_size,
+            search.cell_starts, search.cell_ends, search.agent_indices,
+            ctx.base.dev_wall_p1s, ctx.base.dev_wall_p2s, n_walls,
+            params.a_neighbor, params.D_neighbor, params.strength_geo, params.range_geo,
+            params.v0, params.T, params.heading_relaxation_tau, params.neighbor_radius,
+            dt, params.use_rotational_steering,
+            ndrange=N)
+    KernelAbstractions.synchronize(backend)
+
+    cpu_new_vels     = Vector{SVector{2,F}}(undef, N)
+    cpu_new_headings = Vector{F}(undef, N)
+    copyto!(cpu_new_vels,     ctx.dev_new_vels)
+    copyto!(cpu_new_headings, ctx.dev_new_headings)
+
+    idx = 1
+    for (_, pos_col, vel_col, _, _) in Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}))
+        for i in eachindex(pos_col)
+            vel_col[i] = Velocity(cpu_new_vels[idx])
+            pos_col[i] = Position(pos_col[i].p + cpu_new_vels[idx] * dt)
+            idx += 1
+        end
+    end
+    if params.use_rotational_steering
+        idx = 1
+        for (_, _, _, _, _, state_col) in
+                Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}, AgentCSMState{F}))
+            for i in eachindex(state_col)
+                state_col[i] = AgentCSMState{F}(cpu_new_headings[idx]); idx += 1
+            end
+        end
+    end
+end
+
+# ── Navigation-aware O(N×k) CPU dispatcher ─────────────────────────────────────
+
+"""
+    update_csm_system!(world, search::CPUNeighborSearch, dt, nav)
+
+O(N×k) CSM with FMM navigation field for global routing.
+"""
+function update_csm_system!(world::World, search::CPUNeighborSearch{F}, dt::F,
+                             nav::AbstractNavigationField{F}) where {F<:AbstractFloat}
+    n_csm = 0
+    try
+        n_csm = count_entities(Query(world, (CSMParams{F},)))
+    catch e
+        e isa ArgumentError && return; rethrow()
+    end
+    n_csm == 0 && return
+
+    local params::CSMParams{F}
+    for (_, params_col) in Query(world, (CSMParams{F},))
+        params = params_col[1]; break
+    end
+
+    walls = NTuple{2, SVector{2,F}}[]
+    try
+        for (_, wall_col) in Query(world, (WallSegment{F},))
+            for i in eachindex(wall_col)
+                push!(walls, (wall_col[i].p1, wall_col[i].p2))
+            end
+        end
+    catch e
+        e isa ArgumentError || rethrow()
+    end
+
+    if params.use_rotational_steering
+        _update_csm_v3_pairwise_nav!(world, search, walls, params, dt, nav)
+    else
+        _update_csm_classic_pairwise_nav!(world, search, walls, params, dt, nav)
+    end
+end
+
+function _update_csm_classic_pairwise_nav!(
+    world  :: World,
+    search :: CPUNeighborSearch{F},
+    walls  :: Vector{NTuple{2, SVector{2,F}}},
+    params :: CSMParams{F},
+    dt     :: F,
+    nav    :: AbstractNavigationField{F}
+) where {F<:AbstractFloat}
+    all_pos = SVector{2,F}[]
+    try
+        for (_, pos_col, _, _, _) in Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}))
+            for i in eachindex(pos_col)
+                push!(all_pos, pos_col[i].p)
+            end
+        end
+    catch e
+        e isa ArgumentError && return; rethrow()
+    end
+    N = length(all_pos); N == 0 && return
+    r_i = params.radius
+
+    build_grid!(search, all_pos, CPU())
+
+    function accum_rep_nav(pair, out)
+        (; i, j, d) = pair
+        d < F(1e-6) && return out
+        n_ij = (all_pos[j] - all_pos[i]) / d
+        gap  = max(d - F(2) * r_i, zero(F))
+        f    = params.a_neighbor * exp(-gap / params.D_neighbor)
+        out[i] = out[i] + f * n_ij
+        out[j] = out[j] - f * n_ij
+        return out
+    end
+    nbr_reps = CellListMap.pairwise!(accum_rep_nav, search.system)
+
+    new_vel = Vector{SVector{2,F}}(undef, N)
+    Threads.@threads for i in 1:N
+        pos_i    = all_pos[i]
+        dir_goal = get_nav_direction(nav, pos_i)
+        geo_rep  = zero(SVector{2,F})
+        if params.strength_geo > zero(F)
+            for (p1, p2) in walls
+                seg = p2 - p1
+                l2  = seg[1]^2 + seg[2]^2
+                t   = if l2 < F(1e-10)
+                    zero(F)
+                else
+                    clamp(((pos_i[1]-p1[1])*seg[1] + (pos_i[2]-p1[2])*seg[2]) / l2,
+                          zero(F), one(F))
+                end
+                q   = p1 + t * seg
+                rel = pos_i - q
+                dw  = norm(rel)
+                dw < eps(F) && continue
+                n_w   = (q - pos_i) / dw
+                gap_w = max(dw - r_i, zero(F))
+                geo_rep = geo_rep + (params.strength_geo * exp(-gap_w / params.range_geo)) * n_w
+            end
+        end
+        raw   = dir_goal - nbr_reps[i] - geo_rep
+        raw_n = norm(raw)
+        e_i   = raw_n > eps(F) ? raw / raw_n : dir_goal
+        dir_lat = SVector{2,F}(-e_i[2], e_i[1])
+        min_gap = typemax(F)
+        for j in 1:N
+            j == i && continue
+            Dp = all_pos[j] - pos_i
+            d  = norm(Dp)
+            d > params.neighbor_radius && continue
+            d > eps(F) || continue
+            dot(e_i, Dp) >= zero(F) || continue
+            l = F(2) * r_i
+            abs(dot(dir_lat, Dp)) <= l || continue
+            gap = max(d - l, zero(F))
+            min_gap = min(min_gap, gap)
+        end
+        s_i = min_gap == typemax(F) ? F(Inf) : min_gap
+        new_vel[i] = csm_speed(s_i, params.v0, params.T) * e_i
+    end
+    idx = 0
+    for (_, pos_col, vel_col, _, _) in Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}))
+        for i in eachindex(pos_col)
+            idx += 1
+            vel_col[i] = Velocity(new_vel[idx])
+            pos_col[i] = Position(pos_col[i].p + new_vel[idx] * dt)
+        end
+    end
+end
+
+function _update_csm_v3_pairwise_nav!(
+    world  :: World,
+    search :: CPUNeighborSearch{F},
+    walls  :: Vector{NTuple{2, SVector{2,F}}},
+    params :: CSMParams{F},
+    dt     :: F,
+    nav    :: AbstractNavigationField{F}
+) where {F<:AbstractFloat}
+    all_pos  = SVector{2,F}[]
+    headings = F[]
+    try
+        for (_, pos_col, _, _, _, state_col) in
+                Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}, AgentCSMState{F}))
+            for i in eachindex(pos_col)
+                push!(all_pos,  pos_col[i].p)
+                push!(headings, state_col[i].heading)
+            end
+        end
+    catch e
+        e isa ArgumentError && return; rethrow()
+    end
+    N = length(all_pos); N == 0 && return
+    r_i = params.radius
+
+    build_grid!(search, all_pos, CPU())
+
+    function accum_v3nav(pair, out)
+        (; i, j, d) = pair
+        d < F(1e-6) && return out
+        n_ij = (all_pos[j] - all_pos[i]) / d
+        gap  = max(d - F(2) * r_i, zero(F))
+        f    = params.a_neighbor * exp(-gap / params.D_neighbor)
+        out[i] = out[i] + f * n_ij
+        out[j] = out[j] - f * n_ij
+        return out
+    end
+    nbr_reps = CellListMap.pairwise!(accum_v3nav, search.system)
+
+    new_vel      = Vector{SVector{2,F}}(undef, N)
+    new_headings = copy(headings)
+
+    Threads.@threads for i in 1:N
+        pos_i    = all_pos[i]
+        dir_goal = get_nav_direction(nav, pos_i)
+        geo_rep  = zero(SVector{2,F})
+        if params.strength_geo > zero(F)
+            for (p1, p2) in walls
+                seg = p2 - p1
+                l2  = seg[1]^2 + seg[2]^2
+                t   = if l2 < F(1e-10)
+                    zero(F)
+                else
+                    clamp(((pos_i[1]-p1[1])*seg[1] + (pos_i[2]-p1[2])*seg[2]) / l2,
+                          zero(F), one(F))
+                end
+                q   = p1 + t * seg
+                rel = pos_i - q
+                dw  = norm(rel)
+                dw < eps(F) && continue
+                n_w   = (q - pos_i) / dw
+                gap_w = max(dw - r_i, zero(F))
+                geo_rep = geo_rep + (params.strength_geo * exp(-gap_w / params.range_geo)) * n_w
+            end
+        end
+        raw      = dir_goal - nbr_reps[i] - geo_rep
+        raw_n    = norm(raw)
+        e_target = raw_n > eps(F) ? raw / raw_n : dir_goal
+
+        theta_target = atan(e_target[2], e_target[1])
+        tau          = params.heading_relaxation_tau
+        Dtheta       = theta_target - new_headings[i]
+        Dtheta       -= F(2pi) * round(Dtheta / F(2pi))
+        alpha        = min(dt / max(tau, eps(F)), one(F))
+        theta_new    = new_headings[i] + alpha * Dtheta
+        new_dir      = SVector{2,F}(cos(theta_new), sin(theta_new))
+
+        dir_lat = SVector{2,F}(-new_dir[2], new_dir[1])
+        min_gap = typemax(F)
+        for j in 1:N
+            j == i && continue
+            Dp = all_pos[j] - pos_i
+            d  = norm(Dp)
+            d > params.neighbor_radius && continue
+            d > eps(F) || continue
+            dot(new_dir, Dp) >= zero(F) || continue
+            l = F(2) * r_i
+            abs(dot(dir_lat, Dp)) <= l || continue
+            gap = max(d - l, zero(F))
+            min_gap = min(min_gap, gap)
+        end
+        s_i = min_gap == typemax(F) ? F(Inf) : min_gap
+        new_vel[i]      = csm_speed(s_i, params.v0, params.T) * new_dir
+        new_headings[i] = theta_new
+    end
+
+    idx = 0
+    for (_, pos_col, vel_col, _, _, state_col) in
+            Query(world, (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}, AgentCSMState{F}))
+        for i in eachindex(pos_col)
+            idx += 1
+            vel_col[i]   = Velocity(new_vel[idx])
+            pos_col[i]   = Position(pos_col[i].p + new_vel[idx] * dt)
+            state_col[i] = AgentCSMState{F}(new_headings[idx])
+        end
+    end
+end

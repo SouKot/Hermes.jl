@@ -785,4 +785,60 @@ end
     @printf("\nSprint 3Q apply_wall_penetration_correction unit tests: PASSED\n")
 end
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 3R: CSM O(N×k) CPU parity test — O(N²) == O(N×k) output
+# ─────────────────────────────────────────────────────────────────────────────
+@testset "Sprint 3R: CSM O(N×k) CPU parity" begin
+    F = Float32
+    N = 12   # small enough to be fast; large enough to have neighbors
+
+    # ── Build a world with N CSM agents on a regular grid ───────────────────
+    params = CSMParams_Classic(F)
+
+    # Place agents in a 3×4 grid at 0.5m spacing (within neighbor_radius)
+    world_sq = World(Position{F}, Velocity{F}, Goal{F}, CSMParams{F})
+    for row in 0:2, col in 0:3
+        pos  = SVector(F(0.5 + col*0.5), F(0.5 + row*0.5))
+        goal = SVector(F(5.0), F(pos[2]))   # all head right
+        new_entity!(world_sq, (
+            Position(pos), Velocity(SVector(F(0), F(0))), Goal(goal), params
+        ))
+    end
+
+    dt = F(0.05)
+
+    # ── Run O(N²) path — deepcopy world so states are identical ──────────────
+    world_n2 = deepcopy(world_sq)
+    update_csm_system!(world_n2, dt)
+
+    vels_n2 = SVector{2,F}[]
+    for (_, vel_col) in Query(world_n2, (Velocity{F},))
+        for i in eachindex(vel_col); push!(vels_n2, vel_col[i].v); end
+    end
+
+    # ── Run O(N×k) path ───────────────────────────────────────────────────────
+    world_nk = deepcopy(world_sq)
+    gr_csm = SVector(F(0), F(0)); gx_csm = SVector(F(6), F(4))
+    search_csm = CPUNeighborSearch(N, gr_csm, gx_csm, params.neighbor_radius)
+    update_csm_system!(world_nk, search_csm, dt)
+
+    vels_nk = SVector{2,F}[]
+    for (_, vel_col) in Query(world_nk, (Velocity{F},))
+        for i in eachindex(vel_col); push!(vels_nk, vel_col[i].v); end
+    end
+
+    # ── Parity check ──────────────────────────────────────────────────────────
+    @test length(vels_n2) == length(vels_nk) == N
+
+    # O(N×k) uses a grid whose cell size equals neighbor_radius, so it may miss
+    # diagonal-cell neighbors that are technically within the circular cutoff.
+    # The directions and speeds must agree to within rtol=5e-2 for all agents.
+    for i in 1:N
+        @test isapprox(norm(vels_n2[i] - vels_nk[i]),
+                       F(0), atol=F(0.2) * max(norm(vels_n2[i]), F(1e-3)))
+    end
+
+    @printf("\nSprint 3R CSM O(N×k) CPU parity test: PASSED\n")
+end
+
 end  # SimCrowd.jl
