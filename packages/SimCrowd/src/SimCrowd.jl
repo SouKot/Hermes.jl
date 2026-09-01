@@ -11,12 +11,12 @@ using SimCore
 export Position, Velocity, AgentGeometry, MotionParams, SFMParams, Goal, Force, WallSegment
 export from_agent_params
 export goal_seeking_force, agent_repulsion, wall_repulsion, gcf_force
-export AbstractNeighborSearch, RadixSpatialHash, CPUNeighborSearch, build_grid!, get_neighbors
+export AbstractNeighborSearch, RadixSpatialHash, CPUNeighborSearch, build_grid!, get_neighbors, get_ka_backend
 export AbstractNavigationField, NavigationField, build_navigation_field,
        get_nav_direction, get_desired_direction, to_device
 export update_navigation_system!, update_social_forces_system!, integrate_physics_system!
 export ORCAParams, update_orca_system!, compute_orca_line_wall, compute_orca_line_endpoint
-export HybridFSMParams, AgentFSMState, update_hybrid_fsm_system!, wall_penetration_correction!, ORCA_MODE, SFM_MODE
+export HybridFSMParams, AgentFSMState, update_hybrid_fsm_system!, ORCA_MODE, SFM_MODE
 export CSMParams, AgentCSMState, update_csm_system!
 export CSMParams_Classic, CSMParams_V3, CSMParams_JuPedSim
 export nearest_point_on_segment, nearest_point_on_arc, csm_speed, csm_gap
@@ -528,7 +528,22 @@ System order:
 6. CSM update — `update_csm_system!` (first-order; sets vel+pos directly; σ=0 deterministic)
 7. Wall correction — `apply_wall_correction_cpu!` (unified, model-agnostic; Sprint 3T)
 8. Agent correction — `apply_agent_correction_cpu!` (Jacobi; Sprint 3T)
+   Dispatches on search type: `CPUNeighborSearch` → CellListMap pairwise!;
+   `RadixSpatialHash` → Morton hash `get_neighbors` (lock-free per-thread Jacobi).
    Disabled if `scene.config.agent_correction_iters == 0`.
+
+## Search-type dispatch (Sprint 3T-GPU)
+
+When `scene.search isa RadixSpatialHash`, all model kernels and agent correction
+use the `RadixSpatialHash` overloads. The backend is inferred from the hash's
+array type: `CuArray` → CUDA backend; `Vector` → CPU (KernelAbstractions CPU()
+used for testing without GPU hardware).
+
+Note: GPU physics integration (positions updated on device) is a future sprint.
+Currently, positions are always integrated on CPU (via `integrate_physics_system!`
+for force-based models, or scatter-back for CSM). The `apply_agent_correction_cpu!`
+on RadixSpatialHash runs post-scatter-back on the CPU-side ECS, using the Morton
+hash for O(N×k) neighbour lookup.
 """
 function step!(scene::SimScene{F}) where {F}
     dt  = scene.config.dt
@@ -556,6 +571,15 @@ function step!(scene::SimScene{F}) where {F}
         e isa ArgumentError || rethrow()
     end
 
+    # ── Detect backend from search type ──────────────────────────────────────
+    # RadixSpatialHash encodes backend in its array type parameter (AT).
+    # CuArray → CUDA backend; Vector → KA CPU() backend.
+    # CPUNeighborSearch always uses CellListMap (CPU-only).
+    use_gpu_search = scene.search isa RadixSpatialHash
+    # For RadixSpatialHash, derive the KernelAbstractions backend from the array type.
+    # This avoids storing a separate backend field in SimScene.
+    ka_backend = use_gpu_search ? get_ka_backend(scene.search) : CPU()
+
     # ── Force-based pipeline (SFM / ORCA / Hybrid) ────────────────────────
     if n_force > 0
         # 1. Reset Force components to zero
@@ -572,19 +596,19 @@ function step!(scene::SimScene{F}) where {F}
         local n_sfm::Int = 0
         try; n_sfm = count_entities(Query(scene.world, (SFMParams{F},))); catch; n_sfm = 0; end
         if n_sfm > 0
-            update_social_forces_system!(scene.world, scene.search, CPU())
+            update_social_forces_system!(scene.world, scene.search, ka_backend)
         end
         # 4. ORCA velocity update (only for agents with ORCAParams)
         local n_orca::Int = 0
         try; n_orca = count_entities(Query(scene.world, (ORCAParams{F},))); catch; n_orca = 0; end
         if n_orca > 0
-            update_orca_system!(scene.world, scene.search, CPU(), dt; W=16)
+            update_orca_system!(scene.world, scene.search, ka_backend, dt; W=16)
         end
         # 5. Hybrid FSM dispatch (agents with HybridFSMParams — neither SFMParams nor ORCAParams)
         local n_hybrid::Int = 0
         try; n_hybrid = count_entities(Query(scene.world, (HybridFSMParams{F},))); catch; n_hybrid = 0; end
         if n_hybrid > 0
-            update_hybrid_fsm_system!(scene.world, scene.search, CPU(), dt, scene.nav_field)
+            update_hybrid_fsm_system!(scene.world, scene.search, ka_backend, dt, scene.nav_field)
         end
         # 6. Integrate: velocity + position update with speed clamp from config
         integrate_physics_system!(scene.world, scene.config)
@@ -592,7 +616,11 @@ function step!(scene::SimScene{F}) where {F}
 
     # ── CSM pipeline (first-order; sets vel+pos directly; no Force needed) ────
     if n_csm > 0
-        update_csm_system!(scene.world, dt)
+        if use_gpu_search
+            update_csm_system!(scene.world, scene.search, ka_backend, dt)
+        else
+            update_csm_system!(scene.world, dt)
+        end
     end
 
     # ── Post-step geometric constraint enforcement (Sprint 3T) ────────────────
@@ -606,6 +634,9 @@ function step!(scene::SimScene{F}) where {F}
     apply_wall_correction_cpu!(scene.world, walls_buf, F)
 
     # 8. Agent body non-penetration correction (Jacobi; configurable n_iters)
+    #    Dispatches on search type:
+    #    - CPUNeighborSearch: CellListMap pairwise! with SpinLock accumulators
+    #    - RadixSpatialHash: Morton hash get_neighbors, lock-free per-thread Jacobi
     #    Disabled by default (n_iters=0) for pure ORCA scenes where the LP solve
     #    prevents penetration. Enabled (n_iters=2) for SFM/CSM/HybridFSM paths.
     if n_iters > 0

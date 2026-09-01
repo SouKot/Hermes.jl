@@ -474,53 +474,6 @@ end
     return F_total
 end
 
-"""
-    wall_penetration_correction!(world, walls, dt)
-
-Post-integration geometric correction for Hybrid FSM agents.
-
-The ORCA collision-escape constraint for static walls requires a velocity
-`vx ≤ -(r/dt - d_seg)` when the agent body overlaps a segment (d_seg < r).
-At typical parameters (r=0.2m, dt=0.05s) this demands vx ≤ -3.8 m/s, which
-is outside the LP disc (v_pref=1.4 m/s) → LP3 cannot satisfy it → falls back
-to goal-seeking velocity rightward through the wall.
-
-This function applies the standard RVO2/Menge geometric non-penetration fix
-by delegating each wall-pair check to `apply_wall_penetration_correction`
-(in `orca_math.jl`) — the same helper used by the GPU ORCA kernel.
-
-Scientific basis:
-  - Non-penetration constraint from rigid-body dynamics.
-  - Equivalent to an infinite-stiffness elastic wall at distance r_body.
-  - Used in: Menge (Curtis & Manocha 2016), RVO2 reference (Berg 2011 §4).
-  - Specifically handles the "infeasible collision-escape" regime documented in the
-    Sprint 3P diagnostic (v5 output, 2026-08-31): n_cont=1 at steps immediately
-    before wall crossing in all 5 wall-pass agents.
-
-GPU path: `apply_wall_penetration_correction` is called directly inside
-`compute_orca_kernel!` at the end of each thread (Sprint 3Q).
-"""
-function wall_penetration_correction!(
-    world::World,
-    walls::Vector{NTuple{2, SVector{2,F}}},
-    ::Type{F}
-) where {F<:AbstractFloat}
-    for (_, pos_col, vel_col, geom_col) in
-            Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}, HybridFSMParams{F}))
-        for i in eachindex(pos_col)
-            pos = pos_col[i].p
-            vel = vel_col[i].v
-            r_i = geom_col[i].social_radius  # ORCA uses social_radius as body radius
-
-            for (p1, p2) in walls
-                pos, vel = apply_wall_penetration_correction(pos, vel, r_i, p1, p2)
-            end
-
-            pos_col[i] = Position(pos)
-            vel_col[i] = Velocity(vel)
-        end
-    end
-end
 
 # ════════════════════════════════════════════════════════════════════════════════
 # Sprint 3S: GPU Hybrid FSM kernel + RadixSpatialHash dispatch

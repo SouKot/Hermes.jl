@@ -621,38 +621,6 @@ function _update_csm_v3_ecs_nav!(
     end
 end
 
-# ── Wall penetration correction (CSM) ──────────────────────────────────────────
-
-"""
-    wall_penetration_correction!(world, walls, F, ::Type{CSMParams{F}})
-
-Post-step geometric non-penetration correction for all CSM agents.
-
-After `update_csm_system!`, agent positions may slightly overlap walls due to the
-velocity-based integration. This ECS loop applies `apply_wall_penetration_correction`
-(orca_math.jl) per wall segment — the same shared, GPU-safe helper used by the
-HybridFSM overload in hybrid_fsm.jl.
-"""
-function wall_penetration_correction!(world::World,
-                                       walls::Vector{NTuple{2, SVector{2,F}}},
-                                       ::Type{F},
-                                       ::Type{CSMParams{F}}) where {F<:AbstractFloat}
-    isempty(walls) && return
-    for (_, pos_col, vel_col, params_col) in
-            Query(world, (Position{F}, Velocity{F}, CSMParams{F}))
-        for i in eachindex(pos_col)
-            pos = pos_col[i].p
-            vel = vel_col[i].v
-            r_i = params_col[i].radius
-            for (p1, p2) in walls
-                pos, vel = apply_wall_penetration_correction(pos, vel, r_i, p1, p2)
-            end
-            pos_col[i] = Position(pos)
-            vel_col[i] = Velocity(vel)
-        end
-    end
-end
-
 
 # ════════════════════════════════════════════════════════════════════════════════
 # Sprint 3R: O(N×k) CPU dispatch using CellListMap

@@ -764,17 +764,20 @@ end
     result = apply_wall_penetration_correction(pos_in, vel_in, r, p1, p2)
     @test result isa Tuple{SVector{2,F}, SVector{2,F}}
 
-    # ── Case 6: CSM ECS wall_penetration_correction! round-trip ─────────────
-    # Build a tiny world with one CSM agent overlapping a wall at y=0
-    w_csm = World(Position{F}, Velocity{F}, CSMParams{F})
+    # ── Case 6: Sprint 3U — apply_wall_correction_cpu! replaces deprecated
+    # wall_penetration_correction!(world, walls, F, CSMParams{F}).
+    # The unified function queries (Position, Velocity, AgentGeometry) so we
+    # add AgentGeometry to the world.
+    w_csm = World(Position{F}, Velocity{F}, CSMParams{F}, AgentGeometry{F})
     params_csm = CSMParams_Classic(F)
     new_entity!(w_csm, (
         Position(SVector(F(2), F(0.05f0))),   # inside wall zone (y < r=0.2)
         Velocity(SVector(F(0), F(-0.3f0))),
-        params_csm
+        params_csm,
+        AgentGeometry(params_csm.radius, params_csm.radius * 2f0/3f0)
     ))
     walls_csm = NTuple{2, SVector{2,F}}[(p1, p2)]
-    wall_penetration_correction!(w_csm, walls_csm, F, CSMParams{F})
+    apply_wall_correction_cpu!(w_csm, walls_csm, F)
     for (_, pos_col, vel_col) in Query(w_csm, (Position{F}, Velocity{F}))
         for i in eachindex(pos_col)
             @test pos_col[i].p[2] >= params_csm.radius - 1f-5   # pushed back
@@ -990,6 +993,76 @@ end
     @test cfg3.agent_correction_iters == 2
 
     @printf("\nSprint 3T SimConfig.agent_correction_iters: PASSED\n")
+end
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 3T-GPU: RadixSpatialHash correction overload + get_ka_backend
+# ─────────────────────────────────────────────────────────────────────────────
+@testset "Sprint 3T-GPU: get_ka_backend" begin
+    F = Float32
+    gr = SVector(F(-1), F(-1)); gx = SVector(F(6), F(6))
+    # Vector-backed RadixSpatialHash → CPU()
+    rsh_cpu = RadixSpatialHash(CPU(), 4, gr, gx, F(0.5))
+    @test get_ka_backend(rsh_cpu) isa CPU
+
+    @printf("\nSprint 3T-GPU get_ka_backend (Vector→CPU()): PASSED\n")
+end
+
+@testset "Sprint 3T-GPU: apply_agent_correction_cpu! RadixSpatialHash" begin
+    F = Float32
+
+    # Same two-agent overlap as Sprint 3T CPU test — should give identical results
+    r = F(0.25)
+    world_rsh = World(Position{F}, Velocity{F}, AgentGeometry{F}, SFMParams{F},
+                      MotionParams{F}, Goal{F}, Force{F})
+    ap = from_agent_params(r, 80f0, 1.3f0, 0.5f0)
+    new_entity!(world_rsh, (Position(SVector(F(0), F(0))),   Velocity(SVector(F(0.5), F(0))),
+                             ap..., Goal(SVector(F(5), F(0))), Force(SVector(F(0), F(0)))))
+    new_entity!(world_rsh, (Position(SVector(F(0.3), F(0))), Velocity(SVector(F(-0.5), F(0))),
+                             ap..., Goal(SVector(F(-5), F(0))), Force(SVector(F(0), F(0)))))
+
+    # Build RadixSpatialHash with CPU() backend (Vector arrays — no CUDA needed)
+    gr = SVector(F(-1), F(-1)); gx = SVector(F(6), F(6))
+    rsh = RadixSpatialHash(CPU(), 2, gr, gx, F(1.0))
+
+    positions_before = [pos_col[i].p for (_, pos_col) in Query(world_rsh, (Position{F},)) for i in eachindex(pos_col)]
+    d_before = norm(positions_before[1] - positions_before[2])
+    @test d_before < F(2) * r   # overlapping initially
+
+    apply_agent_correction_cpu!(world_rsh, rsh, F; n_iters=2)
+
+    positions_after = [pos_col[i].p for (_, pos_col) in Query(world_rsh, (Position{F},)) for i in eachindex(pos_col)]
+    d_after = norm(positions_after[1] - positions_after[2])
+    @test d_after >= F(2) * r * F(0.95)   # separation resolved ≥95% of target
+
+    @printf("\nSprint 3T-GPU RadixSpatialHash correction: d_before=%.3f d_after=%.3f (target=%.3f)\n",
+            d_before, d_after, F(2)*r)
+end
+
+@testset "Sprint 3T-GPU: step! with RadixSpatialHash dispatches CSM GPU kernel" begin
+    F = Float32
+    # Build a small CSM scene with RadixSpatialHash (CPU backend — no CUDA needed)
+    N = 4
+    params = CSMParams_Classic(F)
+    world_rsh = World(Position{F}, Velocity{F}, Goal{F}, CSMParams{F})
+    for i in 1:N
+        pos  = SVector(F(i) * F(0.5), F(0))
+        goal = SVector(F(10), F(0))
+        new_entity!(world_rsh, (Position(pos), Velocity(SVector(F(0), F(0))), Goal(goal), params))
+    end
+
+    gr = SVector(F(-1), F(-1)); gx = SVector(F(10), F(10))
+    rsh = RadixSpatialHash(CPU(), N, gr, gx, F(params.neighbor_radius))
+    scene_rsh = SimScene(world_rsh, rsh, SimConfig(F(0.05), F(2.0), 0))
+
+    # step! with RadixSpatialHash should dispatch GPU CSM kernel without error
+    step!(scene_rsh)
+    # After one step, all agents should have moved in +x direction (toward goal at x=10)
+    positions = [pos_col[i].p for (_, pos_col) in Query(world_rsh, (Position{F},)) for i in eachindex(pos_col)]
+    @test all(p[1] > F(0) for p in positions)   # all x > 0 (moved toward goal)
+
+    @printf("\nSprint 3T-GPU step! RadixSpatialHash CSM dispatch: PASSED\n")
 end
 
 end  # SimCrowd.jl

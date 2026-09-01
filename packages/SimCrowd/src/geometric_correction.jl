@@ -209,6 +209,91 @@ function apply_agent_correction_cpu!(
     end
 end
 
+"""
+    apply_agent_correction_cpu!(world, search::RadixSpatialHash, ::Type{F}; n_iters=2)
+
+Jacobi agent non-penetration correction using the `RadixSpatialHash` grid.
+O(N×k) per iteration via `get_neighbors` (Morton-coded 3×3 cell neighbourhood).
+
+Used by `step!` when `scene.search isa RadixSpatialHash` (i.e., GPU model path
+where scatter-back has already written corrected positions to ECS before this call).
+
+## Jacobi pattern
+
+Thread-per-agent (Threads.@threads for i in 1:N): each thread accumulates Δpos[i]
+and Δvel[i] only for agent i — read-only snapshot of neighbours, write to own slot.
+No atomics, no SpinLocks. Identical to the GPU `agent_correction_kernel!` pattern.
+
+After accumulation, `build_grid!` is called with `CPU()` (KA CPU backend) to rebuild
+the Morton hash for the next iteration.
+"""
+function apply_agent_correction_cpu!(
+    world  :: World,
+    search :: RadixSpatialHash,
+    ::Type{F};
+    n_iters :: Int = 2
+) where {F<:AbstractFloat}
+    n_iters == 0 && return
+
+    # ── Collect positions, velocities, radii from ECS ─────────────────────────
+    pos_arr  = SVector{2,F}[]
+    vel_arr  = SVector{2,F}[]
+    rad_arr  = F[]
+
+    for (_, pos_col, vel_col, geo_col) in Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}))
+        for i in eachindex(pos_col)
+            push!(pos_arr, pos_col[i].p)
+            push!(vel_arr, vel_col[i].v)
+            push!(rad_arr, geo_col[i].social_radius)
+        end
+    end
+
+    N = length(pos_arr)
+    N == 0 && return
+
+    acc_pos = Vector{SVector{2,F}}(undef, N)
+    acc_vel = Vector{SVector{2,F}}(undef, N)
+
+    for _ in 1:n_iters
+        # Rebuild hash with current positions (O(N) Morton sort + CSR)
+        build_grid!(search, pos_arr, CPU())
+
+        fill!(acc_pos, zero(SVector{2,F}))
+        fill!(acc_vel, zero(SVector{2,F}))
+
+        # ── Jacobi compute: thread-per-agent, write-to-own-slot only ──────────
+        Threads.@threads for i in 1:N
+            pos_i = pos_arr[i]; vel_i = vel_arr[i]; r_i = rad_arr[i]
+            dp_acc = zero(SVector{2,F})
+            dv_acc = zero(SVector{2,F})
+            for j in get_neighbors(search, pos_i)
+                j == i && continue
+                dp, dv = apply_agent_pair_correction(pos_i, vel_i, r_i, pos_arr[j], rad_arr[j])
+                dp_acc = dp_acc + dp
+                dv_acc = dv_acc + dv
+            end
+            acc_pos[i] = dp_acc
+            acc_vel[i] = dv_acc
+        end
+
+        # ── Apply accumulated corrections ─────────────────────────────────────
+        Threads.@threads for i in 1:N
+            pos_arr[i] = pos_arr[i] + acc_pos[i]
+            vel_arr[i] = vel_arr[i] + acc_vel[i]
+        end
+    end
+
+    # ── Write corrections back to ECS ─────────────────────────────────────────
+    idx = 1
+    for (_, pos_col, vel_col, _geo_col) in Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}))
+        for i in eachindex(pos_col)
+            pos_col[i] = Position(pos_arr[idx])
+            vel_col[i] = Velocity(vel_arr[idx])
+            idx += 1
+        end
+    end
+end
+
 # ── §3T-c: Unified wall correction (model-agnostic) ──────────────────────────
 
 """

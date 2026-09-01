@@ -49,6 +49,29 @@ function RadixSpatialHash(backend::Backend, N::Int, grid_min::SVector{2,F}, grid
 end
 
 """
+    get_ka_backend(sh::RadixSpatialHash) → Backend
+
+Derive the KernelAbstractions backend from the array type of the hash.
+- `Vector` (CPU arrays) → `CPU()`
+- `CuArray` (CUDA arrays) → `CUDABackend()` (requires CUDA.jl loaded)
+
+Used by `step!` to route GPU dispatches without requiring a separate
+`backend` field in `SimScene`.
+"""
+function get_ka_backend(sh::RadixSpatialHash{AT,F}) where {AT,F}
+    return get_ka_backend(AT)
+end
+get_ka_backend(::Type{<:Vector}) = CPU()
+# CUDA dispatch: defined conditionally so SimCrowd doesn't hard-depend on CUDA.jl.
+# If CUDA.jl is loaded, CuArray dispatch will be available via extension or
+# explicit method definition in gpu_context.jl (where CUDA is already imported).
+# Fallback for unknown array types: warn and return CPU().
+function get_ka_backend(::Type{AT}) where {AT<:AbstractArray}
+    @warn "get_ka_backend: unknown array type $AT, defaulting to CPU()" maxlog=1
+    return CPU()
+end
+
+"""
     morton_spread_bits(v::UInt32) → UInt32
 
 Spreads the low 16 bits of `v` into even bit positions:
