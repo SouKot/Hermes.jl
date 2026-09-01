@@ -8,9 +8,13 @@ using CellListMap
 
 # The agent_repulsion function is defined in forces.jl
 
-struct SocialForcesGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector, VGPU<:AbstractVector, SGPU<:AbstractVector}
+struct SocialForcesGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector, VGPU<:AbstractVector, SGPU<:AbstractVector, BGPU<:AbstractVector}
     N::Int
-    cpu_positions::VCPU
+    # ── Shared base: positions, velocities, rebuild tracking ─────────────────
+    # Note: base.cpu_radii / dev_radii / sorted_dev_radii are allocated but unused by SFM;
+    # SFM uses social_radii and collision_radii separately for physics correctness.
+    base::BaseGPUContext{F, VCPU, SCPU, VGPU, SGPU, BGPU}
+    # ── SFM-specific CPU staging ──────────────────────────────────────────────
     cpu_social_radii::SCPU
     cpu_collision_radii::SCPU
     cpu_mus::SCPU                # per-agent μ (ContactModel discriminant)
@@ -18,89 +22,79 @@ struct SocialForcesGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector, VGP
     cpu_Bs::SCPU                 # per-agent social repulsion decay length B (m)
     cpu_λs::SCPU                 # per-agent anisotropy factor λ
     cpu_ηs::SCPU                 # §1.4 per-agent GCF factor η (s); 0.0 = Helbing
-    cpu_velocities::VCPU     # pre-allocated: avoids Vector{SVector}(undef, N) per step
     cpu_forces::VCPU
-    
-    dev_positions::VGPU
+    # ── SFM-specific device buffers ───────────────────────────────────────────
     dev_social_radii::SGPU
     dev_collision_radii::SGPU
-    dev_mus::SGPU                # per-agent μ on device
-    dev_As::SGPU                 # per-agent A on device
-    dev_Bs::SGPU                 # per-agent B on device
-    dev_λs::SGPU                 # per-agent λ on device
-    dev_ηs::SGPU                 # §1.4 per-agent η on device
-    dev_velocities::VGPU     # pre-allocated: avoids KernelAbstractions.zeros per step
+    dev_mus::SGPU
+    dev_As::SGPU
+    dev_Bs::SGPU
+    dev_λs::SGPU
+    dev_ηs::SGPU
     dev_forces::VGPU
-    
-    sorted_dev_positions::VGPU
+    # ── SFM-specific sorted device buffers ────────────────────────────────────
     sorted_dev_social_radii::SGPU
     sorted_dev_collision_radii::SGPU
-    sorted_dev_mus::SGPU         # per-agent μ, sorted by radix key
-    sorted_dev_As::SGPU          # per-agent A, sorted
-    sorted_dev_Bs::SGPU          # per-agent B, sorted
-    sorted_dev_λs::SGPU          # per-agent λ, sorted
-    sorted_dev_ηs::SGPU          # §1.4 per-agent η, sorted
-    sorted_dev_velocities::VGPU  # pre-allocated
-    
-    last_build_positions::VGPU
-    sorted_last_positions::VGPU
-    needs_rebuild::AbstractArray{Bool, 1}
+    sorted_dev_mus::SGPU
+    sorted_dev_As::SGPU
+    sorted_dev_Bs::SGPU
+    sorted_dev_λs::SGPU
+    sorted_dev_ηs::SGPU
+    sorted_dev_velocities::VGPU  # separate from base.sorted_dev_velocities (pre-allocated)
+    sorted_last_positions::VGPU  # caller-owned sorted last-build positions
 end
 
 function SocialForcesGPUContext(backend, F, N::Int)
     VCPU = Vector{SVector{2,F}}
     SCPU = Vector{F}
-    
-    cpu_positions         = VCPU(undef, N)
+
+    # Shared base (positions, velocities, rebuild tracking; radii unused but allocated)
+    base = BaseGPUContext(backend, F, N)
+
+    # SFM-specific CPU buffers
     cpu_social_radii      = SCPU(undef, N)
     cpu_collision_radii   = SCPU(undef, N)
-    cpu_mus               = SCPU(undef, N)  # per-agent μ
-    cpu_As                = SCPU(undef, N)  # per-agent A
-    cpu_Bs                = SCPU(undef, N)  # per-agent B
-    cpu_λs                = SCPU(undef, N)  # per-agent λ
-    cpu_ηs                = SCPU(undef, N)  # §1.4 per-agent GCF factor η
-    cpu_velocities        = VCPU(undef, N)  # pre-allocated
+    cpu_mus               = SCPU(undef, N)
+    cpu_As                = SCPU(undef, N)
+    cpu_Bs                = SCPU(undef, N)
+    cpu_λs                = SCPU(undef, N)
+    cpu_ηs                = SCPU(undef, N)
     cpu_forces            = VCPU(undef, N)
-    
-    dev_positions         = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+
+    # SFM-specific device buffers
     dev_social_radii      = KernelAbstractions.zeros(backend, F, N)
     dev_collision_radii   = KernelAbstractions.zeros(backend, F, N)
-    dev_mus               = KernelAbstractions.zeros(backend, F, N)  # per-agent μ
-    dev_As                = KernelAbstractions.zeros(backend, F, N)  # per-agent A
-    dev_Bs                = KernelAbstractions.zeros(backend, F, N)  # per-agent B
-    dev_λs                = KernelAbstractions.zeros(backend, F, N)  # per-agent λ
-    dev_ηs                = KernelAbstractions.zeros(backend, F, N)  # §1.4 per-agent η
-    dev_velocities        = KernelAbstractions.zeros(backend, SVector{2,F}, N)  # pre-allocated
+    dev_mus               = KernelAbstractions.zeros(backend, F, N)
+    dev_As                = KernelAbstractions.zeros(backend, F, N)
+    dev_Bs                = KernelAbstractions.zeros(backend, F, N)
+    dev_λs                = KernelAbstractions.zeros(backend, F, N)
+    dev_ηs                = KernelAbstractions.zeros(backend, F, N)
     dev_forces            = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    
-    sorted_dev_positions       = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+
+    # SFM-specific sorted
     sorted_dev_social_radii    = KernelAbstractions.zeros(backend, F, N)
     sorted_dev_collision_radii = KernelAbstractions.zeros(backend, F, N)
-    sorted_dev_mus             = KernelAbstractions.zeros(backend, F, N)  # per-agent μ, sorted
-    sorted_dev_As              = KernelAbstractions.zeros(backend, F, N)  # per-agent A, sorted
-    sorted_dev_Bs              = KernelAbstractions.zeros(backend, F, N)  # per-agent B, sorted
-    sorted_dev_λs              = KernelAbstractions.zeros(backend, F, N)  # per-agent λ, sorted
-    sorted_dev_ηs              = KernelAbstractions.zeros(backend, F, N)  # §1.4 per-agent η, sorted
-    sorted_dev_velocities      = KernelAbstractions.zeros(backend, SVector{2,F}, N)  # pre-allocated
-    
-    last_build_positions  = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    sorted_last_positions = KernelAbstractions.zeros(backend, SVector{2,F}, N)
-    needs_rebuild = KernelAbstractions.ones(backend, Bool, 1)
-    
-    VGPU = typeof(dev_positions)
-    SGPU = typeof(dev_social_radii)
-    
-    return SocialForcesGPUContext{F, VCPU, SCPU, VGPU, SGPU}(
-        N, cpu_positions, cpu_social_radii, cpu_collision_radii,
-        cpu_mus, cpu_As, cpu_Bs, cpu_λs, cpu_ηs,
-        cpu_velocities, cpu_forces,
-        dev_positions, dev_social_radii, dev_collision_radii,
-        dev_mus, dev_As, dev_Bs, dev_λs, dev_ηs,
-        dev_velocities, dev_forces,
-        sorted_dev_positions, sorted_dev_social_radii, sorted_dev_collision_radii,
+    sorted_dev_mus             = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_As              = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_Bs              = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_λs              = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_ηs              = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_velocities      = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    sorted_last_positions      = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+
+    VGPU = typeof(base.dev_positions)
+    SGPU = typeof(base.dev_radii)
+    BGPU = typeof(base.needs_rebuild)
+
+    return SocialForcesGPUContext{F, VCPU, SCPU, VGPU, SGPU, BGPU}(
+        N, base,
+        cpu_social_radii, cpu_collision_radii,
+        cpu_mus, cpu_As, cpu_Bs, cpu_λs, cpu_ηs, cpu_forces,
+        dev_social_radii, dev_collision_radii,
+        dev_mus, dev_As, dev_Bs, dev_λs, dev_ηs, dev_forces,
+        sorted_dev_social_radii, sorted_dev_collision_radii,
         sorted_dev_mus, sorted_dev_As, sorted_dev_Bs, sorted_dev_λs, sorted_dev_ηs,
-        sorted_dev_velocities,
-        last_build_positions, sorted_last_positions, needs_rebuild
+        sorted_dev_velocities, sorted_last_positions
     )
 end
 
@@ -136,13 +130,13 @@ function update_social_forces_system!(world::World, search::AbstractNeighborSear
     
     # Lazily get or create context
     ctx = get_gpu_context(world, backend, F, num_agents)
-    positions = ctx.cpu_positions
-    social_radii = ctx.cpu_social_radii
+    positions       = ctx.base.cpu_positions
+    social_radii    = ctx.cpu_social_radii
     collision_radii = ctx.cpu_collision_radii
-    
-    # We also need velocities now — use pre-allocated context buffer
-    velocities = ctx.cpu_velocities
-    
+
+    # We also need velocities now — use pre-allocated base buffer
+    velocities = ctx.base.cpu_velocities
+
     idx = 1
     for (entities, pos_col, vel_col, geom_col, sfm_col) in Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}, SFMParams{F}))
         for i in eachindex(pos_col)
@@ -319,65 +313,42 @@ end
 function _update_social_forces_impl!(world::World, search::RadixSpatialHash{AT,F},
     positions, social_radii, collision_radii, velocities, backend, ctx::SocialForcesGPUContext) where {AT,F}
     N = length(positions)
-    
-    dev_positions = ctx.dev_positions
-    dev_social_radii = ctx.dev_social_radii
-    dev_collision_radii = ctx.dev_collision_radii
-    dev_forces = ctx.dev_forces
-    
-    fill!(dev_forces, zero(SVector{2,F}))
-    
-    # 2. Copy data to device
-    copyto!(dev_positions, positions)
-    copyto!(dev_social_radii, social_radii)
-    copyto!(dev_collision_radii, collision_radii)
-    
-    # 3. Lazy Rebuild Check
-    sq_skin_radius = F(2.0)^2
-    kernel_check! = check_rebuild_kernel!(backend)
-    kernel_check!(ctx.needs_rebuild, dev_positions, ctx.last_build_positions, sq_skin_radius, ndrange=N)
-    KernelAbstractions.synchronize(backend)
-    
-    cpu_needs_rebuild = Vector{Bool}(undef, 1)
-    copyto!(cpu_needs_rebuild, ctx.needs_rebuild)
-    
-    kernel_reorder! = reorder_array_kernel!(backend)
-    
-    if cpu_needs_rebuild[1]
-        copyto!(ctx.last_build_positions, dev_positions)
-        build_grid!(search, dev_positions, backend)
-        
-        # Reorder the last_build_positions ONCE so it's coalesced for the physics kernel
-        kernel_reorder!(ctx.sorted_last_positions, ctx.last_build_positions, search.agent_indices, ndrange=N)
-        
-        fill!(ctx.needs_rebuild, false)
-    end
-    
-    # 4. ALWAYS reorder current positions/radii/velocities/mus/A/B/λ using current agent_indices
-    kernel_reorder!(ctx.sorted_dev_positions,       dev_positions,           search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_social_radii,    dev_social_radii,        search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_collision_radii, dev_collision_radii,     search.agent_indices, ndrange=N)
-    # Upload and sort per-agent μ, A, B, λ, η (GPU parameter parity — §2.3 / §1.4)
+
+    fill!(ctx.dev_forces, zero(SVector{2,F}))
+
+    # 1. Stage shared fields (positions + velocities) + handle rebuild atomically.
+    #    stage_and_sort_base! calls build_grid! BEFORE kernel_reorder!, avoiding the
+    #    stale-agent_indices hazard. Walls are not used by SFM GPU path (handled CPU-side).
+    #    Passing empty slices for walls (n_walls=0: no wall copyto! performed).
+    stage_and_sort_base!(ctx.base, positions, velocities,
+                         ctx.base.cpu_radii,           # unused sentinel (SFM has separate radii)
+                         ctx.base.cpu_wall_p1s, ctx.base.cpu_wall_p2s, 0,
+                         search, backend, ctx.sorted_last_positions)
+
+    # 2. Upload and sort SFM-specific radii and per-agent parameters
+    copyto!(ctx.dev_social_radii,    social_radii)
+    copyto!(ctx.dev_collision_radii, collision_radii)
     copyto!(ctx.dev_mus, ctx.cpu_mus)
     copyto!(ctx.dev_As,  ctx.cpu_As)
     copyto!(ctx.dev_Bs,  ctx.cpu_Bs)
     copyto!(ctx.dev_λs,  ctx.cpu_λs)
     copyto!(ctx.dev_ηs,  ctx.cpu_ηs)   # §1.4 GCF factor
+    # Upload velocities to device (base already holds cpu version; dev_velocities for SFM sorting)
+    copyto!(ctx.sorted_dev_velocities, ctx.base.sorted_dev_velocities)   # velocity already sorted by stage_and_sort_base!
+
+    kernel_reorder! = reorder_array_kernel!(backend)
+    kernel_reorder!(ctx.sorted_dev_social_radii,    ctx.dev_social_radii,    search.agent_indices, ndrange=N)
+    kernel_reorder!(ctx.sorted_dev_collision_radii, ctx.dev_collision_radii, search.agent_indices, ndrange=N)
     kernel_reorder!(ctx.sorted_dev_mus,             ctx.dev_mus,             search.agent_indices, ndrange=N)
     kernel_reorder!(ctx.sorted_dev_As,              ctx.dev_As,              search.agent_indices, ndrange=N)
     kernel_reorder!(ctx.sorted_dev_Bs,              ctx.dev_Bs,              search.agent_indices, ndrange=N)
     kernel_reorder!(ctx.sorted_dev_λs,             ctx.dev_λs,             search.agent_indices, ndrange=N)
     kernel_reorder!(ctx.sorted_dev_ηs,             ctx.dev_ηs,             search.agent_indices, ndrange=N)  # §1.4
-    # Use pre-allocated ctx buffers for velocities (Fix A: no per-step GPU malloc)
-    copyto!(ctx.dev_velocities, velocities)
-    kernel_reorder!(ctx.sorted_dev_velocities,      ctx.dev_velocities,      search.agent_indices, ndrange=N)
-    # Fix B: No synchronize() here — GPU stream ordering is automatic.
-    # The compute kernel below will wait for all reorders on the same stream.
-    
-    # 5. Launch forces kernel using sorted arrays
+
+    # 3. Launch forces kernel using sorted arrays
     kernel! = compute_social_forces_kernel!(backend)
-    kernel!(dev_forces,
-            ctx.sorted_dev_positions, ctx.sorted_dev_social_radii, ctx.sorted_dev_collision_radii,
+    kernel!(ctx.dev_forces,
+            ctx.base.sorted_dev_positions, ctx.sorted_dev_social_radii, ctx.sorted_dev_collision_radii,
             ctx.sorted_dev_mus, ctx.sorted_dev_As, ctx.sorted_dev_Bs, ctx.sorted_dev_λs,
             ctx.sorted_dev_velocities,
             ctx.sorted_last_positions,
@@ -385,12 +356,11 @@ function _update_social_forces_impl!(world::World, search::RadixSpatialHash{AT,F
             search.cell_starts, search.cell_ends, search.agent_indices,
             ndrange=N)
     KernelAbstractions.synchronize(backend)  # mandatory: CPU must wait before reading forces
-    
-    # 5. Copy forces back to host
+
+    # 4. Copy forces back to host and write to ECS
     cpu_forces = ctx.cpu_forces
-    copyto!(cpu_forces, dev_forces)
-    
-    # 6. Write back to ECS
+    copyto!(cpu_forces, ctx.dev_forces)
+
     idx = 1
     for (entities, force_col) in Query(world, (Force{F},))
         for i in eachindex(force_col)

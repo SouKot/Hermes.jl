@@ -715,4 +715,74 @@ end
     @printf("\nSprint 3P compute_orca_line_endpoint unit tests: PASSED\n")
 end
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 3Q: apply_wall_penetration_correction unit tests
+# ─────────────────────────────────────────────────────────────────────────────
+@testset "Sprint 3Q: apply_wall_penetration_correction" begin
+    F = Float32
+
+    # Horizontal wall from (0,0) to (4,0)
+    p1 = SVector(F(0), F(0))
+    p2 = SVector(F(4), F(0))
+    r  = F(0.2)
+
+    # ── Case 1: No penetration — agent well above wall ───────────────────────
+    pos = SVector(F(2), F(0.5))
+    vel = SVector(F(0), F(-1))
+    pos2, vel2 = apply_wall_penetration_correction(pos, vel, r, p1, p2)
+    @test pos2 ≈ pos   # unchanged
+    @test vel2 ≈ vel
+
+    # ── Case 2: Penetration — agent centre inside wall exclusion zone ────────
+    # Agent at (2, 0.1): centre is 0.1m above wall, radius=0.2 → overlap=0.1m
+    pos_in = SVector(F(2), F(0.1))
+    vel_in = SVector(F(0), F(-0.5))   # moving INTO wall
+    pos_out, vel_out = apply_wall_penetration_correction(pos_in, vel_in, r, p1, p2)
+
+    # Position pushed back: y should equal r=0.2 (at surface)
+    @test pos_out[2] ≈ r atol=1f-5
+    # Inward velocity component zeroed: vel_out[2] should be ≥ 0
+    @test vel_out[2] >= F(0)
+
+    # ── Case 3: Penetration — agent moving outward (no velocity change) ──────
+    pos_in2 = SVector(F(2), F(0.1))
+    vel_out2_init = SVector(F(0), F(0.5))   # moving AWAY from wall
+    pos_o2, vel_o2 = apply_wall_penetration_correction(pos_in2, vel_out2_init, r, p1, p2)
+    # Position corrected
+    @test pos_o2[2] ≈ r atol=1f-5
+    # Velocity unchanged (not moving into wall)
+    @test vel_o2 ≈ vel_out2_init
+
+    # ── Case 4: Degenerate wall (p1 == p2) — should not crash ───────────────
+    pd1 = SVector(F(3), F(3))
+    pos_d, vel_d = apply_wall_penetration_correction(
+        SVector(F(3), F(3.05f0)), SVector(F(0), F(-1)), r, pd1, pd1)
+    @test isfinite(pos_d[1]) && isfinite(pos_d[2])
+
+    # ── Case 5: isbits / GPU safety ─────────────────────────────────────────
+    @test isbitstype(typeof(SVector(F(0), F(0))))   # inputs are isbits
+    result = apply_wall_penetration_correction(pos_in, vel_in, r, p1, p2)
+    @test result isa Tuple{SVector{2,F}, SVector{2,F}}
+
+    # ── Case 6: CSM ECS wall_penetration_correction! round-trip ─────────────
+    # Build a tiny world with one CSM agent overlapping a wall at y=0
+    w_csm = World(Position{F}, Velocity{F}, CSMParams{F})
+    params_csm = CSMParams_Classic(F)
+    new_entity!(w_csm, (
+        Position(SVector(F(2), F(0.05f0))),   # inside wall zone (y < r=0.2)
+        Velocity(SVector(F(0), F(-0.3f0))),
+        params_csm
+    ))
+    walls_csm = NTuple{2, SVector{2,F}}[(p1, p2)]
+    wall_penetration_correction!(w_csm, walls_csm, F, CSMParams{F})
+    for (_, pos_col, vel_col) in Query(w_csm, (Position{F}, Velocity{F}))
+        for i in eachindex(pos_col)
+            @test pos_col[i].p[2] >= params_csm.radius - 1f-5   # pushed back
+            @test vel_col[i].v[2] >= F(0)                        # inward vel cancelled
+        end
+    end
+
+    @printf("\nSprint 3Q apply_wall_penetration_correction unit tests: PASSED\n")
+end
+
 end  # SimCrowd.jl

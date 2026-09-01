@@ -517,6 +517,18 @@ function step!(scene::SimScene{F}) where {F}
     # Nothing to do if no force-based agents AND no CSM agents
     (n_force == 0 && n_csm == 0) && return scene
 
+    # ── Collect wall segments once (shared by Hybrid FSM and CSM wall correction) ─
+    walls_buf = NTuple{2, SVector{2,F}}[]
+    try
+        for (_, ws_col) in Query(scene.world, (WallSegment{F},))
+            for j in eachindex(ws_col)
+                push!(walls_buf, (ws_col[j].p1, ws_col[j].p2))
+            end
+        end
+    catch e
+        e isa ArgumentError || rethrow()
+    end
+
     # ── Force-based pipeline (SFM / ORCA / Hybrid) ───────────────────────────
     if n_force > 0
         # 1. Reset Force components to zero — must happen BEFORE any force accumulation.
@@ -557,12 +569,6 @@ function step!(scene::SimScene{F}) where {F}
         #    (outside LP disc). LP3 falls back to rightward goal velocity → wall pass.
         #    This post-step pushback keeps agents at surface distance r_body.
         if n_hybrid > 0
-            walls_buf = NTuple{2, SVector{2,F}}[]
-            for (_, ws_col) in Query(scene.world, (WallSegment{F},))
-                for j in eachindex(ws_col)
-                    push!(walls_buf, (ws_col[j].p1, ws_col[j].p2))
-                end
-            end
             wall_penetration_correction!(scene.world, walls_buf, F)
         end
     end
@@ -570,6 +576,11 @@ function step!(scene::SimScene{F}) where {F}
     # ── CSM pipeline (first-order; sets vel+pos directly; no Force needed) ────
     if n_csm > 0
         update_csm_system!(scene.world, dt)
+        # Post-step geometric wall correction (same logic as Hybrid FSM above).
+        # CSM velocity integration can place agents inside walls; push back to surface.
+        if !isempty(walls_buf)
+            wall_penetration_correction!(scene.world, walls_buf, F, CSMParams{F})
+        end
     end
 
     return scene
