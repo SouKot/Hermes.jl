@@ -66,6 +66,12 @@ struct BaseGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector,
     # ── Verlet skin-radius rebuild tracking ───────────────────────────────────
     needs_rebuild        :: BGPU   # Vector{Bool}, length 1; true = rebuild needed
     last_build_positions :: VGPU   # positions at last spatial-hash rebuild
+
+    # ── Jacobi agent non-penetration correction (Sprint 3T) ───────────────────
+    # Accumulator buffers for apply_agent_correction_gpu! (geometric_correction.jl).
+    # Reused across all GPU contexts — zero extra allocation per step.
+    dev_delta_pos :: VGPU          # Jacobi Δpos per sorted agent
+    dev_delta_vel :: VGPU          # Jacobi Δvel per sorted agent
 end
 
 """
@@ -104,11 +110,16 @@ function BaseGPUContext(backend, ::Type{F}, N::Int, max_walls::Int = 128) where 
     SGPU = typeof(dev_radii)
     BGPU = typeof(needs_rebuild)
 
+    # Sprint 3T: Jacobi accumulator buffers
+    dev_delta_pos = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    dev_delta_vel = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+
     return BaseGPUContext{F, VCPU, SCPU, VGPU, SGPU, BGPU}(
         cpu_positions, cpu_velocities, cpu_radii, cpu_wall_p1s, cpu_wall_p2s,
         dev_positions, dev_velocities, dev_radii, dev_wall_p1s, dev_wall_p2s,
         sorted_dev_positions, sorted_dev_velocities, sorted_dev_radii,
-        needs_rebuild, last_build_positions
+        needs_rebuild, last_build_positions,
+        dev_delta_pos, dev_delta_vel
     )
 end
 

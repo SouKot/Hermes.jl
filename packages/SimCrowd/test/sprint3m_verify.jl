@@ -22,10 +22,10 @@ include("crowd_test_helpers.jl")
 
 # ── World setup helper (copied from tier3_cross_library.jl) ──────────────────
 function _make_csm_world_3m(::Type{F}, N, params::CSMParams{F}, v3::Bool=false) where {F<:AbstractFloat}
-    comp_types = if v3
-        (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}, WallSegment{F}, AgentCSMState{F})
+ comp_types = if v3
+        (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}, WallSegment{F}, AgentCSMState{F}, AgentGeometry{F})
     else
-        (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}, WallSegment{F})
+        (Position{F}, Velocity{F}, Goal{F}, CSMParams{F}, WallSegment{F}, AgentGeometry{F})
     end
     world = World(comp_types...)
 
@@ -61,12 +61,14 @@ function _make_csm_world_3m(::Type{F}, N, params::CSMParams{F}, v3::Bool=false) 
                                 Velocity(zero(SVector{2,F})),
                                 Goal(goal),
                                 params,
-                                AgentCSMState{F}(θ)))
+                                AgentCSMState{F}(θ),
+                                AgentGeometry(params.radius, params.radius * F(2/3))))
         else
             new_entity!(world, (Position(SVector(x, y)),
                                 Velocity(zero(SVector{2,F})),
                                 Goal(goal),
-                                params))
+                                params,
+                                AgentGeometry(params.radius, params.radius * F(2/3))))
         end
     end
     return world

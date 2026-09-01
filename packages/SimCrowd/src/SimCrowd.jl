@@ -30,6 +30,9 @@ export BaseGPUContext, stage_and_sort_base!
 export CSMGPUContext, compute_csm_kernel!
 # Sprint 3S: Hybrid FSM GPU context
 export HybridFSMGPUContext, compute_density_mode_kernel!, compute_hybrid_sfm_kernel!
+# Sprint 3T: Geometric non-penetration correction (agent-agent + unified wall)
+export apply_agent_pair_correction, apply_agent_correction_cpu!, apply_agent_correction_gpu!
+export apply_wall_correction_cpu!
 # §2.4 SimConfig + SimScene
 export SimConfig, SimScene, step!, run!
 
@@ -397,18 +400,34 @@ Simulation-level parameters shared across all system update calls.
 Eliminates hardcoded constants from `physics.jl` and `social.jl`.
 
 Fields:
-- `dt`:        timestep (s). Default: 0.05 s (20 Hz — good for SFM; use 0.01 s for ORCA).
-- `max_speed`: hard speed clamp applied after integration (m/s). Default: 5.0 (panic speed).
+- `dt`:                     timestep (s). Default: 0.05 s (20 Hz — good for SFM; use 0.01 s for ORCA).
+- `max_speed`:              hard speed clamp applied after integration (m/s). Default: 5.0 (panic speed).
+- `agent_correction_iters`: Jacobi agent non-penetration correction passes per step (Sprint 3T).
+                            0 = disabled. Default: 2.
+
+  **When to change `agent_correction_iters`**:
+  - `2` (default): handles severe bottleneck crowding (N=80, 1m door, all agents converging
+    simultaneously). Verified to reduce min body separation from 0.244m to ≥0.38m.
+  - `1`: sufficient at normal densities (overlap < 5% of radius); half the correction cost.
+  - `3`: for extreme crush scenarios (slam-door evacuations, N > 1000 at jam density).
+  - `0`: pure ORCA scenes — the LP velocity solve (Berg et al. 2011) prevents penetration
+    at low-to-medium density (ρ < 3.5 ped/m²). At extreme density (ρ ≥ 3.5 ped/m², τ_h → 0)
+    the LP feasible region may be empty; set `agent_correction_iters=2` in that case.
+
+  **GPU**: Uses `apply_agent_correction_gpu!` (geometric_correction.jl) with `BaseGPUContext`
+  Jacobi buffers (`dev_delta_pos`, `dev_delta_vel`). No additional allocation per step.
 """
 struct SimConfig{F<:AbstractFloat}
-    dt::F
-    max_speed::F
+    dt                     :: F
+    max_speed              :: F
+    agent_correction_iters :: Int   # Jacobi passes per step (0 = disabled)
 end
 
 # Convenience constructors
-SimConfig{F}() where {F<:AbstractFloat} = SimConfig(F(0.05), F(5.0))
+SimConfig{F}() where {F<:AbstractFloat} = SimConfig(F(0.05), F(5.0), 2)
 SimConfig() = SimConfig{Float32}()
-SimConfig(dt::F) where {F<:AbstractFloat} = SimConfig(dt, F(5.0))
+SimConfig(dt::F) where {F<:AbstractFloat} = SimConfig(dt, F(5.0), 2)
+SimConfig(dt::F, max_speed::F) where {F<:AbstractFloat} = SimConfig(dt, max_speed, 2)
 
 include("forces.jl")
 include("neighbor_search.jl")
@@ -418,6 +437,7 @@ include("geometry.jl")
 # Systems
 include("systems/physics.jl")
 include("gpu_context.jl")              # BaseGPUContext + stage_and_sort_base! (Sprint 3Q-arch)
+include("geometric_correction.jl")     # Jacobi agent + wall correction (Sprint 3T)
 include("systems/social.jl")
 include("systems/orca_math.jl")
 include("systems/orca.jl")
@@ -506,12 +526,15 @@ System order:
 4. Physics integration — `integrate_physics_system!` (vel/pos update + speed clamp)
 5. Hybrid FSM dispatch — `update_hybrid_fsm_system!` (density-triggered ORCA↔SFM per agent)
 6. CSM update — `update_csm_system!` (first-order; sets vel+pos directly; σ=0 deterministic)
-7. Wall penetration correction — `wall_penetration_correction!` (CPU; geometric non-penetration fix for Hybrid agents)
+7. Wall correction — `apply_wall_correction_cpu!` (unified, model-agnostic; Sprint 3T)
+8. Agent correction — `apply_agent_correction_cpu!` (Jacobi; Sprint 3T)
+   Disabled if `scene.config.agent_correction_iters == 0`.
 """
 function step!(scene::SimScene{F}) where {F}
-    dt = scene.config.dt
+    dt  = scene.config.dt
+    n_iters = scene.config.agent_correction_iters
 
-    # ── Count agent types ────────────────────────────────────────────────────
+    # ── Count agent types ──────────────────────────────────────────
     # Guard: Ark.Query throws ArgumentError if a component type was never registered.
     local n_force::Int  = 0
     local n_csm::Int    = 0
@@ -521,7 +544,7 @@ function step!(scene::SimScene{F}) where {F}
     # Nothing to do if no force-based agents AND no CSM agents
     (n_force == 0 && n_csm == 0) && return scene
 
-    # ── Collect wall segments once (shared by Hybrid FSM and CSM wall correction) ─
+    # ── Collect wall segments once (shared by wall + agent correction) ────────
     walls_buf = NTuple{2, SVector{2,F}}[]
     try
         for (_, ws_col) in Query(scene.world, (WallSegment{F},))
@@ -533,10 +556,9 @@ function step!(scene::SimScene{F}) where {F}
         e isa ArgumentError || rethrow()
     end
 
-    # ── Force-based pipeline (SFM / ORCA / Hybrid) ───────────────────────────
+    # ── Force-based pipeline (SFM / ORCA / Hybrid) ────────────────────────
     if n_force > 0
-        # 1. Reset Force components to zero — must happen BEFORE any force accumulation.
-        #    §2.5 FIX: nav was called before reset, which silently wiped the driving force.
+        # 1. Reset Force components to zero
         for (_, force_col) in Query(scene.world, (Force{F},))
             for i in eachindex(force_col)
                 force_col[i] = Force(zero(SVector{2,F}))
@@ -553,7 +575,6 @@ function step!(scene::SimScene{F}) where {F}
             update_social_forces_system!(scene.world, scene.search, CPU())
         end
         # 4. ORCA velocity update (only for agents with ORCAParams)
-        # W=16: max wall segments per agent (covers all RiMEA geometries; see assert_wall_budget).
         local n_orca::Int = 0
         try; n_orca = count_entities(Query(scene.world, (ORCAParams{F},))); catch; n_orca = 0; end
         if n_orca > 0
@@ -567,24 +588,28 @@ function step!(scene::SimScene{F}) where {F}
         end
         # 6. Integrate: velocity + position update with speed clamp from config
         integrate_physics_system!(scene.world, scene.config)
-        # 7. Wall penetration correction (CPU; geometric non-penetration for Hybrid agents).
-        #    Fixes the "infeasible collision-escape" regime: when an agent body overlaps a
-        #    wall segment (d_seg < r_body), the ORCA escape constraint requires vx ≤ -3.8 m/s
-        #    (outside LP disc). LP3 falls back to rightward goal velocity → wall pass.
-        #    This post-step pushback keeps agents at surface distance r_body.
-        if n_hybrid > 0
-            wall_penetration_correction!(scene.world, walls_buf, F)
-        end
     end
 
     # ── CSM pipeline (first-order; sets vel+pos directly; no Force needed) ────
     if n_csm > 0
         update_csm_system!(scene.world, dt)
-        # Post-step geometric wall correction (same logic as Hybrid FSM above).
-        # CSM velocity integration can place agents inside walls; push back to surface.
-        if !isempty(walls_buf)
-            wall_penetration_correction!(scene.world, walls_buf, F, CSMParams{F})
-        end
+    end
+
+    # ── Post-step geometric constraint enforcement (Sprint 3T) ────────────────
+    # Order: wall correction FIRST (project to walls), THEN agent correction
+    # (project away from agents). Both are Jacobi / geometric projections.
+    #
+    # 7. Unified wall correction (model-agnostic; replaces per-model overloads)
+    #    Deprecated overloads: wall_penetration_correction!(world, walls, F)
+    #    and wall_penetration_correction!(world, walls, F, CSMParams{F}) remain
+    #    as thin wrappers in hybrid_fsm.jl / csm.jl — to be removed in Sprint 3U.
+    apply_wall_correction_cpu!(scene.world, walls_buf, F)
+
+    # 8. Agent body non-penetration correction (Jacobi; configurable n_iters)
+    #    Disabled by default (n_iters=0) for pure ORCA scenes where the LP solve
+    #    prevents penetration. Enabled (n_iters=2) for SFM/CSM/HybridFSM paths.
+    if n_iters > 0
+        apply_agent_correction_cpu!(scene.world, scene.search, F; n_iters=n_iters)
     end
 
     return scene

@@ -841,4 +841,155 @@ end
     @printf("\nSprint 3R CSM O(N×k) CPU parity test: PASSED\n")
 end
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 3T: Geometric non-penetration correction unit tests
+# ─────────────────────────────────────────────────────────────────────────────
+@testset "Sprint 3T: apply_agent_pair_correction" begin
+    F = Float32
+
+    # ── Case 1: No overlap — zero correction ──────────────────────────────────
+    pos_i = SVector(F(0), F(0))
+    vel_i = SVector(F(1), F(0))
+    pos_j = SVector(F(1), F(0))   # d=1.0, r_i+r_j=0.6 → no overlap
+    r_i = F(0.3); r_j = F(0.3)
+    dp, dv = apply_agent_pair_correction(pos_i, vel_i, r_i, pos_j, r_j)
+    @test dp == zero(SVector{2,F})
+    @test dv == zero(SVector{2,F})
+
+    # ── Case 2: Overlap — push outward by half the gap ────────────────────────
+    # pos_i=(0,0), pos_j2=(0.4,0): d=0.4, r_i+r_j=0.6 → overlap=0.2
+    # n_hat = (pos_i - pos_j2)/d = (-1, 0) (points from j toward i, i.e., leftward)
+    # Δpos_i = (overlap/2) × n_hat = 0.1 × (-1, 0) = (-0.1, 0)
+    # i is pushed LEFT (away from j at x=0.4) — physically correct
+    pos_j2 = SVector(F(0.4), F(0))
+    dp2, dv2 = apply_agent_pair_correction(pos_i, vel_i, r_i, pos_j2, r_j)
+    @test dp2[1] ≈ F(-0.1) atol=1f-5   # push left (away from j at x=0.4)
+    @test abs(dp2[2]) < 1f-5            # no y component
+
+    # ── Case 3: Velocity correction cancels inward component ──────────────────
+    vel_into = SVector(F(-1), F(0))     # moving left = INTO j (j is to the right)
+    dp3, dv3 = apply_agent_pair_correction(pos_i, vel_into, r_i, pos_j2, r_j)
+    # Inward velocity should be cancelled: vel_into is moving toward j (pos_j2 at x=0.4)
+    # n_hat = (pos_i - pos_j2) / d = (-0.4, 0) / 0.4 = (-1, 0)
+    # v_into = dot(vel_into, -n_hat) = dot((-1,0), (1,0)) = -1 → negative = moving away?
+    # Wait: vel_into=(-1,0), pos_i=(0,0), pos_j2=(0.4,0), so i is LEFT of j.
+    # Moving at (-1,0) means moving AWAY from j (leftward). So dv should be zero.
+    @test dv3 == zero(SVector{2,F})
+
+    # Now test with vel moving TOWARD j (rightward = +x)
+    vel_toward = SVector(F(1), F(0))    # moving toward j (j is to the right)
+    dp4, dv4 = apply_agent_pair_correction(pos_i, vel_toward, r_i, pos_j2, r_j)
+    # n_hat = (-1, 0), v_into = dot((1,0), -(-1,0)) = dot((1,0),(1,0)) = 1 > 0
+    # Δvel = 1 * (-1, 0) → cancels the rightward velocity
+    @test dv4[1] < F(0)   # correction is leftward (cancels rightward inward vel)
+
+    # ── Case 4: Degenerate (coincident) — pushes +x ───────────────────────────
+    dp5, dv5 = apply_agent_pair_correction(pos_i, vel_i, r_i, pos_i, r_j)
+    @test dp5[1] > F(0)   # pushes in +x direction
+    @test isfinite(dp5[1]) && isfinite(dp5[2])
+
+    @printf("\nSprint 3T apply_agent_pair_correction: PASSED\n")
+end
+
+@testset "Sprint 3T: apply_agent_correction_cpu! two-agent overlap" begin
+    F = Float32
+
+    # Two overlapping agents: d=0.3, r_i+r_j=0.5 → overlap=0.2
+    # After n_iters=2 correction, separation should be >= 0.48m (≥ 96% of target)
+    r = F(0.25)
+    world_t = World(Position{F}, Velocity{F}, AgentGeometry{F}, SFMParams{F},
+                    MotionParams{F}, Goal{F}, Force{F})
+    ap = from_agent_params(r, 80f0, 1.3f0, 0.5f0)
+    new_entity!(world_t, (Position(SVector(F(0), F(0))),   Velocity(SVector(F(0.5), F(0))),
+                           ap..., Goal(SVector(F(5), F(0))), Force(SVector(F(0), F(0)))))
+    new_entity!(world_t, (Position(SVector(F(0.3), F(0))), Velocity(SVector(F(-0.5), F(0))),
+                           ap..., Goal(SVector(F(-5), F(0))), Force(SVector(F(0), F(0)))))
+
+    gr = SVector(F(-1), F(-1)); gx = SVector(F(6), F(6))
+    search_t = CPUNeighborSearch(2, gr, gx, F(1.5))
+
+    # Measure separation before correction
+    positions_before = [pos_col[i].p for (_, pos_col) in Query(world_t, (Position{F},)) for i in eachindex(pos_col)]
+    d_before = norm(positions_before[1] - positions_before[2])
+    @test d_before < F(2) * r    # confirm overlapping initially (0.3 < 0.5)
+
+    apply_agent_correction_cpu!(world_t, search_t, F; n_iters=2)
+
+    positions_after = [pos_col[i].p for (_, pos_col) in Query(world_t, (Position{F},)) for i in eachindex(pos_col)]
+    d_after = norm(positions_after[1] - positions_after[2])
+    @test d_after >= F(2) * r * F(0.95)   # separation resolved to ≥95% of target
+
+    @printf("\nSprint 3T apply_agent_correction_cpu! two-agent: d_before=%.3f d_after=%.3f (target=%.3f)\n",
+            d_before, d_after, F(2)*r)
+end
+
+@testset "Sprint 3T: apply_wall_correction_cpu! round-trip" begin
+    F = Float32
+    r = F(0.2)
+
+    # Single agent overlapping a horizontal wall at y=0
+    world_w = World(Position{F}, Velocity{F}, AgentGeometry{F}, SFMParams{F},
+                    MotionParams{F}, Goal{F}, Force{F})
+    ap = from_agent_params(r, 80f0, 1.3f0, 0.5f0)
+    new_entity!(world_w, (Position(SVector(F(2), F(0.05f0))),   # y < r → inside wall zone
+                           Velocity(SVector(F(0), F(-0.3f0))),   # moving INTO wall
+                           ap..., Goal(SVector(F(5), F(2))), Force(SVector(F(0), F(0)))))
+
+    walls = NTuple{2, SVector{2,F}}[(SVector(F(0), F(0)), SVector(F(4), F(0)))]
+    apply_wall_correction_cpu!(world_w, walls, F)
+
+    for (_, pos_col, vel_col) in Query(world_w, (Position{F}, Velocity{F}))
+        for i in eachindex(pos_col)
+            @test pos_col[i].p[2] >= r - 1f-5   # pushed back to surface
+            @test vel_col[i].v[2] >= F(0)        # inward velocity cancelled
+        end
+    end
+
+    @printf("\nSprint 3T apply_wall_correction_cpu!: PASSED\n")
+end
+
+@testset "Sprint 3T: n_iters=0 disables agent correction" begin
+    F = Float32
+    r = F(0.25)
+
+    # Severely overlapping agents: d=0.1 (should stay overlapping with n_iters=0)
+    world_no = World(Position{F}, Velocity{F}, AgentGeometry{F}, SFMParams{F},
+                     MotionParams{F}, Goal{F}, Force{F})
+    ap = from_agent_params(r, 80f0, 1.3f0, 0.5f0)
+    new_entity!(world_no, (Position(SVector(F(0), F(0))), Velocity(SVector(F(0), F(0))),
+                            ap..., Goal(SVector(F(5), F(0))), Force(SVector(F(0), F(0)))))
+    new_entity!(world_no, (Position(SVector(F(0.1), F(0))), Velocity(SVector(F(0), F(0))),
+                            ap..., Goal(SVector(F(-5), F(0))), Force(SVector(F(0), F(0)))))
+
+    gr = SVector(F(-1), F(-1)); gx = SVector(F(6), F(6))
+    search_no = CPUNeighborSearch(2, gr, gx, F(1.5))
+
+    pos_before = [pos_col[i].p for (_, pos_col) in Query(world_no, (Position{F},)) for i in eachindex(pos_col)]
+
+    apply_agent_correction_cpu!(world_no, search_no, F; n_iters=0)
+
+    pos_after = [pos_col[i].p for (_, pos_col) in Query(world_no, (Position{F},)) for i in eachindex(pos_col)]
+    @test pos_before[1] == pos_after[1]   # no change
+    @test pos_before[2] == pos_after[2]
+
+    @printf("\nSprint 3T n_iters=0 no-op: PASSED\n")
+end
+
+@testset "Sprint 3T: SimConfig agent_correction_iters" begin
+    # Default: 2
+    cfg = SimConfig()
+    @test cfg.agent_correction_iters == 2
+
+    # Explicit 3-arg constructor
+    cfg2 = SimConfig(0.05f0, 5.0f0, 0)
+    @test cfg2.agent_correction_iters == 0
+
+    # 2-arg convenience constructor defaults to n_iters=2
+    cfg3 = SimConfig(0.05f0, 5.0f0)
+    @test cfg3.agent_correction_iters == 2
+
+    @printf("\nSprint 3T SimConfig.agent_correction_iters: PASSED\n")
+end
+
 end  # SimCrowd.jl
