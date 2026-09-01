@@ -16,8 +16,10 @@
 # Usage: julia --project test/benchmark_niters.jl
 
 using Pkg; Pkg.activate(".")
-using SimCrowd, StaticArrays, LinearAlgebra, Printf, Statistics, Random: MersenneTwister
-using KernelAbstractions
+using SimCrowd, StaticArrays, LinearAlgebra, Printf, Statistics
+import Random: MersenneTwister
+import KernelAbstractions: CPU
+import Ark: World, new_entity!, Query
 
 function build_hybrid_t7_scene(F, n_iters, N=80; gpu=false)
     dt     = F(0.05)
