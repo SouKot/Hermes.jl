@@ -50,7 +50,7 @@ using StaticArrays
 using LinearAlgebra
 using KernelAbstractions
 
-# ── §3T-a: Per-pair primitive ─────────────────────────────────────────────────
+# ── §3T-a: Per-pair correction primitives ───────────────────────────────────
 
 """
     apply_agent_pair_correction(pos_i, vel_i, r_i, pos_j, r_j)
@@ -110,45 +110,84 @@ projection for a single (agent, wall) pair. This function is the agent-agent cou
     return dpos, dvel
 end
 
-# ── §3T-b: CPU Jacobi — model-agnostic ECS loop ──────────────────────────────
+"""
+    apply_xpbd_pair_correction(pos_i, vel_i, r_i, pos_j, r_j, λ_i, α_tilde)
+        → (Δpos_i::SVector{2,F}, Δvel_i::SVector{2,F}, Δλ::F)
+
+XPBD correction contribution to agent i from overlapping neighbour j.
+Incorporates the accumulated Lagrange multiplier `λ_i` which grows across
+iterations (reset to 0 at timestep start), self-limiting over-correction.
+
+## Update rule
+
+    C = dᵢⱼ − (rᵢ + rⱼ)           # constraint value: negative = violated
+    w = 1/mᵢ + 1/mⱼ = 2             # equal unit mass
+    Δλ = max(0, (−C − α̃·λᵢ) / (w + α̃))
+    Δposᵢ = n̂ · Δλ                  # (1/mᵢ) · n̂ · Δλ, m=1
+
+α̃ = α / dt² = 0 recovers exact Jacobi (`apply_agent_pair_correction`).
+As λᵢ grows across iterations, subsequent corrections diminish — preventing
+Jacobi oscillation in dense contact graphs.
+
+## GPU-safety
+
+`@inline`, no allocation, all inputs/outputs are `isbits`. Callable from KA kernels.
+"""
+@inline function apply_xpbd_pair_correction(
+    pos_i    :: SVector{2,F},
+    vel_i    :: SVector{2,F},
+    r_i      :: F,
+    pos_j    :: SVector{2,F},
+    r_j      :: F,
+    λ_i      :: F,
+    α_tilde  :: F
+) :: Tuple{SVector{2,F}, SVector{2,F}, F} where {F<:AbstractFloat}
+    rel   = pos_i - pos_j
+    d     = norm(rel)
+    r_sum = r_i + r_j
+    if d >= r_sum
+        return zero(SVector{2,F}), zero(SVector{2,F}), zero(F)
+    end
+
+    n_hat = d < F(1e-6) ? SVector{2,F}(one(F), zero(F)) : rel / d
+
+    # XPBD constraint: C = d - r_sum (negative when violated)
+    C   = d - r_sum
+    w   = F(2)   # 1/m_i + 1/m_j, equal unit mass
+    Δλ  = max(zero(F), (-C - α_tilde * λ_i) / (w + α_tilde))
+
+    dpos = n_hat * Δλ   # (1/m_i) · n̂ · Δλ
+
+    # Velocity correction: same as Jacobi (cancel inward component)
+    v_into = dot(vel_i, -n_hat)
+    dvel   = v_into > zero(F) ? v_into * n_hat : zero(SVector{2,F})
+
+    return dpos, dvel, Δλ
+end
+
+# ── §3T-b: CPU correction — model-agnostic ECS loop (Sprint 3T/3V) ─────────────
 
 """
     apply_agent_correction_cpu!(world, search::CPUNeighborSearch, ::Type{F};
-                                n_iters=8, tol=1f-3)
+                                n_iters=8, tol=1f-3,
+                                alg::AbstractCorrectionAlgorithm=JacobiCorrection())
 
-Jacobi agent non-penetration correction. O(N×k) per iteration via CellListMap.
-
-Queries `(Position{F}, Velocity{F}, AgentGeometry{F})` — **model-agnostic**: works
-for SFM, ORCA, CSM, HybridFSM agents and any mixture thereof, as long as agents
-have an `AgentGeometry` component.
-
-## Convergence criterion (adaptive stopping)
-
-After each Jacobi pass the maximum body overlap across all contacting pairs is
-measured: `max_overlap = max(0, (r_i + r_j) - d_ij)`. Iteration stops when:
-  - `max_overlap ≤ tol`  (converged — all contacts below tolerance), or
-  - `n_iters` passes have been completed (safety cap)
-
-Default `tol = 1e-3 m` (1 mm): effectively zero physical overlap at crowd
-simulation scales. `tol = 0` forces exactly `n_iters` passes.
-
-For N > 50,000 or extreme density, consider PGS+graph-colouring — see
-`docs/2026-08-14_future_directions.md §7`.
+Agent non-penetration correction via CellListMap pairwise! (O(N×k) per iter).
+Dispatches on `alg`: `JacobiCorrection` (default, Sprint 3T) or `XPBDCorrection(α)` (Sprint 3V).
 """
 function apply_agent_correction_cpu!(
     world   :: World,
     search  :: CPUNeighborSearch,
     ::Type{F};
     n_iters :: Int = 8,
-    tol     :: F   = F(1e-3)
+    tol     :: F   = F(1e-3),
+    alg     :: AbstractCorrectionAlgorithm = JacobiCorrection()
 ) where {F<:AbstractFloat}
     n_iters == 0 && return
 
-    # ── Collect positions, velocities, radii from ECS ─────────────────────────
     pos_arr  = SVector{2,F}[]
     vel_arr  = SVector{2,F}[]
     rad_arr  = F[]
-
     for (_, pos_col, vel_col, geo_col) in Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}))
         for i in eachindex(pos_col)
             push!(pos_arr, pos_col[i].p)
@@ -156,57 +195,73 @@ function apply_agent_correction_cpu!(
             push!(rad_arr, geo_col[i].social_radius)
         end
     end
-
     N = length(pos_arr)
     N == 0 && return
 
-    # Update CellListMap with current positions (O(N) rebuild).
     build_grid!(search, pos_arr, CPU())
 
-    acc_pos = [zero(SVector{2,F}) for _ in 1:N]
-    acc_vel = [zero(SVector{2,F}) for _ in 1:N]
-    # Per-agent SpinLocks: protect concurrent writes to the same accumulator slot.
-    lk = [Base.Threads.SpinLock() for _ in 1:N]
-    # Atomic for thread-safe max_overlap reduction inside parallel pairwise!
+    acc_pos       = [zero(SVector{2,F}) for _ in 1:N]
+    acc_vel       = [zero(SVector{2,F}) for _ in 1:N]
+    lk            = [Base.Threads.SpinLock() for _ in 1:N]
     atomic_max_ov = Threads.Atomic{F}(zero(F))
+
+    use_xpbd = alg isa XPBDCorrection
+    α_tilde  = use_xpbd ? F((alg::XPBDCorrection).α) : zero(F)
+    λ_acc     = use_xpbd ? zeros(F, N) : F[]
 
     for _ in 1:n_iters
         fill!(acc_pos, zero(SVector{2,F}))
         fill!(acc_vel, zero(SVector{2,F}))
         Threads.atomic_xchg!(atomic_max_ov, zero(F))
 
-        # ── Jacobi compute via CellListMap pairwise! ─────────────────────────
         local_pos = pos_arr; local_vel = vel_arr; local_rad = rad_arr
-        function accumulate_pair!(pair, _output)
-            (; i, j, d) = pair
-            d < F(1e-6) && return _output
-            pi = local_pos[i]; vi = local_vel[i]; ri = local_rad[i]
-            pj = local_pos[j]; rj = local_rad[j]
-            # Track max overlap for convergence check
-            ov = ri + rj - d
-            if ov > zero(F)
-                Threads.atomic_max!(atomic_max_ov, ov)
-            end
-            vj = local_vel[j]
-            dp_i, dv_i = apply_agent_pair_correction(pi, vi, ri, pj, rj)
-            dp_j, dv_j = apply_agent_pair_correction(pj, vj, rj, pi, ri)
-            lock(lk[i]); acc_pos[i] = acc_pos[i] + dp_i; acc_vel[i] = acc_vel[i] + dv_i; unlock(lk[i])
-            lock(lk[j]); acc_pos[j] = acc_pos[j] + dp_j; acc_vel[j] = acc_vel[j] + dv_j; unlock(lk[j])
-            return _output
-        end
-        CellListMap.pairwise!(accumulate_pair!, search.psych_system)
 
-        # ── Apply accumulated corrections ─────────────────────────────────────
+        if use_xpbd
+            local_λ = λ_acc
+            function accumulate_pair_xpbd!(pair, _output)
+                (; i, j, d) = pair
+                d < F(1e-6) && return _output
+                pi = local_pos[i]; vi = local_vel[i]; ri = local_rad[i]
+                pj = local_pos[j]; vj = local_vel[j]; rj = local_rad[j]
+                ov = ri + rj - d
+                if ov > zero(F); Threads.atomic_max!(atomic_max_ov, ov); end
+                lock(lk[i])
+                    dp_i, dv_i, dλ_i = apply_xpbd_pair_correction(pi, vi, ri, pj, rj, local_λ[i], α_tilde)
+                    acc_pos[i] = acc_pos[i] + dp_i; acc_vel[i] = acc_vel[i] + dv_i
+                    local_λ[i] += dλ_i
+                unlock(lk[i])
+                lock(lk[j])
+                    dp_j, dv_j, dλ_j = apply_xpbd_pair_correction(pj, vj, rj, pi, ri, local_λ[j], α_tilde)
+                    acc_pos[j] = acc_pos[j] + dp_j; acc_vel[j] = acc_vel[j] + dv_j
+                    local_λ[j] += dλ_j
+                unlock(lk[j])
+                return _output
+            end
+            CellListMap.pairwise!(accumulate_pair_xpbd!, search.psych_system)
+        else
+            function accumulate_pair_jacobi!(pair, _output)
+                (; i, j, d) = pair
+                d < F(1e-6) && return _output
+                pi = local_pos[i]; vi = local_vel[i]; ri = local_rad[i]
+                pj = local_pos[j]; vj = local_vel[j]; rj = local_rad[j]
+                ov = ri + rj - d
+                if ov > zero(F); Threads.atomic_max!(atomic_max_ov, ov); end
+                dp_i, dv_i = apply_agent_pair_correction(pi, vi, ri, pj, rj)
+                dp_j, dv_j = apply_agent_pair_correction(pj, vj, rj, pi, ri)
+                lock(lk[i]); acc_pos[i] = acc_pos[i] + dp_i; acc_vel[i] = acc_vel[i] + dv_i; unlock(lk[i])
+                lock(lk[j]); acc_pos[j] = acc_pos[j] + dp_j; acc_vel[j] = acc_vel[j] + dv_j; unlock(lk[j])
+                return _output
+            end
+            CellListMap.pairwise!(accumulate_pair_jacobi!, search.psych_system)
+        end
+
         Threads.@threads for i in 1:N
             pos_arr[i] = pos_arr[i] + acc_pos[i]
             vel_arr[i] = vel_arr[i] + acc_vel[i]
         end
-
-        # ── Convergence check — stop early if all contacts resolved ───────────
         atomic_max_ov[] ≤ tol && break
     end
 
-    # ── Write corrections back to ECS ─────────────────────────────────────────
     idx = 1
     for (_, pos_col, vel_col, _geo_col) in Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}))
         for i in eachindex(pos_col)
@@ -219,37 +274,28 @@ end
 
 """
     apply_agent_correction_cpu!(world, search::RadixSpatialHash, ::Type{F};
-                                n_iters=8, tol=1f-3)
+                                n_iters=8, tol=1f-3,
+                                alg::AbstractCorrectionAlgorithm=JacobiCorrection())
 
-Jacobi agent non-penetration correction using the `RadixSpatialHash` grid.
-O(N×k) per iteration via `get_neighbors` (Morton-coded 3×3 cell neighbourhood).
+Agent non-penetration correction using `RadixSpatialHash` (O(N×k) per iteration).
+Dispatches on `alg`: `JacobiCorrection` (default, Sprint 3T) or `XPBDCorrection(α)` (Sprint 3V).
 
-## Convergence criterion (adaptive stopping)
-
-Same as the `CPUNeighborSearch` overload: tracks `max_overlap` per-thread
-during the pair loop, reduces to global max, breaks when `max_overlap ≤ tol`.
-No atomics needed — each thread writes to its own `local_max_ov[i]` slot,
-then `maximum()` reduces after the threaded loop. Zero-overhead vs fixed n_iters.
-
-## Jacobi pattern
-
-Thread-per-agent: each thread i accumulates Δpos[i] and Δvel[i] only for
-agent i (read-only snapshot of neighbours, write to own slot). No SpinLocks.
+Thread-per-agent: each thread i writes to own slot only — no SpinLocks needed.
+Per-thread max_overlap reduction; adaptive early exit when `max_overlap ≤ tol`.
 """
 function apply_agent_correction_cpu!(
     world   :: World,
     search  :: RadixSpatialHash,
     ::Type{F};
     n_iters :: Int = 8,
-    tol     :: F   = F(1e-3)
+    tol     :: F   = F(1e-3),
+    alg     :: AbstractCorrectionAlgorithm = JacobiCorrection()
 ) where {F<:AbstractFloat}
     n_iters == 0 && return
 
-    # ── Collect positions, velocities, radii from ECS ─────────────────────────
     pos_arr  = SVector{2,F}[]
     vel_arr  = SVector{2,F}[]
     rad_arr  = F[]
-
     for (_, pos_col, vel_col, geo_col) in Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}))
         for i in eachindex(pos_col)
             push!(pos_arr, pos_col[i].p)
@@ -257,57 +303,76 @@ function apply_agent_correction_cpu!(
             push!(rad_arr, geo_col[i].social_radius)
         end
     end
-
     N = length(pos_arr)
     N == 0 && return
 
     acc_pos      = Vector{SVector{2,F}}(undef, N)
     acc_vel      = Vector{SVector{2,F}}(undef, N)
-    local_max_ov = Vector{F}(undef, N)   # per-thread max overlap (thread i writes local_max_ov[i])
+    local_max_ov = Vector{F}(undef, N)
+
+    use_xpbd = alg isa XPBDCorrection
+    α_tilde  = use_xpbd ? F((alg::XPBDCorrection).α) : zero(F)
+    # per-agent λ: reset per-timestep (outside loop), accumulated across iterations
+    λ_acc     = use_xpbd ? zeros(F, N) : F[]
 
     for _ in 1:n_iters
-        # Rebuild hash with current positions (O(N) Morton sort + CSR)
         build_grid!(search, pos_arr, CPU())
-
         fill!(acc_pos, zero(SVector{2,F}))
         fill!(acc_vel, zero(SVector{2,F}))
         fill!(local_max_ov, zero(F))
 
-        # ── Jacobi compute: thread-per-agent, write-to-own-slot only ──────────
-        Threads.@threads for i in 1:N
-            pos_i = pos_arr[i]; vel_i = vel_arr[i]; r_i = rad_arr[i]
-            dp_acc = zero(SVector{2,F})
-            dv_acc = zero(SVector{2,F})
-            max_ov_i = zero(F)
-            for j in get_neighbors(search, pos_i)
-                j == i && continue
-                r_j = rad_arr[j]
-                dp, dv = apply_agent_pair_correction(pos_i, vel_i, r_i, pos_arr[j], r_j)
-                dp_acc = dp_acc + dp
-                dv_acc = dv_acc + dv
-                # Track overlap for convergence check
-                d_ij = norm(pos_i - pos_arr[j])
-                ov   = r_i + r_j - d_ij
-                if ov > max_ov_i
-                    max_ov_i = ov
+        if use_xpbd
+            local_λ = λ_acc
+            Threads.@threads for i in 1:N
+                pos_i = pos_arr[i]; vel_i = vel_arr[i]; r_i = rad_arr[i]
+                dp_acc = zero(SVector{2,F})
+                dv_acc = zero(SVector{2,F})
+                max_ov_i = zero(F)
+                dλ_acc   = zero(F)
+                for j in get_neighbors(search, pos_i)
+                    j == i && continue
+                    r_j  = rad_arr[j]
+                    d_ij = norm(pos_i - pos_arr[j])
+                    ov   = r_i + r_j - d_ij
+                    if ov > max_ov_i; max_ov_i = ov; end
+                    dp, dv, dλ = apply_xpbd_pair_correction(pos_i, vel_i, r_i,
+                                                             pos_arr[j], r_j,
+                                                             local_λ[i], α_tilde)
+                    dp_acc += dp; dv_acc += dv; dλ_acc += dλ
                 end
+                acc_pos[i]      = dp_acc
+                acc_vel[i]      = dv_acc
+                local_max_ov[i] = max_ov_i
+                local_λ[i]     += dλ_acc   # thread i owns slot i — no race
             end
-            acc_pos[i]      = dp_acc
-            acc_vel[i]      = dv_acc
-            local_max_ov[i] = max_ov_i
+        else
+            Threads.@threads for i in 1:N
+                pos_i = pos_arr[i]; vel_i = vel_arr[i]; r_i = rad_arr[i]
+                dp_acc = zero(SVector{2,F})
+                dv_acc = zero(SVector{2,F})
+                max_ov_i = zero(F)
+                for j in get_neighbors(search, pos_i)
+                    j == i && continue
+                    r_j = rad_arr[j]
+                    dp, dv = apply_agent_pair_correction(pos_i, vel_i, r_i, pos_arr[j], r_j)
+                    dp_acc += dp; dv_acc += dv
+                    d_ij = norm(pos_i - pos_arr[j])
+                    ov   = r_i + r_j - d_ij
+                    if ov > max_ov_i; max_ov_i = ov; end
+                end
+                acc_pos[i]      = dp_acc
+                acc_vel[i]      = dv_acc
+                local_max_ov[i] = max_ov_i
+            end
         end
 
-        # ── Apply accumulated corrections ─────────────────────────────────────
         Threads.@threads for i in 1:N
             pos_arr[i] = pos_arr[i] + acc_pos[i]
             vel_arr[i] = vel_arr[i] + acc_vel[i]
         end
-
-        # ── Convergence check — O(N) reduction, zero allocation ───────────────
         maximum(local_max_ov) ≤ tol && break
     end
 
-    # ── Write corrections back to ECS ─────────────────────────────────────────
     idx = 1
     for (_, pos_col, vel_col, _geo_col) in Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}))
         for i in eachindex(pos_col)
@@ -514,11 +579,110 @@ the read-only compute and the write-back is explicit.
     end
 end
 
-"""
-    apply_agent_correction_gpu!(base, search, backend; n_iters=2)
+# ── §3V-GPU: XPBD GPU kernels ─────────────────────────────────────────────────
 
-GPU Jacobi agent non-penetration correction using sorted device arrays from
-`BaseGPUContext`. Runs `n_iters` Jacobi passes (compute → sync → apply → sync).
+"""
+    xpbd_correction_kernel!(out_delta_pos, out_delta_vel, out_delta_lambda,
+                             sorted_positions, sorted_velocities, sorted_radii,
+                             sorted_lambda, cell_starts, cell_ends,
+                             grid_min, cell_size, grid_dims, N, alpha_tilde)
+
+GPU XPBD compute pass: each thread i computes Δpos[i], Δvel[i], Δλ[i] using
+the accumulated λ[i] from previous iterations.  Same 3×3 neighbourhood as
+`agent_correction_kernel!`. α_tilde = α / dt² (passed as Float32).
+
+At α_tilde=0 the update is identical to Jacobi.
+"""
+@kernel function xpbd_correction_kernel!(
+    out_delta_pos    :: AbstractVector,
+    out_delta_vel    :: AbstractVector,
+    out_delta_lambda :: AbstractVector,
+    @Const(sorted_positions  :: AbstractVector),
+    @Const(sorted_velocities :: AbstractVector),
+    @Const(sorted_radii      :: AbstractVector),
+    @Const(sorted_lambda     :: AbstractVector),
+    @Const(cell_starts       :: AbstractVector),
+    @Const(cell_ends         :: AbstractVector),
+    cell_origin :: SVector{2},
+    cell_size   :: Float32,
+    grid_dims   :: SVector{2, Int32},
+    N           :: Int32,
+    alpha_tilde :: Float32
+)
+    i = @index(Global, Linear)
+    if i <= N
+        F = eltype(sorted_radii)
+        pos_i = sorted_positions[i]
+        vel_i = sorted_velocities[i]
+        r_i   = sorted_radii[i]
+        λ_i   = sorted_lambda[i]
+
+        dp = zero(SVector{2,F})
+        dv = zero(SVector{2,F})
+        dλ = zero(F)
+
+        ci = floor(Int32, (pos_i[1] - cell_origin[1]) / cell_size)
+        cj = floor(Int32, (pos_i[2] - cell_origin[2]) / cell_size)
+
+        @inbounds for dci in Int32(-1):Int32(1), dcj in Int32(-1):Int32(1)
+            ni = ci + dci; nj = cj + dcj
+            if ni >= Int32(0) && ni < grid_dims[1] && nj >= Int32(0) && nj < grid_dims[2]
+                cell_idx = ni * grid_dims[2] + nj + Int32(1)
+                if cell_idx >= Int32(1) && cell_idx <= length(cell_starts)
+                    cs = cell_starts[cell_idx]; ce = cell_ends[cell_idx]
+                    if cs <= ce
+                        for jj in cs:ce
+                            if jj != i
+                                pos_j = sorted_positions[jj]
+                                r_j   = sorted_radii[jj]
+                                dp_j, dv_j, dλ_j = apply_xpbd_pair_correction(
+                                    pos_i, vel_i, r_i, pos_j, r_j, λ_i, alpha_tilde)
+                                dp += dp_j; dv += dv_j; dλ += dλ_j
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        out_delta_pos[i]    = dp
+        out_delta_vel[i]    = dv
+        out_delta_lambda[i] = dλ
+    end
+end
+
+"""
+    apply_xpbd_kernel!(positions, velocities, lambda, delta_pos, delta_vel, delta_lambda, N)
+
+GPU XPBD write-back: apply Δpos, Δvel and accumulate Δλ into the λ buffer.
+λ is accumulated (not reset) — reset happens once per timestep before the loop.
+"""
+@kernel function apply_xpbd_kernel!(
+    positions    :: AbstractVector,
+    velocities   :: AbstractVector,
+    lambda       :: AbstractVector,
+    @Const(delta_pos    :: AbstractVector),
+    @Const(delta_vel    :: AbstractVector),
+    @Const(delta_lambda :: AbstractVector),
+    N :: Int32
+)
+    i = @index(Global, Linear)
+    if i <= N
+        positions[i]  = positions[i]  + delta_pos[i]
+        velocities[i] = velocities[i] + delta_vel[i]
+        lambda[i]     = lambda[i]     + delta_lambda[i]
+    end
+end
+
+"""
+    apply_agent_correction_gpu!(base, search, backend; n_iters=8,
+                                alg::AbstractCorrectionAlgorithm=JacobiCorrection())
+
+GPU agent non-penetration correction. Dispatches on `alg`:
+- `JacobiCorrection()` — original Jacobi kernel loop (Sprint 3T), unchanged.
+- `XPBDCorrection(α)`  — XPBD kernel loop (Sprint 3V): resets `base.dev_lambda`
+  at entry, then runs `xpbd_correction_kernel!` + `apply_xpbd_kernel!` per iteration.
+  Converges in ~5–8 iterations for dense bottleneck scenarios.
 
 Called after `stage_and_sort_base!` has populated `base.sorted_dev_positions`,
 `base.sorted_dev_velocities`, `base.sorted_dev_radii`.
@@ -530,29 +694,63 @@ function apply_agent_correction_gpu!(
     base    :: BaseGPUContext,
     search  :: RadixSpatialHash,
     backend;
-    n_iters :: Int = 2
+    n_iters :: Int = 8,
+    alg     :: AbstractCorrectionAlgorithm = JacobiCorrection()
 )
     n_iters == 0 && return
     N = Int32(length(base.sorted_dev_positions))
 
-    kern_compute = agent_correction_kernel!(backend)
-    kern_apply   = apply_correction_kernel!(backend)
+    if alg isa XPBDCorrection
+        # ── XPBD path (Sprint 3V) ────────────────────────────────────────────
+        α_tilde = Float32((alg::XPBDCorrection).α)
 
-    for _ in 1:n_iters
-        kern_compute(
-            base.dev_delta_pos, base.dev_delta_vel,
-            base.sorted_dev_positions, base.sorted_dev_velocities, base.sorted_dev_radii,
-            search.cell_starts, search.cell_ends,
-            search.grid_min, search.cell_size, SVector{2,Int32}(search.grid_dims), N;
-            ndrange = Int(N)
-        )
+        # Reset λ accumulator at timestep start
+        fill!(base.dev_lambda, zero(eltype(base.dev_lambda)))
         KernelAbstractions.synchronize(backend)
 
-        kern_apply(
-            base.sorted_dev_positions, base.sorted_dev_velocities,
-            base.dev_delta_pos, base.dev_delta_vel, N;
-            ndrange = Int(N)
-        )
-        KernelAbstractions.synchronize(backend)
+        kern_compute = xpbd_correction_kernel!(backend)
+        kern_apply   = apply_xpbd_kernel!(backend)
+
+        for _ in 1:n_iters
+            kern_compute(
+                base.dev_delta_pos, base.dev_delta_vel, base.dev_delta_lambda,
+                base.sorted_dev_positions, base.sorted_dev_velocities, base.sorted_dev_radii,
+                base.dev_lambda,
+                search.cell_starts, search.cell_ends,
+                search.grid_min, search.cell_size, SVector{2,Int32}(search.grid_dims),
+                N, α_tilde;
+                ndrange = Int(N)
+            )
+            KernelAbstractions.synchronize(backend)
+
+            kern_apply(
+                base.sorted_dev_positions, base.sorted_dev_velocities, base.dev_lambda,
+                base.dev_delta_pos, base.dev_delta_vel, base.dev_delta_lambda, N;
+                ndrange = Int(N)
+            )
+            KernelAbstractions.synchronize(backend)
+        end
+    else
+        # ── Jacobi path (Sprint 3T, default) ─────────────────────────────────
+        kern_compute = agent_correction_kernel!(backend)
+        kern_apply   = apply_correction_kernel!(backend)
+
+        for _ in 1:n_iters
+            kern_compute(
+                base.dev_delta_pos, base.dev_delta_vel,
+                base.sorted_dev_positions, base.sorted_dev_velocities, base.sorted_dev_radii,
+                search.cell_starts, search.cell_ends,
+                search.grid_min, search.cell_size, SVector{2,Int32}(search.grid_dims), N;
+                ndrange = Int(N)
+            )
+            KernelAbstractions.synchronize(backend)
+
+            kern_apply(
+                base.sorted_dev_positions, base.sorted_dev_velocities,
+                base.dev_delta_pos, base.dev_delta_vel, N;
+                ndrange = Int(N)
+            )
+            KernelAbstractions.synchronize(backend)
+        end
     end
 end

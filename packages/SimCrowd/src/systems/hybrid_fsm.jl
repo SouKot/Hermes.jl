@@ -167,8 +167,9 @@ end
 # When nav_field = nothing (no nav field in scene), routes to the original 4-arg method.
 # Type-stable: no runtime branch in step!.
 function update_hybrid_fsm_system!(world::World, search::AbstractNeighborSearch,
-                                   backend::Backend, dt, ::Nothing)
-    update_hybrid_fsm_system!(world, search, backend, dt)
+                                   backend::Backend, dt, ::Nothing;
+                                   skip_contact::Bool=false)
+    update_hybrid_fsm_system!(world, search, backend, dt; skip_contact=skip_contact)
 end
 
 
@@ -198,7 +199,8 @@ function update_hybrid_fsm_system!(world::World,
                                    search::AbstractNeighborSearch,
                                    backend::Backend,
                                    dt::F,
-                                   nav::AbstractNavigationField{F}) where {F<:AbstractFloat}
+                                   nav::AbstractNavigationField{F};
+                                   skip_contact::Bool=false) where {F<:AbstractFloat}
 
     # ── 0. Guard: no hybrid agents → return immediately ─────────────────────
     n_hybrid = 0
@@ -280,7 +282,8 @@ function update_hybrid_fsm_system!(world::World,
             else
                 F_agent = _hybrid_sfm_force(
                     pos_i, vel_i, goal_eff, motion_i, params.orca_params.radius,
-                    params.sfm_params, all_positions, all_velocities, walls, F)
+                    params.sfm_params, all_positions, all_velocities, walls, F;
+                    skip_contact=skip_contact)
             end
 
             # ── 3f. Write force and updated state ───────────────────────────
@@ -407,7 +410,8 @@ end
         all_positions::Vector{SVector{2,F}},
         all_velocities::Vector{SVector{2,F}},
         walls::Vector{NTuple{2, SVector{2,F}}},
-        ::Type{F}) where {F<:AbstractFloat}
+        ::Type{F};
+        skip_contact::Bool=false) where {F<:AbstractFloat}
 
     # 1. Goal-seeking force
     F_total = goal_seeking_force(pos_i, vel_i, goal_i, motion_i.v_pref, motion_i.τ, motion_i.mass)
@@ -426,17 +430,18 @@ end
 
     # Geometry: collision_r matches AgentGeometry(r_body, r_body*2/3).collision_radius
     #
-    # DIAGNOSTIC (2026-08-26): social_r_wall = r_body = 0.2m caused two problems:
-    #   1. Door corner at d=0.303m: F_wall=555N > F_goal=203N → agent 61 blocked (net_x=-352N)
-    #      Fix: social_r_wall=0.1m → F_wall=156N < F_goal → FORWARD
-    #   2. k=120000 at dt=0.05s: ω₀=38.7 rad/s, stability limit dt<0.052s (marginal)
-    #      → agents fly through walls at 3.88 m/s (agent 70) and escape geometry
-    #      Fix: k=12000 → ω₀=12.25 rad/s, stable dt<0.163s ✓
-    #           Still prevents penetration: 12000×0.133=1596N > F_goal=224N
+    # STABILITY ANALYSIS (Euler explicit spring, 2026-09-01):
+    #   Stability requires ω₀ = sqrt(k/m) < 2/dt  →  k < 4m/dt²
+    #   At dt=0.05s, m=80kg: k_max = 4×80/0.05² = 128,000 N/m
+    #   With 2× safety margin:  k_safe = 64,000 N/m
+    #   Chosen: k=40,000 → ω₀=22.4 rad/s, dt_limit=0.089s (1.8× margin over 0.05s)
+    #   At g=0.133m overlap: F=40000×0.133=5320N >> F_goal~224N → resolves ~12cm/step
+    #   (Previous k=12000 resolved only ~3.8cm/step → insufficient for T7 dense bottleneck)
+    #   Social wall radius kept at 0.1m to avoid door-corner blockage (see 2026-08-26 note).
     collision_r_i = r_body * F(2/3)
-    social_r_wall = F(0.1)   # reduced from r_body=0.2m; door corner force now < goal force
-    k_contact     = F(12000)  # reduced from 120000; stable at dt=0.05s, still impenetrable
-    κ_contact     = F(24000)  # κ/k = 2.0 (Helbing ratio maintained)
+    social_r_wall = F(0.1)   # reduced from r_body=0.2m; door corner force < goal force
+    k_contact     = F(40000) # Euler-stable at dt=0.05s (ω₀=22.4, margin=1.8×); was 12000
+    κ_contact     = F(80000) # κ/k = 2.0 (Helbing ratio maintained); was 24000
 
     # 2. Agent-agent: PSYCHOLOGICAL (contact-range) + CONTACT forces.
     #
@@ -636,24 +641,25 @@ by the existing `compute_orca_kernel!` with a mode mask.
                     F_psych = -w * sfm_A * exp(-(d - social_r_agent - social_r_agent) / sfm_B) * n_ij
                     F_total = F_total + F_psych
 
-                    # Contact force (body compression + friction) — k=12000
+                    # Contact force (body compression + friction)
+                    # k=40000: Euler-stable at dt=0.05s (ω₀=22.4 rad/s, margin=1.8×)
                     overlap = collision_r_i + r_j * F_type(2/3) - d
                     if overlap > zero(F_type)
-                        F_contact_n = F_type(12000) * overlap * (-n_ij)
-                        # Tangential friction
+                        F_contact_n = F_type(40000) * overlap * (-n_ij)
+                        # Tangential friction (κ/k = 2.0, Helbing ratio)
                         tan_ij = typeof(n_ij)(-n_ij[2], n_ij[1])
                         dv_t   = (vel_j[1]-vel_i[1])*tan_ij[1] + (vel_j[2]-vel_i[2])*tan_ij[2]
-                        F_contact_t = F_type(24000) * overlap * dv_t * tan_ij
+                        F_contact_t = F_type(80000) * overlap * dv_t * tan_ij
                         F_total = F_total + F_contact_n + F_contact_t
                     end
                 end
             end
         end
 
-        # Wall repulsion (social_r_wall=0.1m, k=12000; matches CPU path)
+        # Wall repulsion (social_r_wall=0.1m, k=40000; matches CPU path)
         social_r_wall = F_type(0.1)
-        k_contact     = F_type(12000)
-        kappa_contact = F_type(24000)
+        k_contact     = F_type(40000)
+        kappa_contact = F_type(80000)
         @inbounds for w in 1:n_walls
             p1 = wall_p1s[w]; p2 = wall_p2s[w]
             seg = p2 - p1; l2 = seg[1]^2 + seg[2]^2
@@ -889,6 +895,106 @@ function update_hybrid_fsm_system!(world::World, search::RadixSpatialHash{AT,F},
             force_col[i] = Force(force_col[i].f + total_f)
             # Update FSM state (new mode + ρ_ema from GPU)
             state_col[i] = AgentFSMState{F}(cpu_new_modes[idx], cpu_new_rho_ema[idx], Int32(0))
+            idx += 1
+        end
+    end
+end
+
+
+# ────────────────────────────────────────────────────────────────────────────────
+# Contact-spring subcycling for SFM_MODE agents
+# ────────────────────────────────────────────────────────────────────────────────
+
+"""
+    apply_sfm_contact_subcycle!(world, n_sub, dt_sub, F)
+
+Runs `n_sub` Jacobi substeps of body-contact-spring integration for HybridFSM agents
+in `SFM_MODE`, using timestep `dt_sub` and Helbing's full `k=120,000 N/m`.
+
+**Why this works:** Helbing's full stiffness is stable when `ω₀ · dt_sub < 2`:
+  - ω₀ = sqrt(120000/80) = 38.7 rad/s
+  - dt_sub = dt/N = 0.05/5 = 0.01s  →  ω₀·dt_sub = 0.39 << 2 ✓
+  - At g=0.133m overlap: a = 120000×0.133/80 = 200 m/s²  →  resolves ~10mm per substep
+
+**Separation of concerns:** Only contact is subcycled. Goal-seeking and psychological
+forces are computed at the full `dt` by `update_hybrid_fsm_system!` (with `skip_contact=true`).
+This avoids coupling the agent's motivational timescale to the contact spring stiffness.
+
+**Jacobi update:** All substeps compute contact from the beginning-of-substep snapshot,
+then apply velocities and positions simultaneously. This is unconditionally stable and
+parallel-safe (no ordering bias between agents).
+
+Called from `step!` after `update_hybrid_fsm_system!` and before `integrate_physics_system!`.
+Activated when `config.sfm_contact_substeps > 0`.
+"""
+function apply_sfm_contact_subcycle!(world::World, n_sub::Int, dt_sub::F, ::Type{F}) where {F<:AbstractFloat}
+    n_sub == 0 && return
+
+    k_contact = F(120000)  # Helbing full (stable: ω₀·dt_sub = 38.7×0.01 = 0.39 << 2)
+    κ_contact = F(240000)  # κ/k = 2.0, Helbing ratio
+
+    # ─ Step 1: Snapshot all HybridFSM agent state ──────────────────────────────────
+    n_hybrid = 0
+    try; n_hybrid = count_entities(Query(world, (HybridFSMParams{F},))); catch e; e isa ArgumentError && return; rethrow(); end
+    n_hybrid == 0 && return
+
+    all_pos  = Vector{SVector{2,F}}(undef, n_hybrid)
+    all_vel  = Vector{SVector{2,F}}(undef, n_hybrid)
+    all_mode = Vector{Int32}(undef, n_hybrid)
+    all_cr   = Vector{F}(undef, n_hybrid)
+    all_mass = Vector{F}(undef, n_hybrid)
+    all_mu   = Vector{F}(undef, n_hybrid)
+
+    idx = 1
+    for (_, pos_col, vel_col, params_col, state_col, motion_col) in
+            Query(world, (Position{F}, Velocity{F}, HybridFSMParams{F},
+                          AgentFSMState{F}, MotionParams{F}))
+        for i in eachindex(pos_col)
+            all_pos[idx]  = pos_col[i].p
+            all_vel[idx]  = vel_col[i].v
+            all_mode[idx] = state_col[i].mode
+            all_cr[idx]   = params_col[i].orca_params.radius * F(2/3)
+            all_mass[idx] = motion_col[i].mass
+            all_mu[idx]   = params_col[i].sfm_params.μ
+            idx += 1
+        end
+    end
+
+    # ─ Steps 2..n_sub+1: Jacobi contact substeps ─────────────────────────────────
+    Δv = fill(zero(SVector{2,F}), n_hybrid)
+    for _ in 1:n_sub
+        fill!(Δv, zero(SVector{2,F}))
+        # Compute contact impulse for each SFM_MODE agent from current snapshot
+        for i in 1:n_hybrid
+            all_mode[i] != SFM_MODE && continue
+            F_c = zero(SVector{2,F})
+            for j in 1:n_hybrid
+                j == i && continue
+                F_c += contact_force(all_pos[i], all_vel[i], all_cr[i],
+                                     all_pos[j], all_vel[j], all_cr[j];
+                                     k=k_contact, κ=κ_contact, μ=all_mu[i])
+            end
+            Δv[i] = F_c / all_mass[i] * dt_sub
+        end
+        # Simultaneous (Jacobi) position + velocity update
+        for i in 1:n_hybrid
+            all_mode[i] != SFM_MODE && continue
+            all_vel[i] = all_vel[i] + Δv[i]
+            all_pos[i] = all_pos[i] + all_vel[i] * dt_sub
+        end
+    end
+
+    # ─ Step n_sub+2: Write updated positions + velocities back to ECS ──────────
+    # Use the same 5-component query for deterministic iteration order.
+    idx = 1
+    for (_, pos_col, vel_col, _, state_col, _) in
+            Query(world, (Position{F}, Velocity{F}, HybridFSMParams{F},
+                          AgentFSMState{F}, MotionParams{F}))
+        for i in eachindex(pos_col)
+            if state_col[i].mode == SFM_MODE
+                pos_col[i] = Position(all_pos[idx])
+                vel_col[i] = Velocity(all_vel[idx])
+            end
             idx += 1
         end
     end

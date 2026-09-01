@@ -72,6 +72,13 @@ struct BaseGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector,
     # Reused across all GPU contexts — zero extra allocation per step.
     dev_delta_pos :: VGPU          # Jacobi Δpos per sorted agent
     dev_delta_vel :: VGPU          # Jacobi Δvel per sorted agent
+
+    # ── XPBD per-agent λ accumulator (Sprint 3V) ──────────────────────────────
+    # dev_lambda:       accumulated λ across iterations (reset per timestep by XPBD path)
+    # dev_delta_lambda: per-iteration Δλ output from xpbd_correction_kernel!
+    # Both are SGPU (Float32 per agent). Zero cost for Jacobi path (never written).
+    dev_lambda       :: SGPU
+    dev_delta_lambda :: SGPU
 end
 
 """
@@ -114,12 +121,17 @@ function BaseGPUContext(backend, ::Type{F}, N::Int, max_walls::Int = 128) where 
     dev_delta_pos = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     dev_delta_vel = KernelAbstractions.zeros(backend, SVector{2,F}, N)
 
+    # Sprint 3V: XPBD λ accumulator buffers (Float32 per agent)
+    dev_lambda       = KernelAbstractions.zeros(backend, F, N)
+    dev_delta_lambda = KernelAbstractions.zeros(backend, F, N)
+
     return BaseGPUContext{F, VCPU, SCPU, VGPU, SGPU, BGPU}(
         cpu_positions, cpu_velocities, cpu_radii, cpu_wall_p1s, cpu_wall_p2s,
         dev_positions, dev_velocities, dev_radii, dev_wall_p1s, dev_wall_p2s,
         sorted_dev_positions, sorted_dev_velocities, sorted_dev_radii,
         needs_rebuild, last_build_positions,
-        dev_delta_pos, dev_delta_vel
+        dev_delta_pos, dev_delta_vel,
+        dev_lambda, dev_delta_lambda
     )
 end
 

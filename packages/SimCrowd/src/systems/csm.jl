@@ -978,7 +978,8 @@ GPU CSM dispatch. Builds the sorted spatial hash, then launches `compute_csm_ker
 """
 function update_csm_system!(world::World, search::RadixSpatialHash{AT,F},
                              backend::Backend, dt::F;
-                             n_iters_corr::Int = 8) where {AT,F}
+                             n_iters_corr::Int = 8,
+                             alg::AbstractCorrectionAlgorithm = JacobiCorrection()) where {AT,F}
     n_csm = 0
     try
         n_csm = count_entities(Query(world, (CSMParams{F},)))
@@ -1061,8 +1062,10 @@ function update_csm_system!(world::World, search::RadixSpatialHash{AT,F},
                    dt, Int32(N); ndrange=N)
     KernelAbstractions.synchronize(backend)
 
-    # 3. Jacobi agent non-penetration correction on post-step positions
-    apply_agent_correction_gpu!(ctx.base, search, backend; n_iters=n_iters_corr)
+    # 3. Jacobi/XPBD agent non-penetration correction on post-step positions
+    apply_agent_correction_gpu!(ctx.base, search, backend;
+                                n_iters = n_iters_corr,
+                                alg     = alg)
 
     # ── Scatter-back: corrected positions from device, new vels from kernel ───
     # sorted_dev_positions now holds post-step, Jacobi-corrected positions.

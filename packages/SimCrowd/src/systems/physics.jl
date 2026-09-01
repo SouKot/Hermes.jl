@@ -100,3 +100,13 @@ Pass `step_count` for reproducible per-agent stochastic noise (arch-breaking σ 
 """
 integrate_physics_system!(world::World, config::SimConfig{F}; step_count::Int=-1) where {F} =
     integrate_physics_system!(world, config.dt; max_speed=config.max_speed, step_count=step_count)
+
+"""
+    integrate_physics_system!(world, config::SimConfig, dt_eff)
+
+Adaptive-dt overload: integrates using `dt_eff` (instead of `config.dt`) while
+still reading `max_speed` from config. Used by `step!` when adaptive dt is active
+(any HybridFSM agent in SFM_MODE → dt_eff = config.dt_sfm).
+"""
+integrate_physics_system!(world::World, config::SimConfig{F}, dt_eff::F; step_count::Int=-1) where {F} =
+    integrate_physics_system!(world, dt_eff; max_speed=config.max_speed, step_count=step_count)

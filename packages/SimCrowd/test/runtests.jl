@@ -1072,4 +1072,97 @@ end
     @printf("\nSprint 3T-GPU step! RadixSpatialHash CSM dispatch: PASSED\n")
 end
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 3V: XPBD correction — types, equivalence, convergence
+# ─────────────────────────────────────────────────────────────────────────────
+@testset "Sprint 3V: XPBDCorrection types" begin
+    # Default constructor (keyword form, α=1e-6)
+    alg = XPBDCorrection()
+    @test alg isa XPBDCorrection{Float32}
+    @test alg.α ≈ 1f-6
+
+    # Explicit α
+    alg2 = XPBDCorrection(α=0f0)
+    @test alg2.α == 0f0
+
+    alg3 = XPBDCorrection(α=Float64(1e-4))
+    @test alg3 isa XPBDCorrection{Float64}
+    @test alg3.α ≈ 1e-4
+
+    # SimConfig with XPBD algorithm field
+    cfg = SimConfig{Float32}(0.05f0, 5.0f0, 8, 1f-3, XPBDCorrection())
+    @test cfg.correction_alg isa XPBDCorrection
+    @test (cfg.correction_alg::XPBDCorrection).α ≈ 1f-6
+
+    # SimConfig default: Jacobi
+    cfg2 = SimConfig()
+    @test cfg2.correction_alg isa JacobiCorrection
+
+    @printf("\nSprint 3V XPBDCorrection types + SimConfig: PASSED\n")
+end
+
+@testset "Sprint 3V: XPBD α=0 is equivalent to Jacobi (two-agent)" begin
+    # Same setup as Sprint 3T two-agent test
+    F = Float32
+    r = F(0.25)
+    world_j = World(Position{F}, Velocity{F}, AgentGeometry{F})
+    new_entity!(world_j, (Position(SVector(F(-0.15), F(0))), Velocity(zero(SVector{2,F})),
+                           AgentGeometry(r, r)))
+    new_entity!(world_j, (Position(SVector(F( 0.15), F(0))), Velocity(zero(SVector{2,F})),
+                           AgentGeometry(r, r)))
+
+    world_x = World(Position{F}, Velocity{F}, AgentGeometry{F})
+    new_entity!(world_x, (Position(SVector(F(-0.15), F(0))), Velocity(zero(SVector{2,F})),
+                           AgentGeometry(r, r)))
+    new_entity!(world_x, (Position(SVector(F( 0.15), F(0))), Velocity(zero(SVector{2,F})),
+                           AgentGeometry(r, r)))
+
+    gr = SVector(F(-2), F(-2)); gx = SVector(F(2), F(2))
+    rsh_j = RadixSpatialHash(CPU(), 2, gr, gx, F(1.0))
+    rsh_x = RadixSpatialHash(CPU(), 2, gr, gx, F(1.0))
+
+    # Jacobi correction
+    apply_agent_correction_cpu!(world_j, rsh_j, F; n_iters=8, alg=JacobiCorrection())
+    # XPBD with α=0 (exact Jacobi limit)
+    apply_agent_correction_cpu!(world_x, rsh_x, F; n_iters=8, alg=XPBDCorrection(α=0f0))
+
+    pos_j = [pos_col[i].p for (_, pos_col) in Query(world_j, (Position{F},)) for i in eachindex(pos_col)]
+    pos_x = [pos_col[i].p for (_, pos_col) in Query(world_x, (Position{F},)) for i in eachindex(pos_col)]
+
+    for k in 1:2
+        @test norm(pos_j[k] - pos_x[k]) < 1f-5   # identical to float precision
+    end
+
+    # Both should resolve separation to ≥ 2r
+    d_j = norm(pos_j[1] - pos_j[2])
+    d_x = norm(pos_x[1] - pos_x[2])
+    @test d_j ≈ F(0.5) atol=F(1e-3)
+    @test d_x ≈ F(0.5) atol=F(1e-3)
+
+    @printf("\nSprint 3V XPBD α=0 ≡ Jacobi: d_jacobi=%.3f d_xpbd=%.3f (target=0.500)\n",
+            d_j, d_x)
+end
+
+@testset "Sprint 3V: XPBD converges (RadixSpatialHash, n_iters=8)" begin
+    # 2-agent overlap resolved with XPBD α=1e-6
+    F = Float32
+    r = F(0.25)
+    world = World(Position{F}, Velocity{F}, AgentGeometry{F})
+    new_entity!(world, (Position(SVector(F(-0.15), F(0))), Velocity(zero(SVector{2,F})),
+                         AgentGeometry(r, r)))
+    new_entity!(world, (Position(SVector(F( 0.15), F(0))), Velocity(zero(SVector{2,F})),
+                         AgentGeometry(r, r)))
+
+    gr = SVector(F(-2), F(-2)); gx = SVector(F(2), F(2))
+    rsh = RadixSpatialHash(CPU(), 2, gr, gx, F(1.0))
+
+    apply_agent_correction_cpu!(world, rsh, F; n_iters=8, alg=XPBDCorrection())
+
+    pos_arr = [pos_col[i].p for (_, pos_col) in Query(world, (Position{F},)) for i in eachindex(pos_col)]
+    d_after = norm(pos_arr[1] - pos_arr[2])
+
+    @test d_after ≥ F(0.499)   # ≥ 2r - 1mm tolerance
+    @printf("\nSprint 3V XPBD n_iters=8: d_before=0.300 d_after=%.3f (target=0.500)\n", d_after)
+end
+
 end  # SimCrowd.jl
