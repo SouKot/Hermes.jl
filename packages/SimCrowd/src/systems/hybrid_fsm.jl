@@ -397,9 +397,15 @@ end
 end
 
 # ── SFM force for a single Hybrid agent ───────────────────────────────────────
-# Contact-only SFM for dense bottleneck zone.
+# Computes the full SFM force vector for one agent in SFM_MODE.
 # r_body = orca_params.radius (= AgentGeometry.social_radius in the typical setup).
 # Geometry: collision_r = r_body * 2/3  (matches AgentGeometry constructor default).
+#
+# Repulsion model is selected at call time via SFMParams fields (no runtime dispatch
+# overhead — Julia's compiler eliminates dead branches on concrete F):
+#   sp.τ_gap > 0  → GCFM elliptical (Chraibi 2010 §III): anticipatory, prevents penetration
+#   sp.η > 0      → GCF circular    (Chraibi 2010 §II) : speed-adaptive decay
+#   else          → Helbing SFM     (default)           : fixed-range exponential
 @inline function _hybrid_sfm_force(
         pos_i::SVector{2,F},
         vel_i::SVector{2,F},
@@ -413,12 +419,12 @@ end
         ::Type{F};
         skip_contact::Bool=false) where {F<:AbstractFloat}
 
-    # 1. Goal-seeking force
+    # 1. Goal-seeking force: drives agent toward goal at preferred speed v_pref.
     F_total = goal_seeking_force(pos_i, vel_i, goal_i, motion_i.v_pref, motion_i.τ, motion_i.mass)
 
     # 1b. Helbing fluctuation force (Helbing et al. 2000, Eq. 1).
     # PySocialForce reference confirmed: SFM without noise → 0/80 agents pass in 120s.
-    # The fluctuation breaks metastable arches stochastically.
+    # The fluctuation breaks metastable arches stochastically. σ=0 → deterministic.
     # F_fluct = m·σ·ξ  where ξ is a random unit vector.
     if motion_i.σ > F(0)
         ξ₁ = randn(F);  ξ₂ = randn(F)
@@ -428,52 +434,90 @@ end
         end
     end
 
-    # Geometry: collision_r matches AgentGeometry(r_body, r_body*2/3).collision_radius
-    #
-    # STABILITY ANALYSIS (Euler explicit spring, 2026-09-01):
+    # Contact geometry constants.
+    # STABILITY ANALYSIS (Euler explicit spring):
     #   Stability requires ω₀ = sqrt(k/m) < 2/dt  →  k < 4m/dt²
-    #   At dt=0.05s, m=80kg: k_max = 4×80/0.05² = 128,000 N/m
-    #   With 2× safety margin:  k_safe = 64,000 N/m
+    #   At dt=0.05s, m=80kg: k_max = 4×80/0.05² = 128,000 N/m; 2× margin → k_safe=64,000 N/m
     #   Chosen: k=40,000 → ω₀=22.4 rad/s, dt_limit=0.089s (1.8× margin over 0.05s)
-    #   At g=0.133m overlap: F=40000×0.133=5320N >> F_goal~224N → resolves ~12cm/step
-    #   (Previous k=12000 resolved only ~3.8cm/step → insufficient for T7 dense bottleneck)
     #   Social wall radius kept at 0.1m to avoid door-corner blockage (see 2026-08-26 note).
-    collision_r_i = r_body * F(2/3)
-    social_r_wall = F(0.1)   # reduced from r_body=0.2m; door corner force < goal force
-    k_contact     = F(40000) # Euler-stable at dt=0.05s (ω₀=22.4, margin=1.8×); was 12000
-    κ_contact     = F(80000) # κ/k = 2.0 (Helbing ratio maintained); was 24000
+    collision_r_i = r_body * F(2/3)  # body contact radius = 2/3 × social radius
+    social_r_wall = F(0.1)           # reduced from r_body=0.2m; door corner force < goal force
+    k_contact     = F(40000)         # Euler-stable at dt=0.05s (ω₀=22.4, margin=1.8×)
+    κ_contact     = F(80000)         # κ/k = 2.0 (Helbing ratio maintained)
 
-    # 2. Agent-agent: PSYCHOLOGICAL (contact-range) + CONTACT forces.
+    # 2. Agent-agent: repulsion + contact spring.
     #
-    # CRITICAL DESIGN NOTE: contact-only SFM (no psychological force) creates PERMANENT
-    # arches at the bottleneck door. Without the anisotropy weight ω=λ+(1-λ)*(1+cosθ)/2,
-    # the force equilibrium at an arch is perfectly symmetric → never breaks → deadlock.
+    # ── Repulsion model (selected by SFMParams.τ_gap and SFMParams.η) ─────────────
     #
-    # Solution: use psychological_force with social_r_agent = sp.B (= 0.08m).
-    # At d=0.25m (body contact): F ≈ 2000 N — same as Helbing contact model.
-    # At d=0.45m: F ≈ 88 N (exponential decay, near-zero at 0.5m).
-    # This is CONTACT-RANGE only (no long-range lateral pressure that stabilises arches),
-    # but PRESERVES λ-anisotropy: rear neighbours feel 0.5× the force of forward neighbours
-    # → arch asymmetry → arch breaks → agents flow through door.
-    social_r_agent = sp.B   # = 0.08m: Helbing's own decay length, contact-range psychological
+    #  GCFM elliptical  (sp.τ_gap > 0)  — Chraibi et al. (2010) §III
+    #    Anticipatory elliptic personal space: front semi-axis a(v) = r_body + τ_gap × ‖v‖.
+    #    Force scales inversely with time-to-collision → singularity at TTC=0 → natural
+    #    non-penetration at any dt. λ-anisotropy still breaks arch symmetry.
+    #    Calibration: A ≈ 70 N (Chraibi Table II), τ_gap=0.53s, b_min=0.20, b_max=0.25.
+    #    ⚠  Set sp.A ≈ 70 (not 2000) when using GCFM — different potential scale.
+    #
+    #  GCF circular     (sp.η > 0, τ_gap = 0)  — Chraibi et al. (2010) §II
+    #    Speed-adaptive decay: D_i = r_body + η × ‖v_i‖. Faster agents maintain larger
+    #    personal space ahead. Backward-compatible: same A as Helbing (≈ 2000 N).
+    #    Calibration: A ≈ 2000 N, η = 0.5 s.
+    #
+    #  Helbing SFM      (sp.τ_gap = 0, sp.η = 0)  — Helbing & Molnár (1995)  [default]
+    #    Fixed-range exponential decay with length B = sp.B (= 0.08m).
+    #    Calibration: A = 2000 N, B = 0.08 m.
+    #
+    # The body contact spring (k, κ) is ALWAYS separate from the repulsion model.
+    # It handles physical body-body compression and is applied independently of which
+    # repulsion model is active, unless skip_contact=true (subcycling active).
+    use_gcfm = sp.τ_gap > zero(F)
+    use_gcf  = !use_gcfm && sp.η > zero(F)
+
     for j in eachindex(all_positions)
         d_sq = sum(abs2, all_positions[j] - pos_i)
         d_sq < F(1e-8) && continue  # skip self
         pos_j = all_positions[j]
         vel_j = all_velocities[j]
-        # Psychological force (anisotropic, contact-range only via B=0.08m)
-        F_total += psychological_force(pos_i, vel_i, social_r_agent, pos_j, social_r_agent;
-                                       A=sp.A, B=sp.B, λ=sp.λ)
-        # Body compression + friction (only when physically overlapping)
-        # k=12000 (not 120000) for Euler stability at dt=0.05s
-        F_total += contact_force(pos_i, vel_i, collision_r_i,
-                                 pos_j, vel_j, collision_r_i; μ=sp.μ, k=k_contact, κ=κ_contact)
+
+        # ── Repulsion model dispatch ──────────────────────────────────────────────
+        if use_gcfm
+            # GCFM elliptical (Chraibi 2010 §III):
+            #   a₀ = r_body: body ellipse semi-axis at rest (m)
+            #   a(v) = r_body + τ_gap × ‖v‖ grows forward with speed → prevents closure
+            #   V₀ = sp.A: user-controlled strength (Chraibi: A=70 N; Helbing: A=2000 N)
+            F_total += gcf_force_elliptical(pos_i, vel_i, pos_j;
+                                             a₀     = r_body,
+                                             τ_gap  = sp.τ_gap,
+                                             b_min  = sp.b_min,
+                                             b_max  = sp.b_max,
+                                             V₀     = sp.A,
+                                             λ      = sp.λ,
+                                             v₀_ref = motion_i.v_pref)
+        elseif use_gcf
+            # GCF circular (Chraibi 2010 §II):
+            #   D_i = r_body + η × ‖v_i‖  (speed-adaptive decay length)
+            #   V₀ = sp.A: backward-compatible (Helbing value A=2000 N works here)
+            F_total += gcf_force(pos_i, vel_i, r_body, pos_j, r_body;
+                                  V₀ = sp.A, η = sp.η, λ = sp.λ)
+        else
+            # Helbing SFM (default):
+            #   Fixed exponential, decay length B = sp.B = 0.08m (contact-range only)
+            F_total += psychological_force(pos_i, vel_i, sp.B, pos_j, sp.B;
+                                           A = sp.A, B = sp.B, λ = sp.λ)
+        end
+
+        # ── Body contact spring (independent of repulsion model) ──────────────────
+        # Activates only when bodies physically overlap (d < 2 × collision_r_i).
+        # skip_contact=true: contact handled by apply_sfm_contact_subcycle! at smaller dt.
+        if !skip_contact
+            F_total += contact_force(pos_i, vel_i, collision_r_i,
+                                     pos_j, vel_j, collision_r_i;
+                                     μ=sp.μ, k=k_contact, κ=κ_contact)
+        end
     end
 
     # 3. Wall repulsion — social_r_wall=0.1m (not r_body=0.2m) for door corner access
     for w in walls
         F_total += wall_repulsion(pos_i, vel_i, social_r_wall, collision_r_i, w;
-                                  μ=sp.μ, k=k_contact, κ=κ_contact)
+                                   μ=sp.μ, k=k_contact, κ=κ_contact)
     end
 
     return F_total
