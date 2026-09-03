@@ -49,6 +49,7 @@ function build_hybrid_t7_scene(F, n_iters, N=80;
                                 alg=JacobiCorrection(),
                                 sfm_params=sfm_helbing(F),
                                 sfm_contact_substeps=0,
+                                vel_impulse=VelocityImpulseParams{F}(),
                                 ρ_on=F(3.0), ρ_off=F(0.5))
     dt     = F(0.05)
     v_pref = F(1.4)
@@ -91,7 +92,7 @@ function build_hybrid_t7_scene(F, n_iters, N=80;
     end
 
     search = RadixSpatialHash(CPU(), N, SVector(-1f0,-1f0), SVector(13f0,5f0), F(2.0))
-    config = SimConfig{F}(dt, dt, F(2.0), n_iters, F(1e-3), alg, sfm_contact_substeps)
+    config = SimConfig{F}(dt, dt, F(2.0), n_iters, F(1e-3), alg, sfm_contact_substeps, vel_impulse)
     SimScene(world, search, nav, config), N, dt, r_body
 end
 
@@ -112,12 +113,14 @@ end
 function run_scenario(n_iters; alg=JacobiCorrection(), T_sim=60f0, F=Float32,
                        sfm_params=sfm_helbing(F),
                        sfm_contact_substeps=0,
-                       ρ_on=F(3.0), label="Helbing")
+                       vel_impulse=VelocityImpulseParams{F}(),
+                       ρ_on=F(3.0), ρ_off=F(0.5), label="Helbing")
     scene, N, dt, r_body = build_hybrid_t7_scene(F, n_iters, 80;
                                                    alg=alg,
                                                    sfm_params=sfm_params,
                                                    sfm_contact_substeps=sfm_contact_substeps,
-                                                   ρ_on=ρ_on)
+                                                   vel_impulse=vel_impulse,
+                                                   ρ_on=ρ_on, ρ_off=ρ_off)
 
     # JIT warmup
     for _ in 1:10; step!(scene); end
@@ -127,7 +130,8 @@ function run_scenario(n_iters; alg=JacobiCorrection(), T_sim=60f0, F=Float32,
                                                alg=alg,
                                                sfm_params=sfm_params,
                                                sfm_contact_substeps=sfm_contact_substeps,
-                                               ρ_on=ρ_on)
+                                               vel_impulse=vel_impulse,
+                                               ρ_on=ρ_on, ρ_off=ρ_off)
 
     step_times=Float64[]; min_seps=Float32[]; max_ovs=Float32[]
     n_passed=0; t=F(0)
@@ -189,34 +193,40 @@ F = Float32
 results = []
 
 configs = [
-    # (label, ρ_on, n_iters, alg, sfm_params, sfm_contact_substeps)
+    # (label, ρ_on, n_iters, alg, sfm_params, sfm_contact_substeps, vel_impulse)
     #
     # ── Baseline ──────────────────────────────────────────────────────────────
-    ("Helbing ρ_on=3.0",         3.0f0,  8, JacobiCorrection(),     sfm_helbing(F), 0),
+    ("Helbing ρ_on=3.0",         3.0f0,  8, JacobiCorrection(),     sfm_helbing(F), 0, VelocityImpulseParams{F}()),
     #
     # ── GCFM: ρ_on=3.0 (no benefit — v≈0 at transition, ellipse = body radius) ─
-    ("GCFM A=70 ρ_on=3.0",      3.0f0,  8, JacobiCorrection(),     sfm_gcfm(F; A=F(70)), 0),
+    ("GCFM A=70 ρ_on=3.0",      3.0f0,  8, JacobiCorrection(),     sfm_gcfm(F; A=F(70)), 0, VelocityImpulseParams{F}()),
     #
     # ── GCFM: lower ρ_on — activates with v>0, creates density-brake backpressure ─
-    ("GCFM A=70 ρ_on=1.5",      1.5f0,  8, JacobiCorrection(),     sfm_gcfm(F; A=F(70)), 0),
-    ("GCFM A=70 ρ_on=1.0",      1.0f0,  8, JacobiCorrection(),     sfm_gcfm(F; A=F(70)), 0),
-    ("GCFM A=70 ρ_on=0.8",      0.8f0,  8, JacobiCorrection(),     sfm_gcfm(F; A=F(70)), 0),
-    ("GCFM A=70 ρ_on=0.6",      0.6f0,  8, JacobiCorrection(),     sfm_gcfm(F; A=F(70)), 0),
+    ("GCFM A=70 ρ_on=1.5",      1.5f0,  8, JacobiCorrection(),     sfm_gcfm(F; A=F(70)), 0, VelocityImpulseParams{F}()),
+    ("GCFM A=70 ρ_on=1.0",      1.0f0,  8, JacobiCorrection(),     sfm_gcfm(F; A=F(70)), 0, VelocityImpulseParams{F}()),
+    ("GCFM A=70 ρ_on=0.8",      0.8f0,  8, JacobiCorrection(),     sfm_gcfm(F; A=F(70)), 0, VelocityImpulseParams{F}()),
+    ("GCFM A=70 ρ_on=0.6",      0.6f0,  8, JacobiCorrection(),     sfm_gcfm(F; A=F(70)), 0, VelocityImpulseParams{F}()),
     #
     # ── GCFM + XPBD: best combination (Sprint 3X recommended config) ───────────
-    ("GCFM A=70 ρ_on=1.0 XPBD", 1.0f0,  8, XPBDCorrection(α=1f-6), sfm_gcfm(F; A=F(70)), 0),
-    ("GCFM A=70 ρ_on=0.8 XPBD", 0.8f0,  8, XPBDCorrection(α=1f-6), sfm_gcfm(F; A=F(70)), 0),
+    ("GCFM A=70 ρ_on=1.0 XPBD", 1.0f0,  8, XPBDCorrection(α=1f-6), sfm_gcfm(F; A=F(70)), 0, VelocityImpulseParams{F}()),
+    ("GCFM A=70 ρ_on=0.8 XPBD", 0.8f0,  8, XPBDCorrection(α=1f-6), sfm_gcfm(F; A=F(70)), 0, VelocityImpulseParams{F}()),
+    #
+    # ── Sprint 3Y: XPBD + velocity impulse (n=8 sweeps) ─────────────────────────
+    # Expected: δ_max → <10mm (velocity impulse zeroes closing speed post-XPBD)
+    ("3Y: Helbing+Jacobi+VI",    3.0f0,  8, JacobiCorrection(),     sfm_helbing(F), 0, VelocityImpulseParams(F; n_iters=8)),
+    ("3Y: GCFM ρ_on=1.0+XPBD+VI",1.0f0, 8, XPBDCorrection(α=1f-6), sfm_gcfm(F; A=F(70)), 0, VelocityImpulseParams(F; n_iters=8)),
+    ("3Y: GCFM ρ_on=0.8+XPBD+VI",0.8f0, 8, XPBDCorrection(α=1f-6), sfm_gcfm(F; A=F(70)), 0, VelocityImpulseParams(F; n_iters=8)),
 ]
 
 # ρ_off = 35% of ρ_on (hysteresis band), min 0.20 to avoid chattering at very low ρ_on
 ρ_off_for(ρ_on::F) where F = F(max(ρ_on * F(0.35), F(0.20)))
 
-for (label, ρ_on, n_iters, alg, sparams, n_sub) in configs
+for (label, ρ_on, n_iters, alg, sparams, n_sub, vi) in configs
     alg_str = alg isa JacobiCorrection ? "Jacobi" : "XPBD"
     println("Running: $(label) [alg=$(alg_str)]...")
     r = run_scenario(n_iters; alg=alg, sfm_params=sparams,
-                     sfm_contact_substeps=n_sub, ρ_on=ρ_on,
-                     ρ_off=ρ_off_for(ρ_on), label=label)
+                     sfm_contact_substeps=n_sub, vel_impulse=vi,
+                     ρ_on=ρ_on, ρ_off=ρ_off_for(ρ_on), label=label)
     @printf("  max_ov_max=%.4fm  ov_frac=%.1f%%  flow=%.3f ped/s  mean_step=%.2fms\n\n",
             r.max_ov_max, r.ov_frac*100, r.flow, r.mean_step_ms)
     push!(results, r)

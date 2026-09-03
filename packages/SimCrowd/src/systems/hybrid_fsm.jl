@@ -340,16 +340,32 @@ end
             num_wall_lines += 1
 
             # §3P: endpoint vertex constraints (van den Berg 2011 §3.2)
-            # Emit a separate point-obstacle VO for each wall segment endpoint.
+            # Each EXPOSED (isolated) wall endpoint generates a point-obstacle VO.
             # Prevents agents from arcing through door corners when FMM nav
             # preferred velocity is diagonal toward the corner endpoint.
             # CPU path uses heap Vector — no MVector budget limit here.
+            #
+            # §3P-fix (shared-corner): SKIP endpoint constraints for SHARED corners
+            # (endpoints where two wall segments meet, e.g. 90° block or room corners).
+            # At shared corners, the two wall segment constraints already cover the corner;
+            # an extra endpoint half-plane over-constrains the LP and can trap agents.
             for qe in (p1, p2)
                 dist_ep = norm(qe - pos_i)
                 if dist_ep > F(1e-6) && dist_ep < interaction_r
-                    push!(lines, compute_orca_line_endpoint(pos_i, vel_i, op.radius, qe,
-                                                             op.time_horizon_obst, dt))
-                    num_wall_lines += 1
+                    # Check if qe is shared — appears as p1 or p2 of another wall.
+                    qe_shared = false
+                    for (p1_2, p2_2) in walls
+                        if !((p1_2 === p1 && p2_2 === p2) || (p1_2 === p2 && p2_2 === p1))
+                            qe_shared = qe_shared |
+                                        (sum(abs2.(qe - p1_2)) < F(1e-4)) |
+                                        (sum(abs2.(qe - p2_2)) < F(1e-4))
+                        end
+                    end
+                    if !qe_shared
+                        push!(lines, compute_orca_line_endpoint(pos_i, vel_i, op.radius, qe,
+                                                                 op.time_horizon_obst, dt))
+                        num_wall_lines += 1
+                    end
                 end
             end
         end

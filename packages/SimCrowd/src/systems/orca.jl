@@ -278,15 +278,36 @@ Val{W}: compile-time wall-line bound (16 by default, configurable per scene)
                     pos_i, vel_i, r_i, p1, p2, time_h_obst_i, dt)
 
                 # §3P: endpoint vertex constraints (van den Berg 2011 §3.2)
-                # Each exposed wall endpoint generates a separate point-obstacle VO.
+                # Each EXPOSED (isolated) wall endpoint generates a point-obstacle VO.
                 # This prevents agents from arcing through door corners when the
                 # FMM preferred velocity is diagonal toward the corner.
+                #
+                # §3P-fix: SKIP endpoint constraints for SHARED corners — endpoints
+                # where two wall segments meet (e.g., 90° block corners, room corners).
+                # At shared corners, the two wall segment constraints already restrict
+                # the LP; a 3rd endpoint half-plane over-constrains it and traps agents.
+                # Diagnostic: WE=6 (segment-only budget) → 50/50 PASS; WE=48 → 47/50.
+                # GPU-safe: no break/return; uses boolean OR accumulation instead.
                 for qe in (p1, p2)
                     dist_ep = norm(qe - pos_i)
                     if dist_ep > typeof(r_i)(1e-6) && dist_ep < interaction_r && num_wall_lines < WE
-                        num_wall_lines += 1
-                        wall_lines[num_wall_lines] = compute_orca_line_endpoint(
-                            pos_i, vel_i, r_i, qe, time_h_obst_i, dt)
+                        # Check if qe is shared (appears as p1 or p2 of another wall segment).
+                        # O(W) scan — GPU-safe (no break; boolean OR accumulation).
+                        qe_is_shared = false
+                        for w2 in 1:n_walls
+                            if w2 != w
+                                d1_sq = sum(abs2.(qe - wall_p1s[w2]))
+                                d2_sq = sum(abs2.(qe - wall_p2s[w2]))
+                                # Tolerance 1e-4m² → 0.01m; wall vertices should match exactly
+                                qe_is_shared = qe_is_shared | (d1_sq < typeof(r_i)(1e-4)) |
+                                                               (d2_sq < typeof(r_i)(1e-4))
+                            end
+                        end
+                        if !qe_is_shared
+                            num_wall_lines += 1
+                            wall_lines[num_wall_lines] = compute_orca_line_endpoint(
+                                pos_i, vel_i, r_i, qe, time_h_obst_i, dt)
+                        end
                     end
                 end
             end

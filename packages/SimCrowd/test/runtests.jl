@@ -856,7 +856,8 @@ end
     vel_i = SVector(F(1), F(0))
     pos_j = SVector(F(1), F(0))   # d=1.0, r_i+r_j=0.6 → no overlap
     r_i = F(0.3); r_j = F(0.3)
-    dp, dv = apply_agent_pair_correction(pos_i, vel_i, r_i, pos_j, r_j)
+    vel_j_zero = zero(SVector{2,F})   # stationary neighbour (Sprint 3T-fix: new 6-arg API)
+    dp, dv = apply_agent_pair_correction(pos_i, vel_i, r_i, pos_j, vel_j_zero, r_j)
     @test dp == zero(SVector{2,F})
     @test dv == zero(SVector{2,F})
 
@@ -866,29 +867,26 @@ end
     # Δpos_i = (overlap/2) × n_hat = 0.1 × (-1, 0) = (-0.1, 0)
     # i is pushed LEFT (away from j at x=0.4) — physically correct
     pos_j2 = SVector(F(0.4), F(0))
-    dp2, dv2 = apply_agent_pair_correction(pos_i, vel_i, r_i, pos_j2, r_j)
+    dp2, dv2 = apply_agent_pair_correction(pos_i, vel_i, r_i, pos_j2, vel_j_zero, r_j)
     @test dp2[1] ≈ F(-0.1) atol=1f-5   # push left (away from j at x=0.4)
     @test abs(dp2[2]) < 1f-5            # no y component
 
     # ── Case 3: Velocity correction cancels inward component ──────────────────
-    vel_into = SVector(F(-1), F(0))     # moving left = INTO j (j is to the right)
-    dp3, dv3 = apply_agent_pair_correction(pos_i, vel_into, r_i, pos_j2, r_j)
-    # Inward velocity should be cancelled: vel_into is moving toward j (pos_j2 at x=0.4)
-    # n_hat = (pos_i - pos_j2) / d = (-0.4, 0) / 0.4 = (-1, 0)
-    # v_into = dot(vel_into, -n_hat) = dot((-1,0), (1,0)) = -1 → negative = moving away?
-    # Wait: vel_into=(-1,0), pos_i=(0,0), pos_j2=(0.4,0), so i is LEFT of j.
-    # Moving at (-1,0) means moving AWAY from j (leftward). So dv should be zero.
+    vel_into = SVector(F(-1), F(0))     # moving left = AWAY from j (j is right of i)
+    dp3, dv3 = apply_agent_pair_correction(pos_i, vel_into, r_i, pos_j2, vel_j_zero, r_j)
+    # n̂ = (-1,0); v_closing = (vel_into - vel_j_zero) · n̂ = ((-1,0)·(-1,0)) = +1 > 0 → separating
+    # Correct Maury-Venel: no impulse when separating. dv = 0.
     @test dv3 == zero(SVector{2,F})
 
     # Now test with vel moving TOWARD j (rightward = +x)
     vel_toward = SVector(F(1), F(0))    # moving toward j (j is to the right)
-    dp4, dv4 = apply_agent_pair_correction(pos_i, vel_toward, r_i, pos_j2, r_j)
-    # n_hat = (-1, 0), v_into = dot((1,0), -(-1,0)) = dot((1,0),(1,0)) = 1 > 0
-    # Δvel = 1 * (-1, 0) → cancels the rightward velocity
-    @test dv4[1] < F(0)   # correction is leftward (cancels rightward inward vel)
+    dp4, dv4 = apply_agent_pair_correction(pos_i, vel_toward, r_i, pos_j2, vel_j_zero, r_j)
+    # n̂ = (-1,0); v_closing = ((1,0)-(0,0))·(-1,0) = -1 < 0 → approaching
+    # Δvel_i = (1/2) × (-1,0) = (-0.5,0) — leftward Maury-Venel correction
+    @test dv4[1] < F(0)   # correction is leftward (cancels rightward closing speed)
 
     # ── Case 4: Degenerate (coincident) — pushes +x ───────────────────────────
-    dp5, dv5 = apply_agent_pair_correction(pos_i, vel_i, r_i, pos_i, r_j)
+    dp5, dv5 = apply_agent_pair_correction(pos_i, vel_i, r_i, pos_i, vel_j_zero, r_j)
     @test dp5[1] > F(0)   # pushes in +x direction
     @test isfinite(dp5[1]) && isfinite(dp5[2])
 
@@ -1163,6 +1161,341 @@ end
 
     @test d_after ≥ F(0.499)   # ≥ 2r - 1mm tolerance
     @printf("\nSprint 3V XPBD n_iters=8: d_before=0.300 d_after=%.3f (target=0.500)\n", d_after)
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 3W: skip_contact kwarg + sfm_contact_substeps
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "Sprint 3W: skip_contact suppresses contact force in _hybrid_sfm_force" begin
+    F = Float32
+    # _hybrid_sfm_force(pos_i, vel_i, goal_i, motion_i, r_body, sp,
+    #                   all_positions, all_velocities, walls, ::Type{F}; skip_contact)
+    #
+    # Agent i at origin, agent j at (0.2, 0) — inside contact zone:
+    #   collision_r = 0.2 × 2/3 ≈ 0.133m; contact threshold = 2×0.133 = 0.267m > 0.2m ✓
+    # Goal is at (-5, 0) = leftward, so goal-seeking is in -x direction.
+    # Repulsion + contact spring also in -x direction → easy sign assertion.
+    # σ=0: no fluctuation noise.
+    r = F(0.2)
+    pos_i  = SVector(F(0), F(0))
+    pos_j  = SVector(F(0.2), F(0))   # d=0.2m < 2*collision_r=0.267m → contact zone
+    vel_i  = zero(SVector{2,F})
+    vel_j  = zero(SVector{2,F})
+    goal_i = SVector(F(-5), F(0))    # goal leftward (away from j)
+    mp_i   = MotionParams(F(80), F(1.4), F(0.5), F(0))   # σ=0: no random force
+    sp_helbing = SFMParams{F}(F(2000), F(0.08), F(0.5), F(0.5), zero(F), zero(F), F(0.25), F(0.25))
+    all_pos  = SVector{2,F}[pos_i, pos_j]
+    all_vel  = SVector{2,F}[vel_i, vel_j]
+    walls    = NTuple{2, SVector{2,F}}[]
+
+    f_with = SimCrowd._hybrid_sfm_force(pos_i, vel_i, goal_i, mp_i, r, sp_helbing,
+                                         all_pos, all_vel, walls, F; skip_contact=false)
+    f_skip = SimCrowd._hybrid_sfm_force(pos_i, vel_i, goal_i, mp_i, r, sp_helbing,
+                                         all_pos, all_vel, walls, F; skip_contact=true)
+
+    # With skip_contact=false: contact force (k×δ×n̂) adds to repulsion, larger total
+    @test f_with[1] < F(0)              # repulsive leftward (correct direction)
+    @test isfinite(f_with[1]) && isfinite(f_with[2])
+    @test norm(f_with) > norm(f_skip)   # contact adds magnitude → skip makes it smaller
+
+    @printf("\nSprint 3W skip_contact: f_with=%.1fN  f_skip=%.1fN (contact removed)\n",
+            norm(f_with), norm(f_skip))
+end
+
+@testset "Sprint 3W: update_hybrid_fsm_system! dispatches with RadixSpatialHash + Nothing nav" begin
+    # This tests the exact dispatch bug we fixed: step! calls
+    #   update_hybrid_fsm_system!(world, search, backend, dt, nav; skip_contact=...)
+    # where nav::Nothing. Before the fix this threw MethodError.
+    F = Float32
+    N = 2
+    r = F(0.2); mass = F(80); v_pref = F(1.4)
+
+    world = World(Position{F}, Velocity{F}, AgentGeometry{F}, MotionParams{F},
+                  Goal{F}, Force{F}, WallSegment{F}, HybridFSMParams{F}, AgentFSMState{F})
+
+    sp = SFMParams{F}()
+    op = ORCAParams(F(2.0), F(0.5), 10, F(15.0), r, v_pref, F(0.5), mass)
+    hp = HybridFSMParams{F}(ρ_on=F(0.5), ρ_off=F(0.2), density_radius=F(2.0),
+                             sfm_params=sp, orca_params=op)
+
+    for k in 1:N
+        x = F(0.5 + k*2.0)
+        new_entity!(world, (Position(SVector(x, F(2))), Velocity(zero(SVector{2,F})),
+                             AgentGeometry(r, r*F(2/3)), MotionParams(mass, v_pref, F(0.5), F(0.1)),
+                             Goal(SVector(F(12), F(2))), Force(zero(SVector{2,F})),
+                             hp, AgentFSMState{F}()))
+    end
+
+    gr = SVector(F(-1), F(-1)); gx = SVector(F(13), F(5))
+    rsh = RadixSpatialHash(CPU(), N, gr, gx, F(2.0))
+
+    # Build a SimScene WITHOUT a nav field (Nothing) and WITH RadixSpatialHash
+    cfg = SimConfig{F}(F(0.05), F(0.05), F(5.0), 0, F(1f-3), JacobiCorrection(), 0,
+                       VelocityImpulseParams{F}())
+    scene = SimScene(world, rsh, cfg)   # nav = nothing
+    @test scene.nav_field === nothing
+
+    # This step! call MUST NOT throw — before fix it threw MethodError
+    @test_nowarn step!(scene)
+
+    @printf("\nSprint 3W HybridFSM step! RadixSpatialHash + Nothing nav: PASSED (no MethodError)\n")
+end
+
+@testset "Sprint 3W: SimConfig sfm_contact_substeps field and VelocityImpulseParams defaults" begin
+    F = Float32
+    # Default SimConfig: sfm_contact_substeps=0, vel_impulse.n_iters=0
+    cfg = SimConfig{F}()
+    @test cfg.sfm_contact_substeps == 0
+    @test cfg.vel_impulse.n_iters  == 0
+    @test cfg.vel_impulse.restitution == zero(F)
+    @test cfg.vel_impulse.use_mass_weighting == false
+
+    # Full 8-arg constructor sets substeps explicitly
+    cfg2 = SimConfig{F}(F(0.05), F(0.05), F(5.0), 8, F(1f-3), JacobiCorrection(), 3,
+                        VelocityImpulseParams{F}())
+    @test cfg2.sfm_contact_substeps == 3
+
+    # VelocityImpulseParams with n_iters=8
+    vi = VelocityImpulseParams(F; n_iters=8)
+    @test vi.n_iters == 8
+    @test vi.tol     ≈ F(1e-3)
+    @test isbitstype(VelocityImpulseParams{F})   # GPU-safe
+
+    @printf("\nSprint 3W SimConfig substeps + VelocityImpulseParams: PASSED\n")
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 3X: GCFM-elliptical repulsion dispatch (τ_gap > 0)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "Sprint 3X: GCFM-elliptical dispatch — τ_gap > 0 differs from Helbing" begin
+    # Use perpendicular goal so goal-seeking (y direction) doesn't mix with
+    # repulsion (x direction), letting us cleanly test the repulsion x-component.
+    # pos_j at (0.8,0), goal at (0,10) → goal force is +y, repulsion is -x.
+    F = Float32
+    r      = F(0.2)
+    pos_i  = SVector(F(0), F(0))
+    pos_j  = SVector(F(0.8), F(0))    # 0.8m right, no contact (> 2*collision_r)
+    vel_i  = SVector(F(0.5), F(0))    # moving toward j
+    vel_j  = zero(SVector{2,F})
+    goal_i = SVector(F(0), F(10))     # goal perpendicular → goal force in +y only
+    mp_i   = MotionParams(F(80), F(1.4), F(0.5), F(0))   # σ=0
+    all_pos = SVector{2,F}[pos_i, pos_j]
+    all_vel = SVector{2,F}[vel_i, vel_j]
+    walls   = NTuple{2, SVector{2,F}}[]
+
+    # Helbing (τ_gap = 0)
+    sp_helbing = SFMParams{F}(F(2000), F(0.08), F(0.5), F(0.5), zero(F), zero(F), F(0.25), F(0.25))
+    f_helbing  = SimCrowd._hybrid_sfm_force(pos_i, vel_i, goal_i, mp_i, r, sp_helbing,
+                                              all_pos, all_vel, walls, F; skip_contact=false)
+
+    # GCFM elliptical (τ_gap = 0.53s, A = 70 N — Chraibi 2010 Table II)
+    sp_gcfm = SFMParams{F}(F(70), F(0.08), F(0.5), F(0.5), zero(F), F(0.53), F(0.20), F(0.25))
+    f_gcfm  = SimCrowd._hybrid_sfm_force(pos_i, vel_i, goal_i, mp_i, r, sp_gcfm,
+                                          all_pos, all_vel, walls, F; skip_contact=false)
+
+    # Repulsion component (x-axis) must be negative (pushing i away from j)
+    @test f_helbing[1] < F(0)
+    @test f_gcfm[1]   < F(0)
+    # The two models must produce different x-repulsion magnitudes
+    @test !isapprox(f_helbing[1], f_gcfm[1]; rtol=0.01f0)
+    # GCFM output finite
+    @test isfinite(f_gcfm[1]) && isfinite(f_gcfm[2])
+
+    @printf("\nSprint 3X GCFM dispatch: F_helbing_x=%.2fN  F_gcfm_x=%.2fN (must differ)\n",
+            f_helbing[1], f_gcfm[1])
+end
+
+@testset "Sprint 3X: GCFM force repulsive + finite at all approach angles" begin
+    # Test 8 compass directions. Goal placed OPPOSITE to j so repulsion and
+    # goal-seeking both point AWAY from j — total force must be repulsive.
+    F    = Float32
+    r    = F(0.2)
+    mp   = MotionParams(F(80), F(1.4), F(0.5), F(0))   # σ=0
+    sp   = SFMParams{F}(F(70), F(0.08), F(0.5), F(0.5), zero(F), F(0.53), F(0.20), F(0.25))
+    walls = NTuple{2, SVector{2,F}}[]
+
+    for θ in range(0f0, 2f0*Float32(π); length=9)[1:8]
+        pos_j   = SVector(F(0.6)*cos(θ), F(0.6)*sin(θ))   # 0.6m away (no contact)
+        vel_i   = SVector(F(0.3)*cos(θ), F(0.3)*sin(θ))   # moving toward j
+        goal_i  = SVector(-F(5)*cos(θ), -F(5)*sin(θ))     # goal = away from j
+        all_pos = SVector{2,F}[SVector(F(0), F(0)), pos_j]
+        all_vel = SVector{2,F}[vel_i, zero(SVector{2,F})]
+
+        f = SimCrowd._hybrid_sfm_force(
+            SVector(F(0), F(0)), vel_i, goal_i, mp, r, sp,
+            all_pos, all_vel, walls, F; skip_contact=true)  # skip_contact=true: no contact at d=0.6m anyway
+
+        @test isfinite(f[1]) && isfinite(f[2])
+        # Net force must point away from j: dot(f, -pos_j_hat) > 0
+        sep_dir = -pos_j / norm(pos_j)   # unit vector from j → i
+        @test dot(f, sep_dir) > F(0)     # repulsive direction
+    end
+
+    @printf("\nSprint 3X GCFM repulsive + finite at all angles: PASSED\n")
+end
+
+@testset "Sprint 3X: SFMParams τ_gap=0 backward-compat constructors" begin
+    F = Float32
+    # 4-arg: η=0, τ_gap=0
+    sp4 = SFMParams(F(2000), F(0.08), F(0.5), F(0.5))
+    @test sp4.τ_gap == zero(F)
+    @test sp4.η     == zero(F)
+
+    # 5-arg: τ_gap=0
+    sp5 = SFMParams(F(2000), F(0.08), F(0.5), F(0.5), F(0.5))
+    @test sp5.τ_gap == zero(F)
+
+    # Full 8-arg: τ_gap=0.53 → GCFM dispatch
+    sp8 = SFMParams(F(70), F(0.08), F(0.5), F(0.5), zero(F), F(0.53), F(0.20), F(0.25))
+    @test sp8.τ_gap ≈ F(0.53)
+    @test sp8.b_min ≈ F(0.20)
+
+    # isbits: GPU-safe
+    @test isbitstype(SFMParams{Float32})
+    @test isbitstype(SFMParams{Float64})
+
+    @printf("\nSprint 3X SFMParams backward-compat constructors: PASSED\n")
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 3Y: apply_velocity_impulse_pair unit tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "Sprint 3Y: apply_velocity_impulse_pair — no overlap → zero impulse" begin
+    F = Float32
+    # Agents well separated (d > 2r): impulse must be exactly zero
+    dv = apply_velocity_impulse_pair(
+        SVector(F(0), F(0)),   SVector(F(1), F(0)),   F(80), F(0.2),
+        SVector(F(1.0), F(0)), SVector(F(-1), F(0)),  F(80), F(0.2))
+    @test dv == zero(SVector{2,F})
+    @printf("\nSprint 3Y VI pair no-overlap: PASSED\n")
+end
+
+@testset "Sprint 3Y: apply_velocity_impulse_pair — separating → zero impulse" begin
+    F = Float32
+    # Agents overlapping (d=0.3 < 2r=0.4), but SEPARATING (v_closing > 0)
+    # i is at 0, j is at 0.3 (right of i). i moves left (-x = away from j).
+    # n̂ = (pos_i - pos_j)/d = (-1,0). v_closing = (vel_i - vel_j)·n̂ = (-1-0)·(-1) = +1 > 0 → separating
+    dv = apply_velocity_impulse_pair(
+        SVector(F(0), F(0)),  SVector(F(-1), F(0)),  F(80), F(0.2),
+        SVector(F(0.3), F(0)), zero(SVector{2,F}),   F(80), F(0.2))
+    @test dv == zero(SVector{2,F})   # separating: no impulse applied
+    @printf("\nSprint 3Y VI pair separating: PASSED\n")
+end
+
+@testset "Sprint 3Y: apply_velocity_impulse_pair — approaching → corrects velocity" begin
+    F = Float32
+    # Agents overlapping (d=0.3 < 2r=0.4), approaching.
+    # i at origin, j at (0.3,0). i moves RIGHT (+x = toward j). j stationary.
+    # n̂ = (-1,0). v_closing = (1,0)·(-1,0) = -1 < 0 → approaching.
+    # Equal mass, e=0: Δv_i = ((-v_closing)/2)×n̂ = (0.5)×(-1,0) = (-0.5,0)
+    dv = apply_velocity_impulse_pair(
+        SVector(F(0), F(0)),   SVector(F(1), F(0)),   F(80), F(0.2),
+        SVector(F(0.3), F(0)), zero(SVector{2,F}),    F(80), F(0.2))
+
+    @test dv[1] < F(0)                # correction is leftward (cancels closing speed)
+    @test abs(dv[1]) ≈ F(0.5) atol=1f-4   # equal mass, e=0: |Δv_i| = |v_closing|/2
+    @test abs(dv[2]) < F(1e-5)        # no y component
+
+    # After impulse: new vel_i[1] = 1 + (-0.5) = 0.5 — still rightward but slower
+    new_vel_i_x = F(1) + dv[1]
+    @test new_vel_i_x ≈ F(0.5) atol=1f-4
+
+    @printf("\nSprint 3Y VI pair approaching: Δv_x=%.4f (target=%.4f)\n", dv[1], -F(0.5))
+end
+
+@testset "Sprint 3Y: apply_velocity_impulse_pair — degenerate (coincident) → +x" begin
+    F = Float32
+    # Coincident agents: fallback direction (+x)
+    dv = apply_velocity_impulse_pair(
+        SVector(F(0), F(0)), SVector(F(-1), F(0)), F(80), F(0.2),
+        SVector(F(0), F(0)), zero(SVector{2,F}),   F(80), F(0.2))
+    @test isfinite(dv[1]) && isfinite(dv[2])
+    @printf("\nSprint 3Y VI pair degenerate (coincident): PASSED\n")
+end
+
+@testset "Sprint 3Y: apply_velocity_impulse_pair — elastic e=1 momentum conservation" begin
+    F = Float32
+    # e=1 (elastic): total momentum must be conserved.
+    # i at origin moving +x (v=1), j at (0.3,0) stationary.
+    m_i = F(80); m_j = F(60)   # different masses
+    pos_i = SVector(F(0), F(0));   vel_i = SVector(F(1), F(0))
+    pos_j = SVector(F(0.3), F(0)); vel_j = zero(SVector{2,F})
+    r = F(0.2)
+
+    # Impulse on i
+    dv_i = apply_velocity_impulse_pair(pos_i, vel_i, m_i, r, pos_j, vel_j, m_j, r; e=F(1))
+    # Impulse on j (symmetric call)
+    dv_j = apply_velocity_impulse_pair(pos_j, vel_j, m_j, r, pos_i, vel_i, m_i, r; e=F(1))
+
+    # Momentum conservation: m_i×Δv_i + m_j×Δv_j = 0
+    Δp = m_i * dv_i + m_j * dv_j
+    @test norm(Δp) < F(1e-3)   # momentum conserved to float precision
+
+    @printf("\nSprint 3Y VI pair elastic e=1: |ΔP|=%.2e (should be ≈0)\n", norm(Δp))
+end
+
+@testset "Sprint 3Y: apply_velocity_impulse_cpu! n_iters=0 → no velocity change" begin
+    F = Float32
+    r = F(0.2)
+    # Two overlapping, approaching agents
+    world = World(Position{F}, Velocity{F}, AgentGeometry{F}, MotionParams{F}, SFMParams{F},
+                  Goal{F}, Force{F})
+    ap = from_agent_params(r, F(80), F(1.4), F(0.5))
+    new_entity!(world, (Position(SVector(F(0), F(0))),   Velocity(SVector(F(1), F(0))),
+                         ap..., Goal(SVector(F(5), F(0))), Force(zero(SVector{2,F}))))
+    new_entity!(world, (Position(SVector(F(0.3), F(0))), Velocity(SVector(F(-1), F(0))),
+                         ap..., Goal(SVector(F(-5), F(0))), Force(zero(SVector{2,F}))))
+
+    gr = SVector(F(-1), F(-1)); gx = SVector(F(6), F(6))
+    rsh = RadixSpatialHash(CPU(), 2, gr, gx, F(1.0))
+
+    # Record velocities before
+    vels_before = [vel_col[i].v for (_, vel_col) in Query(world, (Velocity{F},))
+                                for i in eachindex(vel_col)]
+
+    apply_velocity_impulse_cpu!(world, rsh, F; n_iters=0)   # disabled
+
+    vels_after = [vel_col[i].v for (_, vel_col) in Query(world, (Velocity{F},))
+                               for i in eachindex(vel_col)]
+
+    for k in 1:2
+        @test vels_before[k] == vels_after[k]   # no change
+    end
+    @printf("\nSprint 3Y apply_velocity_impulse_cpu! n_iters=0 no-op: PASSED\n")
+end
+
+@testset "Sprint 3Y: apply_velocity_impulse_cpu! n_iters=8 corrects approaching pair" begin
+    F = Float32
+    r = F(0.2)
+    # Agents at d=0.3m (overlapping, 2r=0.4m), approaching at ±1 m/s
+    world = World(Position{F}, Velocity{F}, AgentGeometry{F}, MotionParams{F}, SFMParams{F},
+                  Goal{F}, Force{F})
+    ap = from_agent_params(r, F(80), F(1.4), F(0.5))
+    new_entity!(world, (Position(SVector(F(0), F(0))),   Velocity(SVector(F(1), F(0))),
+                         ap..., Goal(SVector(F(5), F(0))), Force(zero(SVector{2,F}))))
+    new_entity!(world, (Position(SVector(F(0.3), F(0))), Velocity(SVector(F(-1), F(0))),
+                         ap..., Goal(SVector(F(-5), F(0))), Force(zero(SVector{2,F}))))
+
+    gr = SVector(F(-1), F(-1)); gx = SVector(F(6), F(6))
+    rsh = RadixSpatialHash(CPU(), 2, gr, gx, F(1.0))
+
+    apply_velocity_impulse_cpu!(world, rsh, F; n_iters=8)
+
+    vels = [vel_col[i].v for (_, vel_col) in Query(world, (Velocity{F},))
+                         for i in eachindex(vel_col)]
+
+    # After impulse: closing speed should be ≤ 0 (not approaching)
+    pos = [pos_col[i].p for (_, pos_col) in Query(world, (Position{F},))
+                        for i in eachindex(pos_col)]
+    n_hat     = (pos[1] - pos[2]) / norm(pos[1] - pos[2])
+    v_closing = dot(vels[1] - vels[2], n_hat)
+    @test v_closing >= F(-1e-3)   # closing speed zeroed (with float tolerance)
+
+    @printf("\nSprint 3Y apply_velocity_impulse_cpu! n_iters=8: v_closing=%.4f m/s (should be ≥ -0.001)\n",
+            v_closing)
 end
 
 end  # SimCrowd.jl
