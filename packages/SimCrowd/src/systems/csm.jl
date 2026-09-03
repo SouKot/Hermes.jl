@@ -894,6 +894,9 @@ velocity using the sorted spatial hash grid for O(k) neighbor queries.
         ci_y = clamp(floor(Int32, (lp[2]-grid_min[2])/cell_size), Int32(0), grid_dims[2]-Int32(1))
 
         # O(k) isotropic repulsion via 3×3 cell neighborhood
+        # Morton (Z-order) cell lookup matches build_csr_kernel!/position_to_hash.
+        # cs==0 sentinel: build_grid! initialises cell_starts with fill!(…,0);
+        # unoccupied cells are never written → cs==0 means "empty, skip".
         nbr_rep = zero(typeof(pos_i))
         for di in Int32(-1):Int32(1)
             ni_x = ci_x + di
@@ -901,8 +904,10 @@ velocity using the sorted spatial hash grid for O(k) neighbor queries.
             for dj in Int32(-1):Int32(1)
                 ni_y = ci_y + dj
                 (ni_y < Int32(0) || ni_y >= grid_dims[2]) && continue
-                cell_idx = ni_x * grid_dims[2] + ni_y + Int32(1)
+                cell_idx = Int(morton_spread_bits(UInt32(ni_x)) |
+                               (morton_spread_bits(UInt32(ni_y)) << UInt32(1))) + Int32(1)
                 cs = cell_starts[cell_idx]; ce = cell_ends[cell_idx]
+                cs == 0 && continue   # empty cell — sentinel 0 from build_grid! fill!
                 for k in cs:ce
                     k == i && continue
                     r_ij = sorted_positions[k] - pos_i
@@ -943,7 +948,7 @@ velocity using the sorted spatial hash grid for O(k) neighbor queries.
             e_i=e_target; theta_new=zero(F_type)
         end
 
-        # Forward-corridor gap
+        # Forward-corridor gap (Morton cell lookup + empty-cell guard, matching repulsion loop above)
         dir_lat=typeof(e_i)(-e_i[2],e_i[1]); min_gap=F_type(Inf)
         @inbounds for di in Int32(-1):Int32(1)
             ni_x=ci_x+di
@@ -951,8 +956,10 @@ velocity using the sorted spatial hash grid for O(k) neighbor queries.
             for dj in Int32(-1):Int32(1)
                 ni_y=ci_y+dj
                 (ni_y<Int32(0)||ni_y>=grid_dims[2]) && continue
-                cell_idx=ni_x*grid_dims[2]+ni_y+Int32(1)
+                cell_idx=Int(morton_spread_bits(UInt32(ni_x))|
+                             (morton_spread_bits(UInt32(ni_y))<<UInt32(1)))+Int32(1)
                 cs2=cell_starts[cell_idx]; ce2=cell_ends[cell_idx]
+                cs2 == 0 && continue   # empty cell
                 for k in cs2:ce2
                     k==i && continue; Dp=sorted_positions[k]-pos_i
                     d=sqrt(Dp[1]^2+Dp[2]^2)

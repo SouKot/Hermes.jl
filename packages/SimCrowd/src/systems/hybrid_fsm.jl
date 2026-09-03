@@ -573,8 +573,11 @@ Writes updated ρ_ema and mode to `out_rho_ema` and `out_modes` (unsorted order)
             for dj in Int32(-1):Int32(1)
                 ni_y = ci_y + dj
                 (ni_y < Int32(0) || ni_y >= grid_dims[2]) && continue
-                cell_idx = ni_x * grid_dims[2] + ni_y + Int32(1)
+                # Morton (Z-order) — matches build_csr_kernel!/position_to_hash
+                cell_idx = Int(morton_spread_bits(UInt32(ni_x)) |
+                               (morton_spread_bits(UInt32(ni_y)) << UInt32(1))) + Int32(1)
                 cs = cell_starts[cell_idx]; ce = cell_ends[cell_idx]
+                cs == 0 && continue   # empty cell (sentinel 0 from build_grid! fill!)
                 for k in cs:ce
                     k == i && continue
                     Dp = sorted_positions[k] - pos_i
@@ -667,8 +670,11 @@ by the existing `compute_orca_kernel!` with a mode mask.
             for dj in Int32(-1):Int32(1)
                 ni_y = ci_y + dj
                 (ni_y < Int32(0) || ni_y >= grid_dims[2]) && continue
-                cell_idx = ni_x * grid_dims[2] + ni_y + Int32(1)
+                # Morton (Z-order) — matches build_csr_kernel!/position_to_hash
+                cell_idx = Int(morton_spread_bits(UInt32(ni_x)) |
+                               (morton_spread_bits(UInt32(ni_y)) << UInt32(1))) + Int32(1)
                 cs = cell_starts[cell_idx]; ce = cell_ends[cell_idx]
+                cs == 0 && continue   # empty cell (sentinel 0 from build_grid! fill!)
                 for k in cs:ce
                     k == i && continue
                     pos_j  = sorted_positions[k]

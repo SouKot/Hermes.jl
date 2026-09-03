@@ -53,7 +53,7 @@ using KernelAbstractions
 # ── §3T-a: Per-pair correction primitives ───────────────────────────────────
 
 """
-    apply_agent_pair_correction(pos_i, vel_i, r_i, pos_j, r_j)
+    apply_agent_pair_correction(pos_i, vel_i, r_i, pos_j, vel_j, r_j)
         → (Δpos_i::SVector{2,F}, Δvel_i::SVector{2,F})
 
 Compute the Jacobi correction contribution to agent i from an overlapping
@@ -62,13 +62,21 @@ Agent j's correction is symmetric and handled when j's thread/kernel runs.
 
 ## Physics
 
-Given overlap δ = (r_i + r_j) - ‖pos_i - pos_j‖ > 0 and separation unit normal n̂:
+Given overlap δ = (r_i + r_j) - ‖pos_i - pos_j‖ > 0 and separation unit normal n̂
+(pointing from j to i):
 
-    Δpos_i = (δ / 2) × n̂         (push i outward by half the overlap)
-    Δvel_i += v_into × n̂          (zero the inward velocity component to prevent
-                                    re-penetration on the next step)
+    Δpos_i = (δ / 2) × n̂
 
-The symmetry guarantees momentum conservation in the Jacobi limit.
+    Relative closing speed (Maury-Venel, 2011):
+        v_closing = (vel_i - vel_j) · n̂    # positive = separating, negative = approaching
+
+    If v_closing < 0 (agents approaching):
+        Δvel_i = (-v_closing / 2) × n̂     # equal-mass Jacobi half-impulse
+
+    If v_closing ≥ 0 (already separating): Δvel_i = 0.
+
+The symmetry guarantees momentum conservation: agent j's thread applies the same
+formula with swapped roles, producing Δvel_j = (v_closing / 2) × n̂_ji = same result.
 
 ## Properties
 
@@ -78,6 +86,9 @@ The symmetry guarantees momentum conservation in the Jacobi limit.
   Δpos doubles; this is correct Jacobi behaviour (2 iters = 2× application).
 - **Zero-correction guard**: returns `(zero, zero)` when d ≥ r_i + r_j (no overlap)
   or d < 1e-6 (degenerate coincident agents — pushes along +x to break symmetry).
+- **Sprint 3T-fix**: uses relative velocity (vel_i − vel_j) · n̂ instead of the
+  prior absolute formula dot(vel_i, −n̂). The old formula ignored vel_j, causing
+  overcorrection for head-on pairs and missed correction when both agents chase.
 
 ## Relation to wall correction
 
@@ -85,33 +96,36 @@ The symmetry guarantees momentum conservation in the Jacobi limit.
 projection for a single (agent, wall) pair. This function is the agent-agent counterpart.
 """
 @inline function apply_agent_pair_correction(
-    pos_i::SVector{2,F},
-    vel_i::SVector{2,F},
-    r_i::F,
-    pos_j::SVector{2,F},
-    r_j::F
+    pos_i :: SVector{2,F},
+    vel_i :: SVector{2,F},
+    r_i   :: F,
+    pos_j :: SVector{2,F},
+    vel_j :: SVector{2,F},
+    r_j   :: F
 ) :: Tuple{SVector{2,F}, SVector{2,F}} where {F<:AbstractFloat}
-    rel     = pos_i - pos_j
-    d       = norm(rel)
-    r_sum   = r_i + r_j
+    rel   = pos_i - pos_j
+    d     = norm(rel)
+    r_sum = r_i + r_j
     d >= r_sum && return zero(SVector{2,F}), zero(SVector{2,F})
 
     # Degenerate: coincident agents — push along +x to break symmetry
     n_hat = d < F(1e-6) ? SVector{2,F}(one(F), zero(F)) : rel / d
 
     # Position correction: push i outward by half the overlap
-    delta    = r_sum - d
-    dpos = (delta / 2) * n_hat
+    delta = r_sum - d
+    dpos  = (delta / F(2)) * n_hat
 
-    # Velocity correction: cancel inward component to prevent re-penetration
-    v_into = dot(vel_i, -n_hat)    # positive = agent moving INTO j
-    dvel   = v_into > zero(F) ? v_into * n_hat : zero(SVector{2,F})
+    # Velocity correction (Maury-Venel relative closing speed, equal-mass Jacobi):
+    # v_closing > 0 → separating (no correction needed)
+    # v_closing < 0 → approaching (apply half-impulse in separating direction)
+    v_closing = dot(vel_i - vel_j, n_hat)
+    dvel = v_closing < zero(F) ? ((-v_closing) / F(2)) * n_hat : zero(SVector{2,F})
 
     return dpos, dvel
 end
 
 """
-    apply_xpbd_pair_correction(pos_i, vel_i, r_i, pos_j, r_j, λ_i, α_tilde)
+    apply_xpbd_pair_correction(pos_i, vel_i, r_i, pos_j, vel_j, r_j, λ_i, α_tilde)
         → (Δpos_i::SVector{2,F}, Δvel_i::SVector{2,F}, Δλ::F)
 
 XPBD correction contribution to agent i from overlapping neighbour j.
@@ -129,18 +143,29 @@ iterations (reset to 0 at timestep start), self-limiting over-correction.
 As λᵢ grows across iterations, subsequent corrections diminish — preventing
 Jacobi oscillation in dense contact graphs.
 
+## Velocity correction
+
+Uses the same Maury-Venel relative closing speed as `apply_agent_pair_correction`:
+
+    v_closing = (vel_i - vel_j) · n̂
+    if v_closing < 0: Δvel_i = (-v_closing / 2) × n̂
+
+This is the equal-mass Jacobi half-impulse — same formula as the Jacobi path,
+independent of the XPBD position compliance α.
+
 ## GPU-safety
 
 `@inline`, no allocation, all inputs/outputs are `isbits`. Callable from KA kernels.
 """
 @inline function apply_xpbd_pair_correction(
-    pos_i    :: SVector{2,F},
-    vel_i    :: SVector{2,F},
-    r_i      :: F,
-    pos_j    :: SVector{2,F},
-    r_j      :: F,
-    λ_i      :: F,
-    α_tilde  :: F
+    pos_i   :: SVector{2,F},
+    vel_i   :: SVector{2,F},
+    r_i     :: F,
+    pos_j   :: SVector{2,F},
+    vel_j   :: SVector{2,F},
+    r_j     :: F,
+    λ_i     :: F,
+    α_tilde :: F
 ) :: Tuple{SVector{2,F}, SVector{2,F}, F} where {F<:AbstractFloat}
     rel   = pos_i - pos_j
     d     = norm(rel)
@@ -152,15 +177,15 @@ Jacobi oscillation in dense contact graphs.
     n_hat = d < F(1e-6) ? SVector{2,F}(one(F), zero(F)) : rel / d
 
     # XPBD constraint: C = d - r_sum (negative when violated)
-    C   = d - r_sum
-    w   = F(2)   # 1/m_i + 1/m_j, equal unit mass
-    Δλ  = max(zero(F), (-C - α_tilde * λ_i) / (w + α_tilde))
+    C  = d - r_sum
+    w  = F(2)   # 1/m_i + 1/m_j, equal unit mass
+    Δλ = max(zero(F), (-C - α_tilde * λ_i) / (w + α_tilde))
 
     dpos = n_hat * Δλ   # (1/m_i) · n̂ · Δλ
 
-    # Velocity correction: same as Jacobi (cancel inward component)
-    v_into = dot(vel_i, -n_hat)
-    dvel   = v_into > zero(F) ? v_into * n_hat : zero(SVector{2,F})
+    # Velocity correction (Maury-Venel relative closing speed, equal-mass Jacobi):
+    v_closing = dot(vel_i - vel_j, n_hat)
+    dvel = v_closing < zero(F) ? ((-v_closing) / F(2)) * n_hat : zero(SVector{2,F})
 
     return dpos, dvel, Δλ
 end
@@ -226,12 +251,14 @@ function apply_agent_correction_cpu!(
                 ov = ri + rj - d
                 if ov > zero(F); Threads.atomic_max!(atomic_max_ov, ov); end
                 lock(lk[i])
-                    dp_i, dv_i, dλ_i = apply_xpbd_pair_correction(pi, vi, ri, pj, rj, local_λ[i], α_tilde)
+                    # Pass vj so the velocity correction uses relative closing speed
+                    dp_i, dv_i, dλ_i = apply_xpbd_pair_correction(pi, vi, ri, pj, vj, rj, local_λ[i], α_tilde)
                     acc_pos[i] = acc_pos[i] + dp_i; acc_vel[i] = acc_vel[i] + dv_i
                     local_λ[i] += dλ_i
                 unlock(lk[i])
                 lock(lk[j])
-                    dp_j, dv_j, dλ_j = apply_xpbd_pair_correction(pj, vj, rj, pi, ri, local_λ[j], α_tilde)
+                    # Symmetric: swap i↔j roles (vi is now j's neighbour velocity)
+                    dp_j, dv_j, dλ_j = apply_xpbd_pair_correction(pj, vj, rj, pi, vi, ri, local_λ[j], α_tilde)
                     acc_pos[j] = acc_pos[j] + dp_j; acc_vel[j] = acc_vel[j] + dv_j
                     local_λ[j] += dλ_j
                 unlock(lk[j])
@@ -246,8 +273,9 @@ function apply_agent_correction_cpu!(
                 pj = local_pos[j]; vj = local_vel[j]; rj = local_rad[j]
                 ov = ri + rj - d
                 if ov > zero(F); Threads.atomic_max!(atomic_max_ov, ov); end
-                dp_i, dv_i = apply_agent_pair_correction(pi, vi, ri, pj, rj)
-                dp_j, dv_j = apply_agent_pair_correction(pj, vj, rj, pi, ri)
+                # Pass neighbour velocity for relative closing speed computation
+                dp_i, dv_i = apply_agent_pair_correction(pi, vi, ri, pj, vj, rj)
+                dp_j, dv_j = apply_agent_pair_correction(pj, vj, rj, pi, vi, ri)
                 lock(lk[i]); acc_pos[i] = acc_pos[i] + dp_i; acc_vel[i] = acc_vel[i] + dv_i; unlock(lk[i])
                 lock(lk[j]); acc_pos[j] = acc_pos[j] + dp_j; acc_vel[j] = acc_vel[j] + dv_j; unlock(lk[j])
                 return _output
@@ -325,18 +353,19 @@ function apply_agent_correction_cpu!(
             local_λ = λ_acc
             Threads.@threads for i in 1:N
                 pos_i = pos_arr[i]; vel_i = vel_arr[i]; r_i = rad_arr[i]
-                dp_acc = zero(SVector{2,F})
-                dv_acc = zero(SVector{2,F})
+                dp_acc   = zero(SVector{2,F})
+                dv_acc   = zero(SVector{2,F})
                 max_ov_i = zero(F)
                 dλ_acc   = zero(F)
                 for j in get_neighbors(search, pos_i)
                     j == i && continue
-                    r_j  = rad_arr[j]
-                    d_ij = norm(pos_i - pos_arr[j])
+                    pos_j = pos_arr[j]; vel_j = vel_arr[j]; r_j = rad_arr[j]
+                    d_ij = norm(pos_i - pos_j)
                     ov   = r_i + r_j - d_ij
                     if ov > max_ov_i; max_ov_i = ov; end
+                    # Pass vel_j snapshot (Jacobi: vel_arr[j] not yet updated this iter)
                     dp, dv, dλ = apply_xpbd_pair_correction(pos_i, vel_i, r_i,
-                                                             pos_arr[j], r_j,
+                                                             pos_j, vel_j, r_j,
                                                              local_λ[i], α_tilde)
                     dp_acc += dp; dv_acc += dv; dλ_acc += dλ
                 end
@@ -348,15 +377,16 @@ function apply_agent_correction_cpu!(
         else
             Threads.@threads for i in 1:N
                 pos_i = pos_arr[i]; vel_i = vel_arr[i]; r_i = rad_arr[i]
-                dp_acc = zero(SVector{2,F})
-                dv_acc = zero(SVector{2,F})
+                dp_acc   = zero(SVector{2,F})
+                dv_acc   = zero(SVector{2,F})
                 max_ov_i = zero(F)
                 for j in get_neighbors(search, pos_i)
                     j == i && continue
-                    r_j = rad_arr[j]
-                    dp, dv = apply_agent_pair_correction(pos_i, vel_i, r_i, pos_arr[j], r_j)
+                    pos_j = pos_arr[j]; vel_j = vel_arr[j]; r_j = rad_arr[j]
+                    # Pass vel_j snapshot for relative closing speed (Maury-Venel)
+                    dp, dv = apply_agent_pair_correction(pos_i, vel_i, r_i, pos_j, vel_j, r_j)
                     dp_acc += dp; dv_acc += dv
-                    d_ij = norm(pos_i - pos_arr[j])
+                    d_ij = norm(pos_i - pos_j)
                     ov   = r_i + r_j - d_ij
                     if ov > max_ov_i; max_ov_i = ov; end
                 end
@@ -534,16 +564,19 @@ Called by `apply_agent_correction_gpu!` (n_iters times).
         @inbounds for dci in Int32(-1):Int32(1), dcj in Int32(-1):Int32(1)
             ni = ci + dci; nj = cj + dcj
             if ni >= Int32(0) && ni < grid_dims[1] && nj >= Int32(0) && nj < grid_dims[2]
-                cell_idx = ni * grid_dims[2] + nj + Int32(1)
+                # Morton (Z-order) — matches build_csr_kernel!/position_to_hash
+                cell_idx = Int(morton_spread_bits(UInt32(ni)) |
+                               (morton_spread_bits(UInt32(nj)) << UInt32(1))) + Int32(1)
                 if cell_idx >= Int32(1) && cell_idx <= length(cell_starts)
                     cs = cell_starts[cell_idx]
                     ce = cell_ends[cell_idx]
-                    if cs <= ce
+                    if cs != 0 && cs <= ce   # cs==0 → empty cell (sentinel from build_grid! fill!)
                         for jj in cs:ce
                             if jj != i
                                 pos_j = sorted_positions[jj]
+                                vel_j = sorted_velocities[jj]   # relative closing speed fix
                                 r_j   = sorted_radii[jj]
-                                dp_j, dv_j = apply_agent_pair_correction(pos_i, vel_i, r_i, pos_j, r_j)
+                                dp_j, dv_j = apply_agent_pair_correction(pos_i, vel_i, r_i, pos_j, vel_j, r_j)
                                 dp = dp + dp_j
                                 dv = dv + dv_j
                             end
@@ -627,16 +660,19 @@ At α_tilde=0 the update is identical to Jacobi.
         @inbounds for dci in Int32(-1):Int32(1), dcj in Int32(-1):Int32(1)
             ni = ci + dci; nj = cj + dcj
             if ni >= Int32(0) && ni < grid_dims[1] && nj >= Int32(0) && nj < grid_dims[2]
-                cell_idx = ni * grid_dims[2] + nj + Int32(1)
+                # Morton (Z-order) — matches build_csr_kernel!/position_to_hash
+                cell_idx = Int(morton_spread_bits(UInt32(ni)) |
+                               (morton_spread_bits(UInt32(nj)) << UInt32(1))) + Int32(1)
                 if cell_idx >= Int32(1) && cell_idx <= length(cell_starts)
                     cs = cell_starts[cell_idx]; ce = cell_ends[cell_idx]
-                    if cs <= ce
+                    if cs != 0 && cs <= ce   # cs==0 → empty cell (sentinel from build_grid! fill!)
                         for jj in cs:ce
                             if jj != i
                                 pos_j = sorted_positions[jj]
+                                vel_j = sorted_velocities[jj]   # relative closing speed fix
                                 r_j   = sorted_radii[jj]
                                 dp_j, dv_j, dλ_j = apply_xpbd_pair_correction(
-                                    pos_i, vel_i, r_i, pos_j, r_j, λ_i, alpha_tilde)
+                                    pos_i, vel_i, r_i, pos_j, vel_j, r_j, λ_i, alpha_tilde)
                                 dp += dp_j; dv += dv_j; dλ += dλ_j
                             end
                         end
@@ -752,5 +788,416 @@ function apply_agent_correction_gpu!(
             )
             KernelAbstractions.synchronize(backend)
         end
+    end
+end
+
+# ── §3Y: Velocity Impulse Correction (Maury-Venel PGS) ──────────────────────
+#
+# Sprint 3Y (2026-09-03)
+#
+# A SEPARATE velocity correction pass that runs AFTER all XPBD/Jacobi position
+# corrections are complete. Applies Projected-Gauss-Seidel (PGS) velocity
+# impulse to zero the relative closing speed for all overlapping pairs.
+#
+# ## Scientific basis (Maury & Venel, 2011)
+#
+# The non-overlapping crowd model is a gradient flow subject to C_ij ≥ 0.
+# The velocity projection zeroes closing speeds sequentially (PGS):
+#   Converges in k sweeps for a contact chain of k agents.
+# At T7 density (ρ ≤ 3 ped/m²), chains are typically 3–5 agents → n_iters=8 suffices.
+#
+# ## Separation from XPBD (§3V)
+#
+# XPBD corrects positions (and applies an approximate velocity correction).
+# Sprint 3Y adds a PURE velocity pass that does NOT modify positions, uses the
+# correct relative closing speed, and supports configurable restitution + mass weighting.
+
+# ── §3Y-a: Velocity impulse primitive ───────────────────────────────────────
+
+"""
+    apply_velocity_impulse_pair(pos_i, vel_i, m_i, r_i, pos_j, vel_j, m_j, r_j; e=0)
+        → Δvel_i::SVector{2,F}
+
+Velocity-only impulse correction to agent i from overlapping neighbour j.
+Returns `Δvel_i`; does NOT return a position delta.
+
+## Physics
+
+    n̂         = (p_i − p_j) / ‖p_i − p_j‖   (from j to i)
+    v_closing = (v_i − v_j) · n̂              (< 0 = approaching)
+    j_mag     = −(1 + e) × v_closing / (1/m_i + 1/m_j)
+    Δv_i      = (j_mag / m_i) × n̂
+
+Equal mass, e=0: Δv_i = (−v_closing / 2) × n̂.
+Momentum conserved: m_i Δv_i + m_j Δv_j = 0.
+
+GPU-safe: `@inline`, no heap allocation, all isbits.
+"""
+@inline function apply_velocity_impulse_pair(
+    pos_i :: SVector{2,F},
+    vel_i :: SVector{2,F},
+    m_i   :: F,
+    r_i   :: F,
+    pos_j :: SVector{2,F},
+    vel_j :: SVector{2,F},
+    m_j   :: F,
+    r_j   :: F;
+    e     :: F = zero(F)
+) :: SVector{2,F} where {F<:AbstractFloat}
+    rel   = pos_i - pos_j
+    d     = norm(rel)
+    d >= r_i + r_j && return zero(SVector{2,F})
+
+    n_hat     = d < F(1e-6) ? SVector{2,F}(one(F), zero(F)) : rel / d
+    v_closing = dot(vel_i - vel_j, n_hat)
+    v_closing >= zero(F) && return zero(SVector{2,F})
+
+    w_i   = one(F) / m_i
+    w_j   = one(F) / m_j
+    j_mag = -(one(F) + e) * v_closing / (w_i + w_j)
+    return (j_mag * w_i) * n_hat
+end
+
+# ── §3Y-b: CPU — RadixSpatialHash overload ───────────────────────────────────
+
+"""
+    apply_velocity_impulse_cpu!(world, search::RadixSpatialHash, ::Type{F};
+                                n_iters=8, tol=1f-3, restitution=0f0,
+                                use_mass_weighting=false)
+
+Sprint 3Y velocity impulse correction (thread-per-agent, RadixSpatialHash path).
+Runs `n_iters` Jacobi sweeps. Grid built once (positions fixed during velocity pass).
+Early exit when max |v_closing| < tol (m/s). Multithreaded, race-free.
+"""
+function apply_velocity_impulse_cpu!(
+    world              :: World,
+    search             :: RadixSpatialHash,
+    ::Type{F};
+    n_iters            :: Int  = 8,
+    tol                :: F   = F(1e-3),
+    restitution        :: F   = zero(F),
+    use_mass_weighting :: Bool = false
+) where {F<:AbstractFloat}
+    n_iters == 0 && return
+
+    pos_arr  = SVector{2,F}[]
+    vel_arr  = SVector{2,F}[]
+    rad_arr  = F[]
+    mass_arr = F[]
+
+    if use_mass_weighting
+        for (_, pos_col, vel_col, geo_col, mp_col) in
+                Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}, MotionParams{F}))
+            for i in eachindex(pos_col)
+                push!(pos_arr,  pos_col[i].p)
+                push!(vel_arr,  vel_col[i].v)
+                push!(rad_arr,  geo_col[i].social_radius)
+                push!(mass_arr, mp_col[i].mass)
+            end
+        end
+    else
+        for (_, pos_col, vel_col, geo_col) in
+                Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}))
+            for i in eachindex(pos_col)
+                push!(pos_arr,  pos_col[i].p)
+                push!(vel_arr,  vel_col[i].v)
+                push!(rad_arr,  geo_col[i].social_radius)
+                push!(mass_arr, one(F))
+            end
+        end
+    end
+
+    N = length(pos_arr)
+    N == 0 && return
+
+    # Build grid ONCE — positions are not modified in this pass
+    build_grid!(search, pos_arr, CPU())
+
+    acc_vel      = Vector{SVector{2,F}}(undef, N)
+    local_max_vc = Vector{F}(undef, N)
+    e_val        = restitution
+
+    for _ in 1:n_iters
+        fill!(acc_vel, zero(SVector{2,F}))
+        fill!(local_max_vc, zero(F))
+
+        Threads.@threads for i in 1:N
+            pos_i    = pos_arr[i];  vel_i = vel_arr[i]
+            m_i      = mass_arr[i]; r_i   = rad_arr[i]
+            dv_acc   = zero(SVector{2,F})
+            max_vc_i = zero(F)
+
+            for j in get_neighbors(search, pos_i)
+                j == i && continue
+                pos_j = pos_arr[j]; r_j  = rad_arr[j]
+                d_ij  = norm(pos_i - pos_j)
+                d_ij >= r_i + r_j && continue
+
+                vel_j     = vel_arr[j]   # Jacobi snapshot — not updated this sweep
+                m_j       = mass_arr[j]
+                n_hat     = (pos_i - pos_j) / max(d_ij, F(1e-6))
+                v_closing = dot(vel_i - vel_j, n_hat)
+                if v_closing < zero(F)
+                    abs_vc = -v_closing
+                    if abs_vc > max_vc_i; max_vc_i = abs_vc; end
+                    dv_acc += apply_velocity_impulse_pair(pos_i, vel_i, m_i, r_i,
+                                                          pos_j, vel_j, m_j, r_j;
+                                                          e = e_val)
+                end
+            end
+
+            acc_vel[i]      = dv_acc
+            local_max_vc[i] = max_vc_i
+        end
+
+        # Jacobi write-back — all agents update simultaneously
+        Threads.@threads for i in 1:N
+            vel_arr[i] = vel_arr[i] + acc_vel[i]
+        end
+
+        maximum(local_max_vc) < tol && break
+    end
+
+    idx = 1
+    for (_, _pos_col, vel_col, _geo_col) in Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}))
+        for i in eachindex(vel_col)
+            vel_col[i] = Velocity(vel_arr[idx])
+            idx += 1
+        end
+    end
+end
+
+# ── §3Y-c: CPU — CPUNeighborSearch (CellListMap) overload ───────────────────
+
+"""
+    apply_velocity_impulse_cpu!(world, search::CPUNeighborSearch, ::Type{F};
+                                n_iters=8, tol=1f-3, restitution=0f0,
+                                use_mass_weighting=false)
+
+CellListMap-based Sprint 3Y overload. Uses `pairwise!` with SpinLocks for
+thread-safe accumulation. Identical semantics to the RadixSpatialHash overload.
+"""
+function apply_velocity_impulse_cpu!(
+    world              :: World,
+    search             :: CPUNeighborSearch,
+    ::Type{F};
+    n_iters            :: Int  = 8,
+    tol                :: F   = F(1e-3),
+    restitution        :: F   = zero(F),
+    use_mass_weighting :: Bool = false
+) where {F<:AbstractFloat}
+    n_iters == 0 && return
+
+    pos_arr  = SVector{2,F}[]
+    vel_arr  = SVector{2,F}[]
+    rad_arr  = F[]
+    mass_arr = F[]
+
+    if use_mass_weighting
+        for (_, pos_col, vel_col, geo_col, mp_col) in
+                Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}, MotionParams{F}))
+            for i in eachindex(pos_col)
+                push!(pos_arr,  pos_col[i].p)
+                push!(vel_arr,  vel_col[i].v)
+                push!(rad_arr,  geo_col[i].social_radius)
+                push!(mass_arr, mp_col[i].mass)
+            end
+        end
+    else
+        for (_, pos_col, vel_col, geo_col) in
+                Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}))
+            for i in eachindex(pos_col)
+                push!(pos_arr,  pos_col[i].p)
+                push!(vel_arr,  vel_col[i].v)
+                push!(rad_arr,  geo_col[i].social_radius)
+                push!(mass_arr, one(F))
+            end
+        end
+    end
+
+    N = length(pos_arr)
+    N == 0 && return
+
+    build_grid!(search, pos_arr, CPU())
+
+    acc_vel       = [zero(SVector{2,F}) for _ in 1:N]
+    lk            = [Base.Threads.SpinLock() for _ in 1:N]
+    atomic_max_vc = Threads.Atomic{F}(zero(F))
+    e_val         = restitution
+    lp = pos_arr; lv = vel_arr; lr = rad_arr; lm = mass_arr
+
+    for _ in 1:n_iters
+        fill!(acc_vel, zero(SVector{2,F}))
+        Threads.atomic_xchg!(atomic_max_vc, zero(F))
+
+        function accumulate_impulse!(pair, _output)
+            (; i, j, d) = pair
+            d < F(1e-6) && return _output
+            pi = lp[i]; vi = lv[i]; ri = lr[i]; mi = lm[i]
+            pj = lp[j]; vj = lv[j]; rj = lr[j]; mj = lm[j]
+            ri + rj <= d && return _output
+            n_hat = (pi - pj) / d
+            vc    = dot(vi - vj, n_hat)
+            if vc < zero(F)
+                Threads.atomic_max!(atomic_max_vc, F(-vc))
+                dvi = apply_velocity_impulse_pair(pi, vi, mi, ri, pj, vj, mj, rj; e=e_val)
+                dvj = apply_velocity_impulse_pair(pj, vj, mj, rj, pi, vi, mi, ri; e=e_val)
+                lock(lk[i]); acc_vel[i] += dvi; unlock(lk[i])
+                lock(lk[j]); acc_vel[j] += dvj; unlock(lk[j])
+            end
+            return _output
+        end
+        CellListMap.pairwise!(accumulate_impulse!, search.psych_system)
+
+        Threads.@threads for i in 1:N
+            vel_arr[i] = vel_arr[i] + acc_vel[i]
+        end
+        atomic_max_vc[] < tol && break
+    end
+
+    idx = 1
+    for (_, _pos_col, vel_col, _geo_col) in Query(world, (Position{F}, Velocity{F}, AgentGeometry{F}))
+        for i in eachindex(vel_col)
+            vel_col[i] = Velocity(vel_arr[idx])
+            idx += 1
+        end
+    end
+end
+
+# ── §3Y-d: GPU velocity impulse kernel ──────────────────────────────────────
+
+"""
+    velocity_impulse_kernel!(out_delta_vel,
+                             sorted_positions, sorted_velocities, sorted_radii,
+                             sorted_masses, cell_starts, cell_ends,
+                             cell_origin, cell_size, grid_dims, N, restitution)
+
+GPU Sprint 3Y compute pass. Thread i accumulates Δvel_i from all overlapping
+neighbours j via `apply_velocity_impulse_pair`. Reads `sorted_velocities[jj]`
+(@Const snapshot) for vel_j. Writes only to `out_delta_vel[i]` — no race.
+"""
+@kernel function velocity_impulse_kernel!(
+    out_delta_vel    :: AbstractVector,
+    @Const(sorted_positions  :: AbstractVector),
+    @Const(sorted_velocities :: AbstractVector),
+    @Const(sorted_radii      :: AbstractVector),
+    @Const(sorted_masses     :: AbstractVector),
+    @Const(cell_starts       :: AbstractVector),
+    @Const(cell_ends         :: AbstractVector),
+    cell_origin  :: SVector{2},
+    cell_size    :: Float32,
+    grid_dims    :: SVector{2, Int32},
+    N            :: Int32,
+    restitution  :: Float32
+)
+    i = @index(Global, Linear)
+    if i <= N
+        F     = eltype(sorted_radii)
+        pos_i = sorted_positions[i];  vel_i = sorted_velocities[i]
+        r_i   = sorted_radii[i];      m_i   = sorted_masses[i]
+        dv    = zero(SVector{2,F})
+        ci    = floor(Int32, (pos_i[1] - cell_origin[1]) / cell_size)
+        cj    = floor(Int32, (pos_i[2] - cell_origin[2]) / cell_size)
+
+        @inbounds for dci in Int32(-1):Int32(1), dcj in Int32(-1):Int32(1)
+            ni = ci + dci; nj = cj + dcj
+            if ni >= Int32(0) && ni < grid_dims[1] && nj >= Int32(0) && nj < grid_dims[2]
+                # Morton (Z-order) — matches build_csr_kernel!/position_to_hash
+                cell_idx = Int(morton_spread_bits(UInt32(ni)) |
+                               (morton_spread_bits(UInt32(nj)) << UInt32(1))) + Int32(1)
+                if cell_idx >= Int32(1) && cell_idx <= length(cell_starts)
+                    cs = cell_starts[cell_idx]; ce = cell_ends[cell_idx]
+                    if cs != 0 && cs <= ce   # cs==0 → empty cell (sentinel from build_grid! fill!)
+                        for jj in cs:ce
+                            if jj != i
+                                pos_j = sorted_positions[jj]
+                                vel_j = sorted_velocities[jj]
+                                r_j   = sorted_radii[jj]
+                                m_j   = sorted_masses[jj]
+                                dv    = dv + apply_velocity_impulse_pair(
+                                    pos_i, vel_i, m_i, r_i,
+                                    pos_j, vel_j, m_j, r_j;
+                                    e = F(restitution))
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        out_delta_vel[i] = dv
+    end
+end
+
+"""
+    apply_impulse_vel_kernel!(velocities, delta_vel, N)
+
+GPU write-back for Sprint 3Y: applies Δvel to sorted velocities.
+Separate from the compute pass for explicit GPU synchronisation.
+"""
+@kernel function apply_impulse_vel_kernel!(
+    velocities :: AbstractVector,
+    @Const(delta_vel :: AbstractVector),
+    N :: Int32
+)
+    i = @index(Global, Linear)
+    if i <= N
+        velocities[i] = velocities[i] + delta_vel[i]
+    end
+end
+
+# ── §3Y-e: GPU driver ────────────────────────────────────────────────────────
+
+"""
+    apply_velocity_impulse_gpu!(base, search, backend;
+                                n_iters=8, restitution=0f0, masses=nothing)
+
+GPU Sprint 3Y velocity impulse correction driver.
+Runs `n_iters` sweeps of `velocity_impulse_kernel!` + `apply_impulse_vel_kernel!`.
+Reuses `base.dev_delta_vel` (no extra allocation per step).
+Spatial hash from the XPBD pass is still valid (positions unchanged).
+
+## Arguments
+- `base`:        `BaseGPUContext`. `base.dev_delta_vel` is reused for Δvel accumulation.
+- `search`:      `RadixSpatialHash` (grid parameters).
+- `backend`:     KernelAbstractions backend.
+- `n_iters`:     PGS sweeps (default 8).
+- `restitution`: e ∈ [0,1]. Default 0 = inelastic (Maury-Venel).
+- `masses`:      Sorted mass array on device. `nothing` = unit mass (equal 0.5 split).
+"""
+function apply_velocity_impulse_gpu!(
+    base        :: BaseGPUContext,
+    search      :: RadixSpatialHash,
+    backend;
+    n_iters     :: Int     = 8,
+    restitution :: Float32 = 0f0,
+    masses      :: Union{Nothing, AbstractVector} = nothing
+)
+    n_iters == 0 && return
+    F = eltype(base.sorted_dev_radii)
+    N = Int32(length(base.sorted_dev_positions))
+
+    sorted_masses = masses === nothing ?
+        KernelAbstractions.ones(backend, F, Int(N)) : masses
+
+    kern_compute = velocity_impulse_kernel!(backend)
+    kern_apply   = apply_impulse_vel_kernel!(backend)
+
+    for _ in 1:n_iters
+        kern_compute(
+            base.dev_delta_vel,
+            base.sorted_dev_positions, base.sorted_dev_velocities, base.sorted_dev_radii,
+            sorted_masses,
+            search.cell_starts, search.cell_ends,
+            search.grid_min, search.cell_size, SVector{2,Int32}(search.grid_dims),
+            N, restitution;
+            ndrange = Int(N)
+        )
+        KernelAbstractions.synchronize(backend)
+
+        kern_apply(
+            base.sorted_dev_velocities, base.dev_delta_vel, N;
+            ndrange = Int(N)
+        )
+        KernelAbstractions.synchronize(backend)
     end
 end
