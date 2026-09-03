@@ -68,7 +68,8 @@ Per-agent density-triggered ORCA↔SFM dispatch for agents carrying
 function update_hybrid_fsm_system!(world::World,
                                    search::AbstractNeighborSearch,
                                    backend::Backend,
-                                   dt::F) where {F<:AbstractFloat}
+                                   dt::F;
+                                   skip_contact::Bool=false) where {F<:AbstractFloat}
 
     # ── 0. Guard: no hybrid agents → return immediately ─────────────────────
     n_hybrid = 0
@@ -152,7 +153,8 @@ function update_hybrid_fsm_system!(world::World,
                 # Pass orca_params.radius as body radius (= r_body, same value as AgentGeometry)
                 F_agent = _hybrid_sfm_force(
                     pos_i, vel_i, goal_i, motion_i, params.orca_params.radius,
-                    params.sfm_params, all_positions, all_velocities, walls, F)
+                    params.sfm_params, all_positions, all_velocities, walls, F;
+                    skip_contact=skip_contact)
             end
 
             # ── 3e. Write force and updated state ─────────────────────────────────
@@ -756,7 +758,8 @@ while ORCA's bottleneck is the LP solver, not the neighbor search.
 """
 function update_hybrid_fsm_system!(world::World, search::RadixSpatialHash{AT,F},
                                     backend::Backend, dt::F;
-                                    n_iters_corr::Int = 8) where {AT,F}
+                                    skip_contact::Bool=false,
+                                    n_iters_corr::Int = 8) where {AT, F<:AbstractFloat}
     n_hybrid = 0
     try
         n_hybrid = count_entities(Query(world, (HybridFSMParams{F},)))
