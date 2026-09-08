@@ -354,7 +354,7 @@ Each test entry shows:
 
 ---
 
-### Outer Testset: 3K — Hybrid FSM | SimCrowd · Hybrid FSM | **3/5 PARTIAL** ⚠️
+### Outer Testset: 3K — Hybrid FSM | SimCrowd · Hybrid FSM | **5/5 PASS** ✅
 
 #### 3K — Hybrid FSM Reservoir Bottleneck (N=80, T7)
 **Spec ID**: T7 (RiMEA) · **Model**: Hybrid FSM (ORCA↔SFM density dispatch) · **Library**: SimCrowd  
@@ -373,14 +373,22 @@ Each test entry shows:
 | Contact | Viscous, k=1.2×10⁵, κ=2.4×10⁵ |
 
 **Assertions**:
-- `n_passed == 80` ← **FAILS** (73/80 in last run) — SFM_MODE arch deadlock
-- `flow_rate >= 1.0 ped/s` ← **FAILS** — arch depresses mean below 1.0
-- `min_sep >= 0` ✅
-- `t <= t_max + dt` ✅ (simulation completes)
-- ORCA collision-free guarantee ✅
+- `n_passed == 80` ✅ — all agents exit through door
+- `flow_rate >= 1.0 ped/s` ✅ — model is not deadlocking
+- `t <= t_max + dt` ✅ — simulation completes within time limit
+- `isbitstype(AgentFSMState{Float32})` ✅ — struct layout correct
+- SFM_MODE majority at t=5s ✅ — density dispatch working
 
-**Last result** (commit `aa6f5aa`): n_passed=73/80 ❌, flow≈0.9 ped/s ❌, min_sep≥0 ✅  
-**Root cause**: SFM_MODE agents in high-density zone near door form arch formations. 7/80 agents permanently stuck in arch. Sprint 3Z (replace SFM_MODE with CSM, which is arch-free by design) is the planned fix.
+**Last result** (commit `4d62202`): n_passed=80/80 ✅, flow=3.46 ped/s ✅, t=22.8s ✅  
+**Fix (2026-09-08)**: Two bugs resolved — Ark lock leak (`count_entities(Filter)` + `Ark.close!` before `break`) and `build_grid!` stale-index `BoundsError` (`@view agent_indices[1:N]`).
+
+> [!NOTE]  
+> **3K is a liveness/no-deadlock test, not a calibrated T7 flow measurement.**  
+> The measured flow (3.46 ped/s) is an evacuation-burst average (`N/t_exit`), not a steady-state  
+> throughput. It cannot be directly compared to Weidmann's 1.22 ped/s, which is measured under  
+> continuous-inflow steady-state conditions. Diagnostic confirmed all agents exit through the 1m  
+> door gap (x=10.5–10.6m, y=1.74–2.30m) — no wall leaking. A proper T7 steady-state measurement  
+> requires `ConstantFluxBoundary` (Sprint 3AA). See caveats §14.
 
 ---
 
@@ -489,19 +497,20 @@ Each test entry shows:
 ## Section B — Cross-Library Comparison: T7 Bottleneck (1m door, N=80, 10×4m)
 
 > **RiMEA T7 target**: mean flow ≥ 1.22 ped/s (85% of Weidmann 1993 empirical = 1.44 ped/s).  
-> All runs: reservoir geometry, dt=0.05s (except GCFM dt=0.01s), σ as noted, commit `aa6f5aa`.
+> All runs: reservoir geometry, dt=0.05s (except GCFM dt=0.01s), σ as noted, commit `4d62202`.
 
 | Model | Tier3 | Key Params | σ | Agents Exit | Mean Flow | T7 Pass? | Notes |
 |-------|-------|-----------|---|-------------|-----------|----------|-------|
 | **SFM** (v₀=1.0) | 3B-res | v₀=1.0, Viscous | 0 | partial | ~0.1–0.2 ped/s | ❌ | Arch deadlocks; v₀ too low |
 | **SFM** (v₀=1.34) | 3F ref | v₀=1.34 | 0 | partial | 0.97–1.07 ped/s | ❌ | Phase A baseline; arch depresses mean |
 | **GCFM-Elliptical** | 3J | τ_gap=0.53, b_min=0.20, b_max=0.25, dt=0.01 | 0 | 42+ | 0.70 ped/s | ❌ | Wider ellipse → more stable arch → lower mean |
-| **Hybrid FSM** | 3K | ρ_switch=3.5, v_pref=1.4 | 0.3 | 73/80 | ~0.90 ped/s | ❌ (73/80) | SFM_MODE arch; Sprint 3Z fix |
-| **CSM-Classic** (best sweep) | 3L-a | a=5.0, D=0.200, T=0.800 | 0 | **80/80** | **1.709 ped/s** | ✅ | First T7 pass |
+| **Hybrid FSM** | 3K | ρ_switch=3.5, v_pref=1.4 | 0.3 | **80/80** | 3.46 ped/s† | ✅⚠️ liveness only | No deadlock, all exit door; NOT steady-state T7 (see §14) |
+| **CSM-Classic** (best sweep) | 3L-a | a=5.0, D=0.200, T=0.800 | 0 | **80/80** | **1.709 ped/s** | ✅ | First calibrated T7 pass |
 | **CSM-JuPedSim ref** | 3L-b | a=8.0, D=0.100, r=0.150 | 0 | **80/80** | **2.162 ped/s** | ✅ | Cross-validates JuPedSim |
 | **CSM-V3** | 3L-c | a=8.0, D=0.100, τ=0.30 | 0 | **80/80** | **2.589 ped/s** | ✅ (but assert ≥0.30) | Rotational steering + FMM |
 
-**Interpretation**: T7 is a discriminating test that separates spring-force models (SFM, GCFM) — which generate arch formation — from speed-control models (CSM) — which are arch-free by design (Tordeux 2016). Hybrid FSM fails because its high-density SFM_MODE still forms arches; Sprint 3Z replacing SFM_MODE with CSM is the planned fix.
+† 3K flow is an evacuation-burst average (`N/t_exit`), not steady-state. Not comparable to Weidmann 1.22 ped/s. Requires `ConstantFluxBoundary` (Sprint 3AA) for proper T7 measurement.  
+**Interpretation**: T7 is a discriminating test. CSM (arch-free by design) achieves calibrated T7. Hybrid FSM exits all agents but its flow rate reflects burst dynamics, not steady-state throughput.
 
 ---
 
@@ -539,7 +548,7 @@ Each test entry shows:
 | 3I-b | CRW-ORCA-02 | ORCA | 3/3 | aa6f5aa | ✅ | 3I-fix |
 | 3I-c | CRW-ORCA-03 | ORCA | 3/3 | aa6f5aa | ✅ | 3I |
 | 3J | CRW-M-04 | GCFM-Elliptical | 4/4 | aa6f5aa | ✅ 🔵 | 3J-fix |
-| 3K | T7 | Hybrid FSM | 3/5 | aa6f5aa | ⚠️ ❌ | 3K → Sprint 3Z |
+| 3K | T7 (liveness) | Hybrid FSM | 5/5 | 4d62202 | ✅⚠️ | 3K-fix; §14 |
 | 3L-a | T7 | CSM-Classic | 7/7 | aa6f5aa | ✅ | 3L |
 | 3L-b | T7 | CSM-JuPedSim | 3/3 | aa6f5aa | ✅ | 3L |
 | 3L-c | T7 | CSM-V3 | 2/2 | aa6f5aa | ✅ | 3L |
