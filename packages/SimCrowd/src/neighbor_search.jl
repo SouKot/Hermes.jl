@@ -147,21 +147,31 @@ _sortperm!(ix::AbstractArray, v::AbstractArray, backend::Backend; kw...) =
 function build_grid!(sh::RadixSpatialHash, positions::AbstractArray, backend::Backend)
     N = length(positions)
     num_cells = length(sh.cell_starts)
-    
+
     fill!(sh.cell_starts, 0)
     fill!(sh.cell_ends, 0)
-    
+
+    # Capacity check: RadixSpatialHash is created for a fixed max N. After agent removal
+    # (apply_boundary!), the current N may be smaller than the original capacity. We must
+    # restrict all operations to the first N slots so that stale entries in cell_hashes and
+    # agent_indices (beyond index N) are never sorted into the active range or returned by
+    # get_neighbors. Using @view restricts sortperm to exactly N elements — the returned
+    # permutation values are always in [1, N], guaranteeing safe indexing into pos_arr.
+    hashes_view  = @view sh.cell_hashes[1:N]
+    indices_view = @view sh.agent_indices[1:N]
+
     kernel_hashes! = compute_hashes_kernel!(backend)
-    kernel_hashes!(sh.cell_hashes, positions, sh.grid_min, sh.cell_size, sh.grid_dims, ndrange=N)
+    kernel_hashes!(hashes_view, positions, sh.grid_min, sh.cell_size, sh.grid_dims, ndrange=N)
     KernelAbstractions.synchronize(backend)
-    
+
     # AK.merge_sortperm! uses static block-size kernels (GPU shared memory) — GPU only.
     # Julia base sortperm! is CPU-only (no device array support).
     # Dispatch: CPU uses Julia base, GPU backends use AcceleratedKernels.
-    _sortperm!(sh.agent_indices, sh.cell_hashes, backend)
-    
+    # NOTE: sortperm on a view of length N produces indices in [1,N] only. ✓
+    _sortperm!(indices_view, hashes_view, backend)
+
     kernel_csr! = build_csr_kernel!(backend)
-    kernel_csr!(sh.cell_starts, sh.cell_ends, sh.cell_hashes, sh.agent_indices, ndrange=N)
+    kernel_csr!(sh.cell_starts, sh.cell_ends, hashes_view, indices_view, ndrange=N)
     KernelAbstractions.synchronize(backend)
 end
 
