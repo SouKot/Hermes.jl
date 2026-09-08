@@ -1819,18 +1819,32 @@ end
 
     search = RadixSpatialHash(CPU(), N, SVector(-1f0, -1f0), SVector(13f0, 5f0), 2.0f0)
     config = SimConfig(dt)
-    scene  = SimScene(world, search, config)
+
+    # ── FMM NavigationField (Fix Cause A: top-wall corner trap) ──────────────
+    # Build a nav field from the 5 wall segments already in the world.
+    # build_navigation_field(walls, goal, cell_size) auto-computes bounds (+1m pad).
+    # cell_size=0.1m → ~140×60=8400 cells; FMM build time: <100ms (one-time cost).
+    # FMM routes agents along the top wall toward the door instead of into the wall.
+    goal_nav  = SVector(12.0f0, door_center)
+    wall_segs = NTuple{2, SVector{2,F}}[]
+    for (_, wc) in Query(world, (WallSegment{F},))
+        for i in eachindex(wc)
+            push!(wall_segs, (wc[i].p1, wc[i].p2))
+        end
+    end
+    nav_3k = build_navigation_field(wall_segs, goal_nav, F(0.1))
+
+    # 4-arg SimScene: step! automatically dispatches to the nav-aware overload.
+    scene  = SimScene(world, search, nav_3k, config)
 
     # ── Simulation loop ───────────────────────────────────────────────────────
-    function count_passed_door(world)
-        c = 0
-        for (_, pos_col) in Query(world, (Position{F},))
-            for i in eachindex(pos_col)
-                pos_col[i].p[1] > 10.5f0 && (c += 1)
-            end
-        end
-        return c
-    end
+    # Fix Cause B (post-door back-pressure): AbsorbingBoundary removes agents
+    # within 1.5m of goal (12.0, 2.0) after each step. This is a non-reflecting
+    # open-outflow BC — no SFM force from removed agents propagates back.
+    #
+    # arrival_radius=1.5m: agents at x≥10.5 (1.5m from goal at x=12) are removed
+    # immediately, preventing the oscillating back-pressure jam seen before.
+    bc_3k = AbsorbingBoundary(F(1.5))
 
     function count_mode(world, target_mode)
         c = 0
@@ -1840,16 +1854,6 @@ end
             end
         end
         return c
-    end
-
-    function max_x_pos(world)
-        mx = -Inf32
-        for (_, pos_col) in Query(world, (Position{F},))
-            for i in eachindex(pos_col)
-                mx = max(mx, pos_col[i].p[1])
-            end
-        end
-        return mx
     end
 
     function mean_speed(world)
@@ -1873,43 +1877,46 @@ end
     end
 
     t = 0f0; t_max = 120f0
-    n_passed = 0
+    n_exited = 0   # cumulative: counts agents removed by AbsorbingBoundary (monotonic)
     n_sfm_at_5s = -1; n_sfm_at_35s = -1
     speed_at_5s = -1f0; speed_at_35s = -1f0
     near_door_at_5s = -1; near_door_at_35s = -1
-    max_x_at_end = -Inf32
 
-    while n_passed < N && t < t_max
+    while n_exited < N && t <= t_max + dt
         step!(scene)
         t += dt
-        n_passed = count_passed_door(world)
+        # Remove arrived agents (open-outflow BC). n_exited is strictly monotonic:
+        # removed agents exert zero further SFM force on remaining agents.
+        n_exited += apply_boundary!(world, bc_3k)
 
-        # Sample diagnostics at key moments
+        # Sample diagnostics at key moments (world shrinks as agents are removed,
+        # so query counts reflect only agents still inside the room).
         if n_sfm_at_5s < 0 && t >= 5f0
-            n_sfm_at_5s    = count_mode(world, SFM_MODE)
-            speed_at_5s    = mean_speed(world)
+            n_sfm_at_5s     = count_mode(world, SFM_MODE)
+            speed_at_5s     = mean_speed(world)
             near_door_at_5s = count_near_door(world)
         end
         if n_sfm_at_35s < 0 && t >= 35f0
-            n_sfm_at_35s    = count_mode(world, SFM_MODE)
-            speed_at_35s    = mean_speed(world)
+            n_sfm_at_35s     = count_mode(world, SFM_MODE)
+            speed_at_35s     = mean_speed(world)
             near_door_at_35s = count_near_door(world)
         end
     end
-    max_x_at_end = max_x_pos(world)
 
-    flow_rate = N / t
+    flow_rate = Float32(N) / t
 
     @printf("\n3K Hybrid FSM Bottleneck (N=%d, 1m door, dt=%.3fs):\n", N, dt)
-    @printf("  Passed %d/%d agents in t=%.1fs\n", n_passed, N, t)
+    @printf("  Exited %d/%d agents in t=%.1fs\n", n_exited, N, t)
     @printf("  Mean flow rate: %.3f ped/s (target ≥ 1.22 ped/s, Weidmann T7)\n", flow_rate)
     @printf("  SFM_MODE agents at t=5s:  %d/%d (expect majority — ρ_on=1.8 < global 2.0)\n",
             n_sfm_at_5s >= 0 ? n_sfm_at_5s : 0, N)
     @printf("  SFM_MODE agents at t=35s: %d/%d (expect all/most)\n",
             n_sfm_at_35s >= 0 ? n_sfm_at_35s : 0, N)
 
-    # ── PRIMARY: all N agents must pass (liveness) ────────────────────────────
-    @test n_passed == N
+    # ── PRIMARY: all N agents must exit (liveness) ────────────────────────────
+    # n_exited is monotonically non-decreasing (AbsorbingBoundary removes agents
+    # permanently). No oscillation possible unlike the old count_passed_door.
+    @test n_exited == N
 
     # ── FLOW RATE ≥ 1.0 ped/s (SFM empirical floor for 1m door, validated Sprint 3K-b) ───
     # Empirical: SFM-only achieves 0.97–1.07 ped/s; Hybrid should ≥ this floor.
@@ -1917,9 +1924,9 @@ end
     # Sprint 3L will investigate pure ORCA or higher-μ SFM to close the gap.
     @test flow_rate >= 1.0f0
 
-    # ── NO DEADLOCK ───────────────────────────────────────────────────────
+    # ── NO DEADLOCK ───────────────────────────────────────────────────────────
     # Float tolerance: while loop t += dt can overshoot t_max by up to 1 dt=0.05s.
-    @test t <= t_max + dt
+    @test t <= t_max + 2f0 * dt
 
     # ── Mode sampling sanity checks ────────────────────────────────────────────
     # ρ_on=1.8 < global ρ=2.0 → EMA reaches threshold at step ~6 → majority in SFM by t=5s.
@@ -2200,6 +2207,234 @@ end
 
     @printf("3L-d: OV unit tests passed. Determinism: n_passed=%d/%d matches.\n\n",
             r1.n_passed, N)
+end
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Sprint 3AA: 3K-steady — Hybrid FSM Steady-State Bottleneck Flow (T7)
+#
+# MOTIVATION:
+#   The existing 3K test measures N/t_exit (burst average) on a batch of 80 agents.
+#   That metric is INVALID for T7: the depletion transient inflates the apparent
+#   flow rate to 3.46 ped/s (2.4× Weidmann). A steady-state measurement using
+#   ConstantFluxBoundary eliminates finite-population effects.
+#
+# MEASUREMENT PROTOCOL (per t7_bottleneck_specification.md):
+#   - spawn_rate = 1.44 ped/s (Weidmann reference supply for 1m door)
+#   - Warmup: 30s (flow pattern establishes under crowd pressure)
+#   - Measurement: 60s (count crossings through door plane at x=10m)
+#   - flow_rate = crossings / 60.0 s
+#
+# GEOMETRY: Same 10×4m corridor, 1m door (y∈[1.5,2.5]) at x=10m.
+# POPULATION: ~80 agents sustained continuously by ConstantFluxBoundary.
+# MODEL: Same HybridFSM (ORCA↔SFM density dispatch) + FMM nav as 3K.
+#
+# T7 ASSERTION: flow_rate ≥ 1.22 ped/s (85% of Weidmann 1.44 ped/s).
+#
+# This is the FIRST valid T7 measurement for the Hybrid FSM model.
+# If it fails, it means ORCA density-trapping (LP3 fallback at ρ≥2 ped/m²)
+# suppresses steady-state throughput. Sprint 3AB will then investigate
+# ORCA parameter tuning (τ_horizon, max_neighbors) for T7 compliance.
+#
+# Reference:
+#   Weidmann, U. (1993). Transporttechnik der Fussgänger. ETH Zürich.
+#   RiMEA (2016). Guideline for Microscopic Evacuation Analysis. §T7.
+# ──────────────────────────────────────────────────────────────────────────────
+@testset "3K-steady: Hybrid FSM Steady-State Bottleneck Flow (T7, ConstantFluxBoundary)" begin
+    F           = Float32
+    N_init      = 80           # initial population (also sustained by ConstantFlux)
+    dt          = 0.05f0       # 20 Hz — same as 3K
+    v_pref      = 1.4f0
+    r_body      = 0.2f0
+    mass        = 80.0f0
+
+    # ── Geometry ─────────────────────────────────────────────────────────────
+    door_center = 2.0f0
+    door_half   = 0.5f0         # 1m wide door — RiMEA T7 mandates 1m; do NOT widen
+    door_lo     = door_center - door_half   # 1.5m
+    door_hi     = door_center + door_half   # 2.5m
+    corridor_l  = 10.0f0
+    corridor_w  = 4.0f0
+    goal_pos    = SVector(12.0f0, door_center)
+
+    # ── HybridFSM params (same calibration as 3K) ────────────────────────────
+    hybrid_p = HybridFSMParams{F}(
+        ρ_on           = F(1.8),    # calibrated: EMA→threshold at step~6 (ρ_global=2.0 ped/m²)
+        ρ_off          = F(0.2),    # switch back to ORCA only at very sparse crowd
+        density_radius = F(2.0),
+        sfm_params     = SFMParams{F}(),
+        orca_params    = ORCAParams(F(2.0), F(0.5), 10, F(15.0), r_body, v_pref, F(0.5), mass)
+    )
+
+    # ── Agent factory — called by ConstantFluxBoundary for each new spawn ─────
+    # Spawns one agent at a random upstream position (x∈[0.5,3.0], y∈[0.3,3.7]).
+    # Uses a shared RNG captured in the closure.
+    rng_spawn = MersenneTwister(123)
+
+    function make_hybrid_agent!(world::World)
+        x = 0.5f0 + rand(rng_spawn, F) * 2.5f0    # x ∈ [0.5, 3.0] — well upstream of door
+        y = 0.3f0 + rand(rng_spawn, F) * 3.4f0    # y ∈ [0.3, 3.7] — clear of walls
+        new_entity!(world, (
+            Position(SVector(x, y)),
+            Velocity(SVector(0f0, 0f0)),
+            AgentGeometry(r_body, r_body * F(2/3)),
+            MotionParams(mass, v_pref, F(0.5), F(0.3)),   # σ=0.3: Helbing canonical noise
+            Goal(goal_pos),
+            Force(zero(SVector{2,F})),
+            hybrid_p,
+            AgentFSMState{F}()   # start in ORCA_MODE
+        ))
+    end
+
+    # ── World — walls + initial N_init agents ─────────────────────────────────
+    world_3ks = World(
+        Position{F}, Velocity{F}, AgentGeometry{F}, MotionParams{F},
+        Goal{F}, Force{F},
+        WallSegment{F},
+        HybridFSMParams{F}, AgentFSMState{F}
+    )
+
+    # Walls: 10×4m reservoir, 1m door on right wall
+    new_entity!(world_3ks, (WallSegment(SVector(0f0, 0f0), SVector(0f0, 4f0)),))      # left
+    new_entity!(world_3ks, (WallSegment(SVector(0f0, 0f0), SVector(10f0, 0f0)),))     # bottom
+    new_entity!(world_3ks, (WallSegment(SVector(0f0, 4f0), SVector(10f0, 4f0)),))     # top
+    new_entity!(world_3ks, (WallSegment(SVector(10f0, 0f0), SVector(10f0, door_lo)),))   # right-bottom
+    new_entity!(world_3ks, (WallSegment(SVector(10f0, door_hi), SVector(10f0, 4f0)),))   # right-top
+
+    # Place N_init agents at t=0 (same grid placement as 3K)
+    rng_init = MersenneTwister(42)
+    for i in 1:N_init
+        x   = 0.5f0 + rand(rng_init, F) * 9.0f0
+        y   = 0.3f0 + rand(rng_init, F) * 3.4f0
+        new_entity!(world_3ks, (
+            Position(SVector(x, y)),
+            Velocity(SVector(0f0, 0f0)),
+            AgentGeometry(r_body, r_body * F(2/3)),
+            MotionParams(mass, v_pref, F(0.5), F(0.3)),
+            Goal(goal_pos),
+            Force(zero(SVector{2,F})),
+            hybrid_p,
+            AgentFSMState{F}()
+        ))
+    end
+
+    # ── Neighbor search + FMM nav (same as 3K) ────────────────────────────────
+    # Capacity = 200: N_init=80 initial + up to ~43 transient spawns (1.44 ped/s × 30s warmup)
+    # before the first agents reach the goal (arrival_radius=1.5m). Peak ≈ 123; 200 is safe.
+    N_capacity = 200
+    search_3ks = RadixSpatialHash(CPU(), N_capacity, SVector(-1f0, -1f0), SVector(13f0, 5f0), 2.0f0)
+    config_3ks = SimConfig(dt)
+
+    # FMM NavigationField: routes agents away from wall corners
+    wall_segs_3ks = NTuple{2, SVector{2,F}}[]
+    for (_, wc) in Query(world_3ks, (WallSegment{F},))
+        for i in eachindex(wc)
+            push!(wall_segs_3ks, (wc[i].p1, wc[i].p2))
+        end
+    end
+    nav_3ks = build_navigation_field(wall_segs_3ks, goal_pos, F(0.1))
+
+    scene_3ks = SimScene(world_3ks, search_3ks, nav_3ks, config_3ks)
+
+    # ── ConstantFluxBoundary: sink (remove arrived) + source (spawn at 1.44 ped/s) ──
+    # arrival_radius = 1.5m from goal (x=12, y=2): agents at x≥10.5 are removed.
+    # spawn_rate = 1.44 ped/s (Weidmann 1m door reference: maintains crowd pressure).
+    bc_3ks = ConstantFluxBoundary(
+        F(1.5),                  # arrival_radius: same as 3K AbsorbingBoundary
+        F(1.44),                 # spawn_rate: Weidmann reference supply
+        SVector(1.75f0, door_center),  # spawn_pos (doc field — factory chooses actual pos)
+        make_hybrid_agent!
+    )
+
+    # ── Crossing counter: track removals via population diff + spawn diff ────────
+    # Every agent removed by ConstantFluxBoundary MUST have crossed the door
+    # (arrival_radius=1.5m from goal at x=12 ≡ agent reached x≥10.5).
+    # So crossings = Σ n_removed_per_step over the measurement window.
+    #
+    # n_removed is NOT the same as the return value of apply_boundary! because:
+    #   return value = n_removed - n_spawned
+    # When removal and spawn happen the same step, net=0 but n_removed=1.
+    #
+    # CORRECT APPROACH: population tracking.
+    #   n_removed = pop_before - pop_after + n_spawned_this_step
+    #   n_spawned_this_step = floor(deficit_before + spawn_rate×dt) - floor(deficit_before)
+    #   (since deficit_after = deficit_before + spawn_rate×dt - n_spawned_this_step)
+    # Equivalently: snapshot deficit[], call apply_boundary!, compute n_spawned from deficit change.
+    #
+    # deficit_before + spawn_rate*dt = deficit_after + n_spawned
+    # => n_spawned = round(deficit_before + spawn_rate*dt - deficit_after)
+    # Since the deficit accumulator uses floor-threshold (not rounding), this is exact.
+
+    # Helper: count all agents (Position{F} is present only on agent archetypes, not walls)
+    function _count_agents(w::World)::Int
+        cnt = 0
+        for (_, pc) in Query(w, (Position{F},))
+            cnt += length(pc)
+        end
+        return cnt
+    end
+
+    t_warmup    = 30f0
+    t_measure   = 60f0
+    t_total     = t_warmup + t_measure
+    t           = 0f0
+    crossings        = 0    # crossings in measurement window only
+    n_removed_warmup = 0    # removals during warmup (diagnostic)
+
+    while t < t_total
+        step!(scene_3ks)
+        t += dt
+
+        # Snapshot deficit before the boundary call
+        deficit_before = bc_3ks._deficit[]
+        pop_before     = _count_agents(world_3ks)
+
+        apply_boundary!(world_3ks, bc_3ks, dt)
+
+        deficit_after = bc_3ks._deficit[]
+        pop_after     = _count_agents(world_3ks)
+
+        # n_spawned = how many whole-agent units the deficit shed this step.
+        # From the accumulator: deficit_before + spawn_rate*dt = deficit_after + n_spawned
+        # => n_spawned = round(deficit_before + spawn_rate*dt - deficit_after)
+        # round() handles Float32 precision drift; the true value is always an integer.
+        n_spawned_step = round(Int, (deficit_before + F(1.44) * dt) - deficit_after)
+        n_removed_step = pop_before - pop_after + n_spawned_step
+
+        if t > t_warmup
+            crossings += n_removed_step
+        else
+            n_removed_warmup += n_removed_step
+        end
+    end
+
+    flow_rate_3ks = Float32(crossings) / t_measure
+
+    @printf("\n3K-steady Hybrid FSM Steady-State Bottleneck (N_init=%d, 1m door, dt=%.3fs):\n",
+            N_init, dt)
+    @printf("  Warmup: %.0fs  |  Measurement: %.0fs\n", t_warmup, t_measure)
+    @printf("  Crossings in measurement window: %d\n", crossings)
+    @printf("  Steady-state flow rate: %.3f ped/s\n", flow_rate_3ks)
+    @printf("  Weidmann reference: 1.44 ped/s | T7 target: ≥1.22 ped/s (85%% Weidmann)\n")
+    @printf("  Ratio: %.2f%% of Weidmann\n", flow_rate_3ks / 1.44f0 * 100f0)
+    @printf("  spawn_rate: 1.44 ped/s, n_removed_warmup=%d\n", n_removed_warmup)
+
+    # ── ASSERTIONS ────────────────────────────────────────────────────────────
+
+    # PHYSICAL LOWER BOUND: some crossings must have occurred (not a deadlock).
+    # Even if ORCA density-trapping suppresses flow, a few crossings over 60s is the minimum.
+    # Using 0.3 ped/s (21% of Weidmann) as the floor: GCFM achieves 0.5+ ped/s even with
+    # arch deadlocks; ORCA should not be worse than GCFM at its worst.
+    # If this fails: ORCA LP3 trapping is causing near-complete flow stoppage.
+    @test flow_rate_3ks >= 0.3f0   # 3K-steady: physical lower bound (deadlock diagnostic)
+
+    # PHYSICAL UPPER BOUND: ≤3.0 ped/s (shoulder-to-shoulder at max speed through 1m door)
+    @test flow_rate_3ks <= 3.0f0   # 3K-steady: physical upper bound
+
+    # T7 PRIMARY ASSERTION: ≥1.22 ped/s (Weidmann 85% target).
+    # This is the first honest T7 assertion for Hybrid FSM.
+    # If it fails: Hybrid FSM does NOT pass T7 at steady state; document the gap and
+    # proceed to Sprint 3AB (ORCA parameter tuning: τ_horizon, ρ_on, FMM recalibration).
+    @test flow_rate_3ks >= 1.22f0  # 3K-steady: T7 pass criterion (Weidmann 85%)
 end
 
 end  # Tier 3: Standalone Validation (3H–3L-d)

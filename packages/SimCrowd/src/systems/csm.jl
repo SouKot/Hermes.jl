@@ -367,7 +367,7 @@ function update_csm_system!(world::World, dt::F) where {F<:AbstractFloat}
     # ── Guard ────────────────────────────────────────────────────────────────
     n_csm = 0
     try
-        n_csm = count_entities(Query(world, (CSMParams{F},)))
+        n_csm = count_entities(Filter(world, (CSMParams{F},)))
     catch e
         e isa ArgumentError && return
         rethrow()
@@ -377,8 +377,10 @@ function update_csm_system!(world::World, dt::F) where {F<:AbstractFloat}
     # ── Retrieve shared params from first agent ───────────────────────────────
     # Sprint 3L: all CSM agents share one params struct. Sprint 3L+: per-agent override.
     local params::CSMParams{F}
-    for (_, params_col) in Query(world, (CSMParams{F},))
+    q_csm_p1 = Query(world, (CSMParams{F},))  # captured: close! called before break
+    for (_, params_col) in q_csm_p1
         params = params_col[1]
+        Ark.close!(q_csm_p1)
         break
     end
 
@@ -518,15 +520,16 @@ update_csm_system!(world, dt, nav)
 function update_csm_system!(world::World, dt::F, nav::AbstractNavigationField{F}) where {F<:AbstractFloat}
     n_csm = 0
     try
-        n_csm = count_entities(Query(world, (CSMParams{F},)))
+        n_csm = count_entities(Filter(world, (CSMParams{F},)))
     catch e
         e isa ArgumentError && return; rethrow()
     end
     n_csm == 0 && return
 
     local params::CSMParams{F}
-    for (_, params_col) in Query(world, (CSMParams{F},))
-        params = params_col[1]; break
+    q_csm_p2 = Query(world, (CSMParams{F},))  # captured: close! called before break
+    for (_, params_col) in q_csm_p2
+        params = params_col[1]; Ark.close!(q_csm_p2); break
     end
 
     walls = NTuple{2, SVector{2,F}}[]
@@ -649,15 +652,16 @@ Compared to the O(N²) path at N=1000: ~10k vs 1M distance evaluations.
 function update_csm_system!(world::World, search::CPUNeighborSearch{F}, dt::F) where {F<:AbstractFloat}
     n_csm = 0
     try
-        n_csm = count_entities(Query(world, (CSMParams{F},)))
+        n_csm = count_entities(Filter(world, (CSMParams{F},)))
     catch e
         e isa ArgumentError && return; rethrow()
     end
     n_csm == 0 && return
 
     local params::CSMParams{F}
-    for (_, params_col) in Query(world, (CSMParams{F},))
-        params = params_col[1]; break
+    q_csm_p3 = Query(world, (CSMParams{F},))  # captured: close! called before break
+    for (_, params_col) in q_csm_p3
+        params = params_col[1]; Ark.close!(q_csm_p3); break
     end
 
     walls = NTuple{2, SVector{2,F}}[]
@@ -989,13 +993,14 @@ function update_csm_system!(world::World, search::RadixSpatialHash{AT,F},
                              alg::AbstractCorrectionAlgorithm = JacobiCorrection()) where {AT,F}
     n_csm = 0
     try
-        n_csm = count_entities(Query(world, (CSMParams{F},)))
+        n_csm = count_entities(Filter(world, (CSMParams{F},)))
     catch e; e isa ArgumentError && return; rethrow(); end
     n_csm == 0 && return
 
     local params::CSMParams{F}
-    for (_, params_col) in Query(world, (CSMParams{F},))
-        params = params_col[1]; break
+    q_csm_p4 = Query(world, (CSMParams{F},))  # captured: close! called before break
+    for (_, params_col) in q_csm_p4
+        params = params_col[1]; Ark.close!(q_csm_p4); break
     end
 
     N = n_csm; n_walls = 0
@@ -1124,15 +1129,16 @@ function update_csm_system!(world::World, search::CPUNeighborSearch{F}, dt::F,
                              nav::AbstractNavigationField{F}) where {F<:AbstractFloat}
     n_csm = 0
     try
-        n_csm = count_entities(Query(world, (CSMParams{F},)))
+        n_csm = count_entities(Filter(world, (CSMParams{F},)))
     catch e
         e isa ArgumentError && return; rethrow()
     end
     n_csm == 0 && return
 
     local params::CSMParams{F}
-    for (_, params_col) in Query(world, (CSMParams{F},))
-        params = params_col[1]; break
+    q_csm_p5 = Query(world, (CSMParams{F},))  # captured: close! called before break
+    for (_, params_col) in q_csm_p5
+        params = params_col[1]; Ark.close!(q_csm_p5); break
     end
 
     walls = NTuple{2, SVector{2,F}}[]

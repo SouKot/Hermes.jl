@@ -420,7 +420,7 @@ the scene geometry. Use `assert_wall_budget` at scene construction to verify.
 """
 function update_orca_system!(world::World, search::AbstractNeighborSearch, backend::Backend,
                               dt::AbstractFloat; W::Int = 16, WE::Int = 3*W)
-    num_agents = count_entities(Query(world, (ORCAParams{Float32},)))
+    num_agents = count_entities(Filter(world, (ORCAParams{Float32},)))
     if num_agents == 0
         return 0
     end

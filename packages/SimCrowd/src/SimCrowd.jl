@@ -36,6 +36,14 @@ export apply_agent_correction_cpu!, apply_agent_correction_gpu!
 export apply_wall_correction_cpu!, integrate_positions_kernel!, integrate_vel_pos_kernel!
 # Sprint 3V: Correction algorithm selectors
 export AbstractCorrectionAlgorithm, JacobiCorrection, XPBDCorrection
+# Sprint 3Y: Velocity impulse correction (Maury-Venel PGS separate pass)
+export VelocityImpulseParams
+export apply_velocity_impulse_pair
+export apply_velocity_impulse_cpu!, apply_velocity_impulse_gpu!
+# Sprint 3Z: Boundary condition system (CFD-style domain-edge abstraction)
+export BoundaryCondition
+export AbsorbingBoundary, PeriodicBoundary, ConstantFluxBoundary, OpenBoundary
+export apply_boundary!
 # §2.4 SimConfig + SimScene
 export SimConfig, SimScene, step!, run!
 export apply_sfm_contact_subcycle!
@@ -468,6 +476,60 @@ end
 # XPBDCorrection(α=1f-4) → XPBDCorrection{Float32}(1f-4)
 XPBDCorrection(; α::F = Float32(1e-6)) where {F<:AbstractFloat} = XPBDCorrection{F}(α)
 
+# ── §3Y: Velocity impulse correction (Maury-Venel PGS separate pass) ───────────
+
+"""
+    VelocityImpulseParams{F<:AbstractFloat}
+
+Configuration for the Sprint 3Y velocity impulse correction pass.
+This pass runs **after** all XPBD/Jacobi position corrections are complete.
+It applies a Maury-Venel projected-Gauss-Seidel (PGS) velocity impulse to
+zeroing out the relative closing speed for all remaining overlapping pairs.
+
+## Fields
+
+- `n_iters`: Number of PGS sweeps (default 0 = disabled; Sprint 3Y: 8).
+  Chains of k overlapping agents need k sweeps for full convergence.
+  At T7 density (ρ ≤ 3 ped/m²), chains are typically 2–5 agents; `n_iters=8` suffices.
+
+- `tol`: Early-exit convergence threshold (m/s). Sweep stops when the maximum
+  relative closing speed across all pairs is below `tol`. Default: 1e-3 m/s.
+
+- `restitution`: Coefficient of restitution e ∈ [0, 1].
+  - `e = 0` (default): inelastic — closing speed zeroed (Maury-Venel).
+  - `e = 1`: elastic — velocities bounce (energy-conserving for isolated pairs).
+  Intermediate values produce damped bounces.
+
+- `use_mass_weighting`: When `true`, the impulse split uses actual agent masses
+  from `MotionParams.mass` (CPU path only). When `false` (default), equal-mass
+  (0.5/0.5) is assumed — equivalent to mass-weighting when m_i = m_j.
+  GPU path always uses equal-mass (no mass staging in `BaseGPUContext`).
+
+## Example
+
+```julia
+# Enable Sprint 3Y with 8 sweeps (inelastic, equal mass)
+config = SimConfig(dt=0.05f0, vel_impulse=VelocityImpulseParams(Float32; n_iters=8))
+
+# Enable with elastic bounce and mass weighting:
+config = SimConfig(dt=0.05f0, vel_impulse=VelocityImpulseParams(Float32;
+    n_iters=8, restitution=0.3f0, use_mass_weighting=true))
+```
+"""
+Base.@kwdef struct VelocityImpulseParams{F<:AbstractFloat}
+    n_iters            :: Int  = 0        # 0 = disabled (default); Sprint 3Y: 8
+    tol                :: F   = F(1e-3)  # early-exit: max |v_closing| (m/s)
+    restitution        :: F   = zero(F)  # e ∈ [0,1]; 0 = inelastic (Maury-Venel)
+    use_mass_weighting :: Bool = false    # true = m_j/(m_i+m_j); false = 0.5/0.5
+end
+
+# Convenience constructor: VelocityImpulseParams(Float32; n_iters=8)
+VelocityImpulseParams(::Type{F}; kw...) where {F<:AbstractFloat} =
+    VelocityImpulseParams{F}(; kw...)
+
+# Compile-time guard: ensure VelocityImpulseParams is not accidentally made abstract
+@assert fieldcount(VelocityImpulseParams{Float32}) == 4 "VelocityImpulseParams field count changed"
+
 # ── §2.4 SimConfig (defined here so physics.jl can reference it) ──────────────────
 
 """
@@ -487,6 +549,10 @@ Fields:
 - `agent_correction_tol`:   Early-exit convergence ε (metres). Default: 1e-3 m.
 - `correction_alg`:         Algorithm — `JacobiCorrection()` (default) or
                             `XPBDCorrection(α=1f-6)` (Sprint 3V).
+- `sfm_contact_substeps`:   Contact subcycling steps (0 = disabled). Sprint 3Z+.
+- `vel_impulse`:            Sprint 3Y velocity impulse configuration.
+                            Default: `VelocityImpulseParams{F}()` (n_iters=0, disabled).
+                            Set `n_iters=8` to enable the Maury-Venel PGS velocity pass.
 
 XPBD converges in ~5–8 iterations for dense bottleneck scenarios vs ~50 for Jacobi.
 At α=0, XPBD is mathematically identical to Jacobi.
@@ -505,6 +571,12 @@ force vector. Instead, `apply_sfm_contact_subcycle!` runs N mini-steps at
 `dt_sub = dt / N` using Helbing's full k=120,000 N/m (stable at small dt_sub).
 Goal-seeking and psychological forces still use the full `dt`. This decouples
 the stiff contact spring from the smooth motivational forces.
+
+## Sprint 3Y: Velocity impulse pass
+The `vel_impulse` field controls the post-XPBD Maury-Venel velocity correction.
+This pass runs **after** all position correction iterations are complete and
+zeroes the relative closing speed for all remaining overlapping pairs.
+See `VelocityImpulseParams` for full documentation.
 """
 struct SimConfig{F<:AbstractFloat}
     dt                     :: F
@@ -514,28 +586,36 @@ struct SimConfig{F<:AbstractFloat}
     agent_correction_tol   :: F
     correction_alg         :: AbstractCorrectionAlgorithm
     sfm_contact_substeps   :: Int  # 0 = disabled; N > 0 = subcycle contact N times at dt/N
+    vel_impulse            :: VelocityImpulseParams{F}  # Sprint 3Y: velocity impulse PGS
 end
 
-# ── Convenience constructors — backward-compatible ────────────────────────────
-# All short-form constructors default dt_sfm=dt, sfm_contact_substeps=0.
+# ── Convenience constructors — backward-compatible ────────────────────────────────
+# All short-form constructors default:
+#   dt_sfm = dt, sfm_contact_substeps = 0, vel_impulse = disabled (n_iters=0)
+# The 8-arg inner constructor is the canonical form.
+# Sprint 3Y users: pass vel_impulse=VelocityImpulseParams(F; n_iters=8) to any constructor.
 SimConfig{F}() where {F<:AbstractFloat} =
-    SimConfig{F}(F(0.05), F(0.05), F(5.0), 8, F(1e-3), JacobiCorrection(), 0)
+    SimConfig{F}(F(0.05), F(0.05), F(5.0), 8, F(1e-3), JacobiCorrection(), 0, VelocityImpulseParams{F}())
 SimConfig() = SimConfig{Float32}()
 SimConfig(dt::F) where {F<:AbstractFloat} =
-    SimConfig{F}(dt, dt, F(5.0), 8, F(1e-3), JacobiCorrection(), 0)
+    SimConfig{F}(dt, dt, F(5.0), 8, F(1e-3), JacobiCorrection(), 0, VelocityImpulseParams{F}())
 SimConfig(dt::F, max_speed::F) where {F<:AbstractFloat} =
-    SimConfig{F}(dt, dt, max_speed, 8, F(1e-3), JacobiCorrection(), 0)
+    SimConfig{F}(dt, dt, max_speed, 8, F(1e-3), JacobiCorrection(), 0, VelocityImpulseParams{F}())
 SimConfig(dt::F, max_speed::F, iters::Int) where {F<:AbstractFloat} =
-    SimConfig{F}(dt, dt, max_speed, iters, F(1e-3), JacobiCorrection(), 0)
+    SimConfig{F}(dt, dt, max_speed, iters, F(1e-3), JacobiCorrection(), 0, VelocityImpulseParams{F}())
 SimConfig(dt::F, max_speed::F, iters::Int, tol::F) where {F<:AbstractFloat} =
-    SimConfig{F}(dt, dt, max_speed, iters, tol, JacobiCorrection(), 0)
-# Backward-compat 5-arg (dt, max_speed, iters, tol, alg) — dt_sfm=dt, n_sub=0:
+    SimConfig{F}(dt, dt, max_speed, iters, tol, JacobiCorrection(), 0, VelocityImpulseParams{F}())
+# Backward-compat 5-arg (dt, max_speed, iters, tol, alg) — dt_sfm=dt, n_sub=0, vi=disabled:
 SimConfig{F}(dt::F, max_speed::F, iters::Int, tol::F, alg::AbstractCorrectionAlgorithm) where {F<:AbstractFloat} =
-    SimConfig{F}(dt, dt, max_speed, iters, tol, alg, 0)
-# Backward-compat 6-arg (dt, dt_sfm, max_speed, iters, tol, alg) — n_sub=0:
+    SimConfig{F}(dt, dt, max_speed, iters, tol, alg, 0, VelocityImpulseParams{F}())
+# Backward-compat 6-arg (dt, dt_sfm, max_speed, iters, tol, alg) — n_sub=0, vi=disabled:
 SimConfig{F}(dt::F, dt_sfm::F, max_speed::F, iters::Int, tol::F, alg::AbstractCorrectionAlgorithm) where {F<:AbstractFloat} =
-    SimConfig{F}(dt, dt_sfm, max_speed, iters, tol, alg, 0)
-# Full 7-arg inner constructor (dt, dt_sfm, max_speed, iters, tol, alg, n_sub) is the struct default.
+    SimConfig{F}(dt, dt_sfm, max_speed, iters, tol, alg, 0, VelocityImpulseParams{F}())
+# Backward-compat 7-arg (dt, dt_sfm, max_speed, iters, tol, alg, n_sub) — vi=disabled:
+SimConfig{F}(dt::F, dt_sfm::F, max_speed::F, iters::Int, tol::F,
+             alg::AbstractCorrectionAlgorithm, n_sub::Int) where {F<:AbstractFloat} =
+    SimConfig{F}(dt, dt_sfm, max_speed, iters, tol, alg, n_sub, VelocityImpulseParams{F}())
+# Full 8-arg canonical inner constructor: SimConfig{F}(dt,dt_sfm,max_speed,iters,tol,alg,n_sub,vi).
 
 
 include("forces.jl")
@@ -553,6 +633,7 @@ include("systems/orca.jl")
 # Note: orca_cpu.jl was deleted in Sprint 3K-a — all features ported into orca.jl.
 include("systems/hybrid_fsm.jl")
 include("systems/csm.jl")
+include("systems/arrival.jl")  # Sprint 3Z: BoundaryCondition hierarchy (AbsorbingBoundary, Periodic, ConstantFlux, Open)
 
 # ── §2.1 ForceModel Trait ─────────────────────────────────────────────────────
 # Marker types that declare which force model an agent uses.
@@ -662,8 +743,11 @@ function step!(scene::SimScene{F}) where {F}
     # Guard: Ark.Query throws ArgumentError if a component type was never registered.
     local n_force::Int  = 0
     local n_csm::Int    = 0
-    try; n_force = count_entities(Query(scene.world, (Force{F},)));      catch e; e isa ArgumentError || rethrow(); end
-    try; n_csm   = count_entities(Query(scene.world, (CSMParams{F},)));  catch e; e isa ArgumentError || rethrow(); end
+    # IMPORTANT: Use Filter (not Query) for entity counting — Query locks the world at
+    # construction and only releases via close!(q). count_entities(Query(...)) leaks the
+    # lock because it never calls close!. Filter is Ark's lock-free counting alternative.
+    try; n_force = count_entities(Filter(scene.world, (Force{F},)));      catch e; e isa ArgumentError || rethrow(); end
+    try; n_csm   = count_entities(Filter(scene.world, (CSMParams{F},)));  catch e; e isa ArgumentError || rethrow(); end
 
     # Nothing to do if no force-based agents AND no CSM agents
     (n_force == 0 && n_csm == 0) && return scene
@@ -698,19 +782,19 @@ function step!(scene::SimScene{F}) where {F}
         end
         # 3. SFM agent-agent + wall forces (only for agents with SFMParams)
         local n_sfm::Int = 0
-        try; n_sfm = count_entities(Query(scene.world, (SFMParams{F},))); catch; n_sfm = 0; end
+        try; n_sfm = count_entities(Filter(scene.world, (SFMParams{F},))); catch; n_sfm = 0; end
         if n_sfm > 0
             update_social_forces_system!(scene.world, scene.search, ka_backend)
         end
         # 4. ORCA velocity update (only for agents with ORCAParams)
         local n_orca::Int = 0
-        try; n_orca = count_entities(Query(scene.world, (ORCAParams{F},))); catch; n_orca = 0; end
+        try; n_orca = count_entities(Filter(scene.world, (ORCAParams{F},))); catch; n_orca = 0; end
         if n_orca > 0
             update_orca_system!(scene.world, scene.search, ka_backend, dt; W=16)
         end
         # 5. Hybrid FSM dispatch (agents with HybridFSMParams — neither SFMParams nor ORCAParams)
         local n_hybrid::Int = 0
-        try; n_hybrid = count_entities(Query(scene.world, (HybridFSMParams{F},))); catch; n_hybrid = 0; end
+        try; n_hybrid = count_entities(Filter(scene.world, (HybridFSMParams{F},))); catch; n_hybrid = 0; end
 
         # ── Adaptive dt: use dt_sfm when any Hybrid agent is in SFM_MODE ─────
         # SFM_MODE agents need a smaller dt for the body-contact spring to resolve
@@ -721,14 +805,24 @@ function step!(scene::SimScene{F}) where {F}
         if n_hybrid > 0 && scene.config.dt_sfm < scene.config.dt
             any_sfm = false
             try
-                for (_, state_col) in Query(scene.world, (AgentFSMState{F},))
+                # Capture query in `q_fsm` so we can call Ark.close!(q_fsm) before any
+                # early-break exit. Ark.Query locks the world at construction and only
+                # unlocks it via close!(q), which is auto-called only on full exhaustion.
+                # Breaking without close! leaves the world locked → InvalidStateException
+                # on the next remove_entity! call (e.g. in apply_boundary!).
+                q_fsm = Query(scene.world, (AgentFSMState{F},))
+                for (_, state_col) in q_fsm
                     for i in eachindex(state_col)
                         if state_col[i].mode == SFM_MODE
                             any_sfm = true
+                            Ark.close!(q_fsm)   # unlock world before breaking
                             break
                         end
                     end
-                    any_sfm && break
+                    if any_sfm
+                        Ark.close!(q_fsm)       # unlock world before breaking outer loop
+                        break
+                    end
                 end
             catch e
                 e isa ArgumentError || rethrow()
@@ -786,6 +880,20 @@ function step!(scene::SimScene{F}) where {F}
                                     n_iters = n_iters,
                                     tol     = scene.config.agent_correction_tol,
                                     alg     = scene.config.correction_alg)
+    end
+
+    # 9. Velocity impulse correction — Maury-Venel PGS (Sprint 3Y)
+    #    Runs AFTER all position corrections are complete. Applies n_iters sweeps
+    #    of inelastic velocity impulse to zero relative closing speeds.
+    #    Does NOT change positions — only velocities.
+    #    Enabled when vel_impulse.n_iters > 0 (default: disabled).
+    vi = scene.config.vel_impulse
+    if vi.n_iters > 0
+        apply_velocity_impulse_cpu!(scene.world, scene.search, F;
+                                    n_iters            = vi.n_iters,
+                                    tol                = vi.tol,
+                                    restitution        = vi.restitution,
+                                    use_mass_weighting = vi.use_mass_weighting)
     end
 
     return scene

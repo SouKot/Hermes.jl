@@ -923,6 +923,13 @@ HybridFSMParams{F}(
 **See also**: `docs/DEBUGGING_PROTOCOL.md` — Rule Zero added based on Sprint 3K diagnostic experience.
 `brain/78616c9e.../scratch/diag_3k_stuck.jl` — per-agent force diagnostic template.
 
+> **3K-fix (2026-09-08, commit `4d62202`)**: Two regressions introduced after original Sprint 3K:
+> 1. **Ark lock leak** — `count_entities(Query(...))` never released lock; `remove_entity!` threw
+>    `InvalidStateException`. Fix: `count_entities(Filter(...))` + `Ark.close!(q)` before `break`.
+> 2. **`build_grid!` stale-index** — sort operated on full capacity (N=80) after agents removed;
+>    stale entries returned as neighbor indices → `BoundsError`. Fix: `@view sh.agent_indices[1:N]`.
+> Both bugs caused 3K to crash (1 Error). After fix: 5/5 PASS, 80/80 exit, flow=3.46 ped/s.
+
 ---
 #### Sprint 3L — Collision-Free Speed Model (CSM) `[x]` COMPLETE (2026-08-29)
 
@@ -1063,13 +1070,19 @@ agents don't push each other; they slow down when the gap ahead closes. No arch 
 After Sprint 3L (CSM), 3O (Hybrid FSM + FMM nav), and 3P (wall correction), a full RiMEA T1–T15
 compliance audit was run against [validation_test_cases.md](./2026-08-07_validation_test_cases.md).
 
-**Current status (2026-09-01)**: T2 ✅ (Sprint 3F), T4 ✅ (3H), T7 ✅ (3K/3L — Hybrid FSM + CSM),
-T14 ✅ (3G lane formation). T12, T15 not yet started.
+**Current status (2026-09-08)**: T2 ✅ (Sprint 3F), T4 ✅ (3H), T7 ✅ calibrated (CSM 3L),
+T7 ✅ liveness (Hybrid FSM 3K — see caveat below), T14 ✅ (3G lane formation). T12, T15 not yet started.
 
-**T7 best results**:
-- Hybrid FSM + FMM nav: **4.408 ped/s** (3.6× target)
+**T7 best results** (calibrated steady-state — CSM only):
 - CSM V3 rotational: **2.589 ped/s** (2.1× target)
-- CSM + FMM nav: **2.112 ped/s** (1.7× target)
+- CSM-JuPedSim ref: **2.162 ped/s** (1.8× target)
+- CSM-Classic best: **1.709 ped/s** (1.4× target) ← lowest reliable calibrated result
+
+**T7 Hybrid FSM result (liveness only — NOT calibrated)**:
+- Hybrid FSM (3K): **3.46 ped/s** reported, but this is an evacuation-burst average (`N/t_exit`),
+  not steady-state throughput. ORCA suppresses arch formation → near-theoretical door throughput.
+  Cannot be compared to Weidmann 1.22 ped/s. See `validation_caveats.md §14`.
+  `ConstantFluxBoundary` (Sprint 3AA) required for proper T7 steady-state measurement.
 
 ---
 
@@ -1504,7 +1517,7 @@ T14 ✅ (3G lane formation). T12, T15 not yet started.
 | **1** | SimCore | ✅ Complete (2026-08-07) | 12/12 |
 | **2A+2B+2C** | SimDES Tier 1 | ✅ Complete (2026-08-08) | 26/26 |
 | **2D** | SimDES Architecture Hardening | ✅ Complete (2026-08-08) | 5/5 |
-| **3** | SimCrowd + GPU | `[/]` In progress | 3A+3B ✅ · 3C: 8/9 · 3D–3G (tier-3): ✅ · 3E (FD periodic ±15%): ✅ · 3F (lane formation): ✅ · **3G (GCF+λ): ✅** · **3H (speed dist T4): ✅** · **ORCA 3I-a/b/c: ✅** · **3J (GCFM-elliptical): ✅** · **3K (Hybrid FSM): ✅** · **3L (CSM): ✅** · **3M (CSM gap fix): ✅** · **3N (NavField FMM): ✅** · **3O (AbstractNavField + HybridFSM nav): ✅** · **3P (wall penetration correction): ✅** · **3Q (GPU wall correction + BaseGPUContext): ✅** · **3R (CSM O(N×k) CPU+GPU): ✅** · **3S (GPU HybridFSM kernel): ✅** · **122 tests passing** · GPU kernels: ✅ CSM + HybridFSM |
+| **3** | SimCrowd + GPU | `[/]` In progress | 3A+3B ✅ · 3C: 8/9 · 3D–3G (tier-3): ✅ · 3E (FD periodic ±15%): ✅ · 3F (lane formation): ✅ · **3G (GCF+λ): ✅** · **3H (speed dist T4): ✅** · **ORCA 3I-a/b/c: ✅** · **3J (GCFM-elliptical): ✅** · **3K (Hybrid FSM liveness): ✅** (commit `4d62202`, §14 caveat) · **3L (CSM T7 calibrated): ✅** · **3M (CSM gap fix): ✅** · **3N (NavField FMM): ✅** · **3O (AbstractNavField + HybridFSM nav): ✅** · **3P (wall penetration correction): ✅** · **3Q (GPU wall correction + BaseGPUContext): ✅** · **3R (CSM O(N×k) CPU+GPU): ✅** · **3S (GPU HybridFSM kernel): ✅** · **211 tests passing** · GPU kernels: ✅ CSM + HybridFSM |
 | **4** | SimViz GLMakie | `[ ]` Not started | 0/8 |
 | **5** | Conservative PDES | `[ ]` Not started | 0/17 |
 | **6** | DES + Crowd Integration | `[ ]` Not started | 0/7 |

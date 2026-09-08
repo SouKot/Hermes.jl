@@ -74,7 +74,7 @@ function update_hybrid_fsm_system!(world::World,
     # ── 0. Guard: no hybrid agents → return immediately ─────────────────────
     n_hybrid = 0
     try
-        n_hybrid = count_entities(Query(world, (HybridFSMParams{F},)))
+        n_hybrid = count_entities(Filter(world, (HybridFSMParams{F},)))
     catch e
         e isa ArgumentError && return
         rethrow()
@@ -207,7 +207,7 @@ function update_hybrid_fsm_system!(world::World,
     # ── 0. Guard: no hybrid agents → return immediately ─────────────────────
     n_hybrid = 0
     try
-        n_hybrid = count_entities(Query(world, (HybridFSMParams{F},)))
+        n_hybrid = count_entities(Filter(world, (HybridFSMParams{F},)))
     catch e
         e isa ArgumentError && return
         rethrow()
@@ -778,7 +778,7 @@ function update_hybrid_fsm_system!(world::World, search::RadixSpatialHash{AT,F},
                                     n_iters_corr::Int = 8) where {AT, F<:AbstractFloat}
     n_hybrid = 0
     try
-        n_hybrid = count_entities(Query(world, (HybridFSMParams{F},)))
+        n_hybrid = count_entities(Filter(world, (HybridFSMParams{F},)))
     catch e
         e isa ArgumentError && return; rethrow()
     end
@@ -891,10 +891,14 @@ function update_hybrid_fsm_system!(world::World, search::RadixSpatialHash{AT,F},
     sfm_mu      = F(0.0)
 
     # Try to read from ECS
-    for (_, params_col) in Query(world, (HybridFSMParams{F},))
+    # Capture query so Ark.close! can be called before break (early-exit without
+    # close! leaves the world locked → InvalidStateException on remove_entity!).
+    q_hyb = Query(world, (HybridFSMParams{F},))
+    for (_, params_col) in q_hyb
         if !isempty(params_col)
             sp = params_col[1].sfm_params
             sfm_A = sp.A; sfm_B = sp.B; sfm_lambda = sp.λ; sfm_mu = sp.μ
+            Ark.close!(q_hyb)
             break
         end
     end
@@ -1004,7 +1008,7 @@ function apply_sfm_contact_subcycle!(world::World, n_sub::Int, dt_sub::F, ::Type
 
     # ─ Step 1: Snapshot all HybridFSM agent state ──────────────────────────────────
     n_hybrid = 0
-    try; n_hybrid = count_entities(Query(world, (HybridFSMParams{F},))); catch e; e isa ArgumentError && return; rethrow(); end
+    try; n_hybrid = count_entities(Filter(world, (HybridFSMParams{F},))); catch e; e isa ArgumentError && return; rethrow(); end
     n_hybrid == 0 && return
 
     all_pos  = Vector{SVector{2,F}}(undef, n_hybrid)

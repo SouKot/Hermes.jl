@@ -123,7 +123,7 @@ Dispatches to the correct social force computation based on the neighbor search 
 """
 function update_social_forces_system!(world::World, search::AbstractNeighborSearch, backend::Backend)
     # 1. Extract positions and radii from ECS into contiguous arrays for building the grid
-    num_agents = count_entities(Query(world, (Position{Float32},))) # We will parameterize this properly below
+    num_agents = count_entities(Filter(world, (Position{Float32},))) # We will parameterize this properly below
     
     # For now, to keep it simple, we infer F from the search struct
     F = typeof(search.cell_size)
