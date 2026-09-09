@@ -1,9 +1,29 @@
 name = "SimViz"
 uuid = "1d3a18c2-5789-4809-a60e-48e89172195e"
 authors = ["Sourabh Kotnala <sauravkotnala@gmail.com>"]
-version = "1.0.0-DEV"
+version = "0.1.0-DEV"
+
+[deps]
+Accessors = "7d9f7c33-5ae7-4f3b-8dc6-eff91059b697"
+Ark = "56664e29-41e4-4ea5-ab0e-825499acc647"
+ColorSchemes = "35d6a980-a343-548e-a6ea-1d62b119f2f4"
+GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Observables = "510215fc-4207-5dde-b226-833fc4488ee2"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+SimCore = "0c356fe6-1c88-4cf8-b16c-a521627c3420"
+SimCrowd = "10200f98-6de3-48c3-a2a4-7c6f453ce806"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
 [compat]
+Accessors = "0.1"
+Ark = "0.5.1"
+ColorSchemes = "3.28"
+GLMakie = "0.10"
+LinearAlgebra = "1"
+Observables = "0.5"
+Random = "1"
+StaticArrays = "1.9"
 julia = "1.10"
 
 [extras]

@@ -1086,68 +1086,63 @@ T7 ✅ liveness (Hybrid FSM 3K — see caveat below), T14 ✅ (3G lane formation
 
 ---
 
-## Phase 4 — SimViz: GLMakie Desktop Prototype
+## Phase 4 — SimViz: GLMakie Desktop Prototype `[x]` COMPLETE
 
-> **Goal**: Real-time visualization of simulation state. Phase 1 desktop = no editor, hardcoded layout.  
-> **Package**: `packages/SimViz/src/SimViz.jl`  
-> **Design refs**: §4.3 (GLMakie Phase 1), §4.4 (desktop window layout)  
-> **Depends on**: Phase 2 (SimDES) and Phase 3 (SimCrowd) for something to visualize  
-> **Timeline**: Weeks 2–3 (runs in parallel with Phase 2 & 3)
+> **Goal**: Real-time visualization of simulation state using GLMakie.
+> **Package**: `packages/SimViz/src/SimViz.jl`
+> **Completed**: September 2026 · 91 unit tests ✅ · 3 demo scenarios ✅
+> **Depends on**: Phase 2 (SimDES) and Phase 3 (SimCrowd)
 
-### Sprint 4A — Core Visualization
+### Sprint 4A — Core Visualization `[x]` DONE
 
-- [ ] **4A-01** · Add `GLMakie.jl`, `Observables.jl` to `SimViz/Project.toml`
+- `[x]` **4A-01** · `GLMakie`, `Observables`, `Accessors`, `Ark`, `StaticArrays` in `Project.toml`
 
-- [ ] **4A-02** · Implement `SimVizState` — Observables wrapping world state
-  ```julia
-  struct SimVizState
-      positions     :: Observable{Vector{Point2f}}
-      panic_levels  :: Observable{Vector{Float32}}
-      stats_text    :: Observable{String}
-      sim_time      :: Observable{Float64}
-  end
-  ```
+- `[x]` **4A-02** · `SimVizState` + `serialize_world_ctx` + color helpers (`viz_state.jl`)
+  - `WorldSnapshot` NamedTuple: `sim_time, positions, velocities, panic_levels, fsm_modes, local_densities, n_agents, n_des_agents, stats`
+  - All agent fields strictly `Float32` / `UInt8` — Phase 7/Godot-compatible
+  - `_world_has_component(world, C)` — allocation-free type-param check (Ark World param 2)
+  - `_panic_to_color`, `_fsm_to_color`, `_density_to_color` — per-agent color maps
+  - `compute_agent_colors!` — fills `Vector{RGBAfTuple}` for all 3 overlay modes
 
-- [ ] **4A-03** · Implement `create_window!` — main GLMakie figure
-  - Multi-panel layout: simulation canvas + statistics panel + controls
-  - `meshscatter!` for agents (one GPU draw call for all agents)
-  - `heatmap!` for density overlay (optional)
-  - `lines!` for walls/obstacles
+- `[x]` **4A-03** · `ScenarioConfig` + `build_world!` + `reset_scenario!` (`scenario_config.jl`)
+  - Single primitive-based user-facing struct (Phase 7 canonical surface)
+  - Builds `ScenarioContext` (ark_world + sim_world + scene + config + sim_time)
+  - Supports: `MODEL_SFM`, `MODEL_ORCA`, `MODEL_HYBRID_FSM`, `MODEL_CSM`
+  - `RoomGeometry` + `DoorSpec` + `ScheduledEvent` — flexible geometry + DES events
 
-- [ ] **4A-04** · Implement `update_viz!` — push world state to Observables
-  - Called from simulation loop at 60fps
-  - Reads `SimWorld.crowd_agents` → writes `positions[]`, `panic_levels[]`
-  - Stats panel: simulated time, event count, agent count, FPS
+- `[x]` **4A-04** · `compute_density_grid!` + `density_grid_size` (`density.jl`)
+  - Gaussian kernel density estimate on configurable grid
+  - Mass conservation verified: `sum(grid) × cs² ≈ N`
 
-- [ ] **4A-05** · Implement control bar (GLMakie `Button` + `Slider`)
-  - `▶ Run` button — calls `unpause!(clock)`
-  - `⏸ Pause` button — calls `pause!(clock)`
-  - `⏭ Step` button — calls `step_once!(clock)`
-  - Speed slider: 0.1× to ∞ — calls `set_speed!(clock, val)`
-  - `⏹ Reset` button — resets world and FEL
+- `[x]` **4A-05** · `make_window!`, `make_stats_panel!` (`window.jl`)
+  - 3-panel GLMakie layout: simulation canvas + density heatmap + stats
+  - `run_visualization!(config)` — single entry point
 
-- [ ] **4A-06** · Implement `run_visualization!` — async simulation + sync viz
-  ```julia
-  function run_visualization!(world, fel, clock)
-      fig = create_window!()
-      viz = SimVizState()
-      display(fig)
-      @async begin
-          while isopen(fig.scene)
-              step_simulation!(world, fel, clock)
-              update_viz!(viz, world)
-              sleep(1/60)
-          end
-      end
-  end
-  ```
+- `[x]` **4A-06** · `wire_controls!` (`controls.jl`)
+  - Run/Pause/Reset buttons, speed slider, overlay selector, n_agents slider
+  - All wired to `SimVizState` Observables
 
-### Sprint 4B — Test Scenarios for Visualization
+- `[x]` **4A-07** · `SimViz.jl` module — all includes + exports wired
 
-- [ ] **4B-01** · Hardcoded M/M/1 queue visualization (single server, queue depth as color)
-- [ ] **4B-02** · Hardcoded 100-agent evacuation room visualization
-- [ ] **4B-03** · Combined: DES alarm event triggers crowd evacuation (visible in GLMakie)
-  - This is the first integration test: `ScheduledChange{:EvacAlarm}` changes crowd goals
+- `[x]` **4A-08** · Unit tests: **91 tests, 91 passing** (`test/runtests.jl`)
+  - Headless (no GLMakie display required in CI)
+  - Coverage: serialize_world_ctx field types, all 4 crowd models, RNG reproducibility,
+    density mass conservation, color helpers, integration step→snapshot
+
+### Sprint 4B — Three Demo Scenarios `[x]` DONE
+
+- `[x]` **4B-01** · `evacuation_scenario` + `run_evacuation_demo!` (`scenarios.jl`)
+  - 10×4m room, east door, HybridFSM; ORCA↔SFM color switching visible at bottleneck
+  - T7 benchmark target: ≥1.22 ped/s flow rate through 1m door
+
+- `[x]` **4B-02** · `mm1_scenario` + `run_mm1_demo!` (`scenarios.jl`)
+  - Pure-DES M/M/1 queue in 15×2m corridor (n_agents=0 ABM, DES only)
+  - `:start_mm1_queue` event at t=0; dots colored green (queued) / blue (served)
+
+- `[x]` **4B-03** · `integration_scenario` + `run_integration_demo!` (`scenarios.jl`)
+  - 100 ORCA agents in 20×10m lobby, 2 exits
+  - DES `:evac_alarm` fires at t=60s → panic color shift + ALARM indicator in stats
+  - **Phase 4 DES+Crowd integration milestone** ✅
 
 ---
 
