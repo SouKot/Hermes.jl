@@ -123,27 +123,42 @@ function wire_controls!(fig, viz, ctx_ref::Ref{ScenarioContext},
     btn_step  = Button(ctrl_bar[1, 3];  label="▶|  Step",  buttoncolor=RGBAf(0.25,0.35,0.6,1), labelcolor=:white)
     btn_reset = Button(ctrl_bar[1, 4];  label="■   Reset", buttoncolor=RGBAf(0.55,0.15,0.15,1), labelcolor=:white)
 
-    # Speed label (col 5) + slider (col 6 — flex)
+    # Speed label (col 5) + slider (col 6 — flex) + value readout (col 7)
     Label(ctrl_bar[1, 5], "Speed:"; color = _SIMVIZ_TEXT_CLR, fontsize = 12f0, halign = :right)
     spd_slider = Slider(ctrl_bar[1, 6];
-        range   = 0.1:0.1:5.0,
+        range      = 0.1:0.1:5.0,
         startvalue = 1.0,
         color_active = _SIMVIZ_ACCENT,
     )
-
-    # Overlay label (col 7) + menu (col 8)
-    Label(ctrl_bar[1, 7], "Overlay:"; color = _SIMVIZ_TEXT_CLR, fontsize=12f0, halign=:right)
-    overlay_menu = Menu(ctrl_bar[1, 8];
-        options = _OVERLAY_OPTIONS,
-        default = "FSM mode",
-        textcolor = _SIMVIZ_TEXT_CLR,
+    # Live speed readout: maps slider value → "1.0×" string
+    Label(ctrl_bar[1, 7];
+        text     = map(v -> string(round(Float64(v); digits=1)) * "×", spd_slider.value),
+        color    = _SIMVIZ_TEXT_CLR,
+        fontsize = 11f0,
+        halign   = :left,
     )
 
-    # Density toggle: label (col 9) + widget (col 10)
-    Label(ctrl_bar[1, 9], "ρ heatmap"; color=_SIMVIZ_TEXT_CLR, fontsize=12f0)
-    density_toggle = Toggle(ctrl_bar[1, 10]; active=false, buttoncolor=_SIMVIZ_ACCENT)
+    # Overlay label (col 8) + menu (col 9)
+    # Dark-theme the Menu: set cell backgrounds so the selected item and
+    # dropdown cells all use the panel colour, not Makie's default white.
+    Label(ctrl_bar[1, 8], "Overlay:"; color = _SIMVIZ_TEXT_CLR, fontsize=12f0, halign=:right)
+    overlay_menu = Menu(ctrl_bar[1, 9];
+        options  = _OVERLAY_OPTIONS,
+        default  = "FSM mode",
+        textcolor                     = _SIMVIZ_TEXT_CLR,
+        cell_color_inactive_even      = _SIMVIZ_PANEL_BG,
+        cell_color_inactive_odd       = _SIMVIZ_PANEL_BG,
+        selection_cell_color_inactive = _SIMVIZ_DARK_BG,
+        cell_color_hover_even         = RGBAf(0.25f0, 0.35f0, 0.55f0, 1f0),
+        cell_color_hover_odd          = RGBAf(0.25f0, 0.35f0, 0.55f0, 1f0),
+        cell_color_active             = _SIMVIZ_ACCENT,
+    )
 
-    # ── Set ctrl_bar column sizes (cols 1–10) ───────────────────────────────────────
+    # Density toggle: label (col 10) + widget (col 11)
+    Label(ctrl_bar[1, 10], "ρ heatmap"; color=_SIMVIZ_TEXT_CLR, fontsize=12f0)
+    density_toggle = Toggle(ctrl_bar[1, 11]; active=false, buttoncolor=_SIMVIZ_ACCENT)
+
+    # ── Set ctrl_bar column sizes (cols 1–11) ─────────────────────────────────
     colsize!(ctrl_bar, 1, Fixed(72))     # ▶ Run
     colsize!(ctrl_bar, 2, Fixed(72))     # ⏸ Pause
     colsize!(ctrl_bar, 3, Fixed(72))     # ⏭ Step
@@ -154,10 +169,11 @@ function wire_controls!(fig, viz, ctx_ref::Ref{ScenarioContext},
                                          # Relative(f) = f×TOTAL width → overflows by
                                          # sum-of-fixed-cols (≈654px), pushing Run/Pause/Step
                                          # off-screen. Auto(false) = "take remaining space".
-    colsize!(ctrl_bar, 7, Fixed(68))     # "Overlay:" label
-    colsize!(ctrl_bar, 8, Fixed(130))    # Overlay menu
-    colsize!(ctrl_bar, 9, Fixed(76))     # "ρ heatmap" label
-    colsize!(ctrl_bar, 10, Fixed(36))    # Density toggle widget
+    colsize!(ctrl_bar, 7, Fixed(44))     # Speed value readout "1.0×"
+    colsize!(ctrl_bar, 8, Fixed(68))     # "Overlay:" label
+    colsize!(ctrl_bar, 9, Fixed(130))    # Overlay menu
+    colsize!(ctrl_bar, 10, Fixed(76))    # "ρ heatmap" label
+    colsize!(ctrl_bar, 11, Fixed(36))    # Density toggle widget
 
     # ── Button callbacks ──────────────────────────────────────────────────────
 
@@ -215,6 +231,18 @@ function wire_controls!(fig, viz, ctx_ref::Ref{ScenarioContext},
         (label = "Door w (m)",    range = 0.4:0.1:4.0,   startvalue = door_w_default,       format = "{:.1f}"),
         (label = "N agents",      range = 5:5:500,        startvalue = config.n_agents,     format = "{:d}"),
     )
+
+    # ── Dark-theme SliderGrid internal labels ─────────────────────────────────
+    # SliderGrid exposes .labels (row name labels) and .valuelabels (value
+    # display labels) via getproperty delegation to its internal .content array.
+    # Makie's default label colour is black, which is unreadable on the dark
+    # figure background. Setting .color directly triggers the Observable update.
+    for lbl in sg.labels
+        lbl.color = _SIMVIZ_TEXT_CLR
+    end
+    for lbl in sg.valuelabels
+        lbl.color = _SIMVIZ_TEXT_CLR
+    end
 
     # ── Size all rows + cols now that every row/col has content ───────────────
     # IMPORTANT: All three rows sized together, AFTER content is placed in each.
