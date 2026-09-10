@@ -87,20 +87,25 @@ in the current frame (re-built each call to `update_viz!`).
 - `fps_display`   : `String`         — "FPS: 60.3" — updated each render frame
 - `overlay_mode`  : `OverlayMode`    — which attribute drives agent color
 - `show_density`  : `Bool`           — whether density heatmap is visible
+- `wall_segments` : `Pos2f[]`        — interleaved wall segment endpoints
+                                       [start1, end1, start2, end2, ...]
+                                       Updated on Reset so door-width changes
+                                       are reflected in the rendered geometry.
 
 `window.jl` converts `Pos2f` → `Point2f` and `RGBAfTuple` → `RGBAf` for
 Makie scatter/heatmap primitives.
 """
 Base.@kwdef mutable struct SimVizState
-    positions    :: Observable{Vector{Pos2f}}        = Observable(Pos2f[])
-    agent_colors :: Observable{Vector{RGBAfTuple}}   = Observable(RGBAfTuple[])
-    density_grid :: Observable{Matrix{Float32}}      = Observable(zeros(Float32, 100, 100))
-    stats_text   :: Observable{String}               = Observable("")
-    sim_time     :: Observable{Float64}              = Observable(0.0)
-    agent_count  :: Observable{Int}                  = Observable(0)
-    fps_display  :: Observable{String}               = Observable("FPS: —")
-    overlay_mode :: Observable{OverlayMode}          = Observable(OVERLAY_PANIC)
-    show_density :: Observable{Bool}                 = Observable(false)
+    positions     :: Observable{Vector{Pos2f}}        = Observable(Pos2f[])
+    agent_colors  :: Observable{Vector{RGBAfTuple}}   = Observable(RGBAfTuple[])
+    density_grid  :: Observable{Matrix{Float32}}      = Observable(zeros(Float32, 100, 100))
+    stats_text    :: Observable{String}               = Observable("")
+    sim_time      :: Observable{Float64}              = Observable(0.0)
+    agent_count   :: Observable{Int}                  = Observable(0)
+    fps_display   :: Observable{String}               = Observable("FPS: —")
+    overlay_mode  :: Observable{OverlayMode}          = Observable(OVERLAY_PANIC)
+    show_density  :: Observable{Bool}                 = Observable(false)
+    wall_segments :: Observable{Vector{Pos2f}}        = Observable(Pos2f[])
 end
 
 # ── Phase 7-compatible world serialization ────────────────────────────────────

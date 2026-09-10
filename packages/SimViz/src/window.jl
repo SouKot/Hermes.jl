@@ -141,10 +141,33 @@ the `SimVizState` container.
     happen on the thread that owns the OpenGL context (main thread).
     Do NOT push Observable updates from a separate `@spawn` task.
 """
+# ── Wall geometry helper ─────────────────────────────────────────────────────
+
+"""
+    _build_wall_segments(ark_world) -> Vector{Pos2f}
+
+Extract all wall segments from `ark_world` and return them as an interleaved
+vector of `Pos2f` endpoints: `[start1, end1, start2, end2, ...]`.
+Returns `Pos2f[]` when there are no walls.
+
+Called once on window creation and again on every Reset so that geometry
+changes (e.g. door-width slider) are reflected immediately.
+"""
+function _build_wall_segments(ark_world)::Vector{Pos2f}
+    starts, ends = _extract_wall_points(ark_world)
+    segs = Pos2f[]
+    for i in eachindex(starts)
+        push!(segs, Pos2f(starts[i]))
+        push!(segs, Pos2f(ends[i]))
+    end
+    return segs
+end
+
 function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
     config = ctx.config
     W = Float32(config.room.width)
     H = Float32(config.room.height)
+
     r = Float32(config.r_body)
 
     # ── Figure size: sized dynamically so the DataAspect canvas row (Row 2)
@@ -208,15 +231,16 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
     # ── Build SimVizState ─────────────────────────────────────────────────────
     nx, ny = density_grid_size(W, H, cell_size)
     viz = SimVizState(
-        positions    = Observable(Pos2f[]),
-        agent_colors = Observable(RGBAfTuple[]),
-        density_grid = Observable(zeros(Float32, nx, ny)),
-        stats_text   = Observable(""),
-        sim_time     = Observable(0.0),
-        agent_count  = Observable(0),
-        fps_display  = Observable("FPS: —"),
-        overlay_mode = Observable(OVERLAY_FSM),
-        show_density = Observable(false),
+        positions     = Observable(Pos2f[]),
+        agent_colors  = Observable(RGBAfTuple[]),
+        density_grid  = Observable(zeros(Float32, nx, ny)),
+        stats_text    = Observable(""),
+        sim_time      = Observable(0.0),
+        agent_count   = Observable(0),
+        fps_display   = Observable("FPS: —"),
+        overlay_mode  = Observable(OVERLAY_FSM),
+        show_density  = Observable(false),
+        wall_segments = Observable(_build_wall_segments(ctx.ark_world)),
     )
 
     # ── Makie positions / colors: convert from data-layer tuples to Makie types
@@ -250,21 +274,20 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
         tellwidth   = false,
     )
 
-    # ── Wall linesegments ─────────────────────────────────────────────────────
+    # ── Wall linesegments (Observable — updated on Reset) ────────────────────
     # Makie 0.21+ linesegments! expects a single interleaved vector:
     # [start1, end1, start2, end2, ...] — NOT two separate vectors.
-    wall_starts, wall_ends = _extract_wall_points(ctx.ark_world)
-    if !isempty(wall_starts)
-        seg_pts = Point2f[]
-        for i in eachindex(wall_starts)
-            push!(seg_pts, Point2f(wall_starts[i]))
-            push!(seg_pts, Point2f(wall_ends[i]))
-        end
-        linesegments!(ax, seg_pts;
-            color     = _SIMVIZ_WALL_CLR,
-            linewidth = 3f0,
-        )
-    end
+    # wall_segments lives in SimVizState so update_viz! can push new geometry
+    # after the door-width slider is changed and Reset is pressed.
+    #
+    # NOTE: we must map Pos2f → Point2f here because linesegments! needs the
+    # concrete Makie type. We use a lifted Observable rather than re-computing
+    # inside the callback to keep the mapping in one place.
+    makie_walls = map(segs -> Point2f[Point2f(p) for p in segs], viz.wall_segments)
+    linesegments!(ax, makie_walls;
+        color     = _SIMVIZ_WALL_CLR,
+        linewidth = 3f0,
+    )
 
     # ── Agent scatter ─────────────────────────────────────────────────────────
     # markersize = Vec2f(2r) in DATA units: each agent appears as a circle
@@ -365,6 +388,9 @@ function update_viz!(viz::SimVizState, ctx::ScenarioContext,
     viz.sim_time[]    = snap.sim_time
     viz.agent_count[] = n
     viz.fps_display[] = fps_str
+
+    # ── Wall geometry (cheap; only non-trivially changes after door-width Reset)
+    viz.wall_segments[] = _build_wall_segments(ctx.ark_world)
 
     return nothing
 end
