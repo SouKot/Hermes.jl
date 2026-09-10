@@ -80,6 +80,8 @@ in the current frame (re-built each call to `update_viz!`).
 # Fields
 - `positions`     : `Pos2f[]`        — 2D positions in world coords (m)
 - `agent_colors`  : `RGBAfTuple[]`   — per-agent (r,g,b,a) color tuple
+- `des_positions` : `Pos2f[]`        — 2D positions of DES agents (M/M/1 dots)
+- `des_colors`    : `RGBAfTuple[]`   — per-DES-agent color (green=waiting, blue=in_service)
 - `density_grid`  : `Matrix{Float32}` — cell density (ped/m²); 100×100 by default
 - `stats_text`    : `String`         — preformatted multi-line stats panel text
 - `sim_time`      : `Float64`        — current simulated time (s)
@@ -98,6 +100,8 @@ Makie scatter/heatmap primitives.
 Base.@kwdef mutable struct SimVizState
     positions     :: Observable{Vector{Pos2f}}        = Observable(Pos2f[])
     agent_colors  :: Observable{Vector{RGBAfTuple}}   = Observable(RGBAfTuple[])
+    des_positions :: Observable{Vector{Pos2f}}        = Observable(Pos2f[])
+    des_colors    :: Observable{Vector{RGBAfTuple}}   = Observable(RGBAfTuple[])
     density_grid  :: Observable{Matrix{Float32}}      = Observable(zeros(Float32, 100, 100))
     stats_text    :: Observable{String}               = Observable("")
     sim_time      :: Observable{Float64}              = Observable(0.0)

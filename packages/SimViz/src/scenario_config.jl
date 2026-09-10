@@ -39,19 +39,20 @@ panic levels and DES stats from the SimCore side.
 
 # ── Top-level imports (Julia requires `using` at file/module scope only) ───────
 
-using Random: MersenneTwister
+using Random: MersenneTwister, randexp
 using LinearAlgebra: norm
 using StaticArrays: SVector
 
 using Ark: World, new_entity!, Query
-using SimCore: SimWorld, SimStats
+using SimCore: SimWorld, SimStats, CrowdAgent, add_zone!, new_entity_id!
+using KernelAbstractions: CPU
 using SimCrowd:
     Position, Velocity, Force, Goal, WallSegment,
     AgentGeometry, MotionParams, SFMParams, ORCAParams,
     HybridFSMParams, AgentFSMState, CSMParams,
     AgentModel, SFMModel, ORCAModel, HybridModel,
     SimConfig, SimScene, JacobiCorrection, XPBDCorrection, VelocityImpulseParams,
-    CPUNeighborSearch, ORCA_MODE, SFM_MODE
+    CPUNeighborSearch, RadixSpatialHash, ORCA_MODE, SFM_MODE
 
 # ── Enum: crowd model ─────────────────────────────────────────────────────────
 
@@ -279,14 +280,19 @@ end
     ScenarioContext
 
 Holds all runtime state for one live simulation scenario:
-- `ark_world`:   `Ark.World` — ECS agents (Position, Velocity, AgentFSMState, …)
-- `sim_world`:   `SimCore.SimWorld` — DES agents, SimStats, zone queues
-- `scene`:       `SimScene` — wraps `ark_world` + neighbor search + config
-- `config`:      `ScenarioConfig` — the parameter set that built this context
-- `sim_time`:    current simulated time (s)
-- `boundaries`:  active `BoundaryCondition{Float32}` list — called after each
-                 `step!` to remove/spawn agents (e.g. `AbsorbingBoundary`).
-                 Populated by `build_world!` when `config.flux_boundary == true`.
+- `ark_world`:    `Ark.World` — ECS agents (Position, Velocity, AgentFSMState, …)
+- `sim_world`:    `SimCore.SimWorld` — DES agents, SimStats, zone queues
+- `scene`:        `SimScene` — wraps `ark_world` + neighbor search + config
+- `config`:       `ScenarioConfig` — the parameter set that built this context
+- `sim_time`:     current simulated time (s)
+- `boundaries`:   active `BoundaryCondition{Float32}` list — called after each
+                  `step!` to remove/spawn agents (e.g. `AbsorbingBoundary`).
+                  Populated by `build_world!` when `config.flux_boundary == true`.
+- `_fired_events`: indices into `config.events` that have already fired.
+                   Prevents double-firing of one-shot events.
+- `_mm1_fel`:      M/M/1 future event list — `(time, type_sym, entity_id)` triples
+                   sorted ascending by time. Used by the `:start_mm1_queue` handler
+                   to drive a lightweight DES loop without a full SimDES runner.
 
 The `SimCore.SimWorld` reference is needed to read `panic_level` (stored on
 `CrowdAgent`) and `SimStats` (arrivals, busy time) in the stats panel.
@@ -295,12 +301,17 @@ Mutated in-place by `reset_scenario!`. GLMakie Observables in `SimVizState`
 subscribe to slices of this object.
 """
 mutable struct ScenarioContext
-    ark_world  :: World
-    sim_world  :: SimWorld
-    scene      :: SimScene
-    config     :: ScenarioConfig
-    sim_time   :: Float64
-    boundaries :: Vector{BoundaryCondition{Float32}}
+    ark_world     :: World
+    sim_world     :: SimWorld
+    scene         :: SimScene
+    config        :: ScenarioConfig
+    sim_time      :: Float64
+    boundaries    :: Vector{BoundaryCondition{Float32}}
+    _fired_events :: Set{Int}                                 # indices into config.events
+    _mm1_fel      :: Vector{Tuple{Float64, Symbol, UInt64}}  # (time, :arrival/:service, id)
+    _mm1_lambda   :: Float64   # M/M/1 arrival rate (0.0 = not active)
+    _mm1_mu       :: Float64   # M/M/1 service rate
+    _mm1_rng      :: MersenneTwister
 end
 
 # ── Internal: SimConfig builder ───────────────────────────────────────────────
@@ -330,6 +341,25 @@ function _make_neighbor_search(config::ScenarioConfig, ::Type{F}) where {F<:Abst
     grid_min  = SVector{2,F}(zero(F), zero(F))
     grid_max  = SVector{2,F}(F(config.room.width), F(config.room.height))
     return CPUNeighborSearch(config.n_agents, grid_min, grid_max, r_search)
+end
+
+"""
+    _make_radix_search(config::ScenarioConfig, ::Type{F})
+
+Build a `RadixSpatialHash` (CPU backend) for ORCA and HybridFSM models.
+
+Must be used instead of `_make_neighbor_search` for these models because
+`_update_orca_impl!` and `update_hybrid_fsm_system!` in SimCrowd only have
+methods dispatching on `RadixSpatialHash`, not `CPUNeighborSearch`.
+(SFM and CSM do have `CPUNeighborSearch` overloads.)
+"""
+function _make_radix_search(config::ScenarioConfig, ::Type{F}) where {F<:AbstractFloat}
+    cell_size = F(config.orca_neighbor_dist)
+    grid_min  = SVector{2,F}(zero(F), zero(F))
+    grid_max  = SVector{2,F}(F(config.room.width) + cell_size,
+                             F(config.room.height) + cell_size)
+    n = max(1, config.n_agents)  # RadixSpatialHash requires N ≥ 1
+    return RadixSpatialHash(CPU(), n, grid_min, grid_max, cell_size)
 end
 
 # ── Internal: geometry helpers ────────────────────────────────────────────────
@@ -508,7 +538,8 @@ function _build_sfm_world(config::ScenarioConfig, ::Type{F},
     bcs = config.flux_boundary ?
         BoundaryCondition{Float32}[AbsorbingBoundary(0.75f0)] :
         BoundaryCondition{Float32}[]
-    return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs)
+    return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs,
+                           Set{Int}(), Tuple{Float64,Symbol,UInt64}[], 0.0, 0.0, MersenneTwister())
 end
 
 function _build_orca_world(config::ScenarioConfig, ::Type{F},
@@ -548,13 +579,15 @@ function _build_orca_world(config::ScenarioConfig, ::Type{F},
     end
 
     sim_cfg = _make_simconfig(config, F)
-    search  = _make_neighbor_search(config, F)
+    search  = _make_radix_search(config, F)   # ORCA requires RadixSpatialHash
     scene   = SimScene(world, search, sim_cfg)
     bcs = config.flux_boundary ?
         BoundaryCondition{Float32}[AbsorbingBoundary(0.75f0)] :
         BoundaryCondition{Float32}[]
-    return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs)
+    return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs,
+                           Set{Int}(), Tuple{Float64,Symbol,UInt64}[], 0.0, 0.0, MersenneTwister())
 end
+
 
 function _build_hybrid_world(config::ScenarioConfig, ::Type{F},
                              rng::MersenneTwister) where {F<:AbstractFloat}
@@ -606,12 +639,13 @@ function _build_hybrid_world(config::ScenarioConfig, ::Type{F},
     end
 
     sim_cfg = _make_simconfig(config, F)
-    search  = _make_neighbor_search(config, F)
+    search  = _make_radix_search(config, F)   # HybridFSM requires RadixSpatialHash
     scene   = SimScene(world, search, sim_cfg)
     bcs = config.flux_boundary ?
         BoundaryCondition{Float32}[AbsorbingBoundary(0.75f0)] :
         BoundaryCondition{Float32}[]
-    return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs)
+    return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs,
+                           Set{Int}(), Tuple{Float64,Symbol,UInt64}[], 0.0, 0.0, MersenneTwister())
 end
 
 function _build_csm_world(config::ScenarioConfig, ::Type{F},
@@ -656,7 +690,8 @@ function _build_csm_world(config::ScenarioConfig, ::Type{F},
     bcs = config.flux_boundary ?
         BoundaryCondition{Float32}[AbsorbingBoundary(0.75f0)] :
         BoundaryCondition{Float32}[]
-    return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs)
+    return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs,
+                           Set{Int}(), Tuple{Float64,Symbol,UInt64}[], 0.0, 0.0, MersenneTwister())
 end
 
 # ── build_world! ─────────────────────────────────────────────────────────────
@@ -710,15 +745,224 @@ Used by the Reset button in the controls panel (4A-06).
 """
 function reset_scenario!(ctx::ScenarioContext;
                           config::ScenarioConfig = ctx.config) :: ScenarioContext
-    new_ctx        = build_world!(config)
-    ctx.ark_world  = new_ctx.ark_world
-    ctx.sim_world  = new_ctx.sim_world
-    ctx.scene      = new_ctx.scene
-    ctx.config     = new_ctx.config
-    ctx.sim_time   = 0.0
-    ctx.boundaries = new_ctx.boundaries
+    new_ctx              = build_world!(config)
+    ctx.ark_world        = new_ctx.ark_world
+    ctx.sim_world        = new_ctx.sim_world
+    ctx.scene            = new_ctx.scene
+    ctx.config           = new_ctx.config
+    ctx.sim_time         = 0.0
+    ctx.boundaries       = new_ctx.boundaries
+    empty!(ctx._fired_events)
+    empty!(ctx._mm1_fel)
+    ctx._mm1_lambda      = 0.0
+    ctx._mm1_mu          = 0.0
+    ctx._mm1_rng         = MersenneTwister()
     return ctx
 end
+
+# ── _dispatch_events! ─────────────────────────────────────────────────────────
+
+"""
+    _dispatch_events!(ctx::ScenarioContext, t::Float64)
+
+Scan `ctx.config.events` for any `ScheduledEvent` whose `time <= t` that
+has not yet fired. Dispatch each unfired event, then mark it as fired.
+
+Recognized event types:
+- `:evac_alarm`       → boost `v_pref` on all ECS MotionParams; record in SimStats
+- `:start_mm1_queue`  → seed the M/M/1 arrival loop (first arrival scheduled)
+
+Always called from the `@async` sim loop **after** `step!` and `sim_time += dt`.
+"""
+function _dispatch_events!(ctx::ScenarioContext, t::Float64)
+    for (i, ev) in enumerate(ctx.config.events)
+        i in ctx._fired_events && continue
+        ev.time > t            && continue
+
+        if ev.type === :evac_alarm
+            _handle_evac_alarm!(ctx, ev)
+        elseif ev.type === :start_mm1_queue
+            _handle_start_mm1!(ctx, ev, t)
+        end
+
+        push!(ctx._fired_events, i)
+    end
+
+    # Drain M/M/1 FEL up to current sim time (no-op if queue is inactive)
+    ctx._mm1_lambda > 0.0 && _tick_mm1!(ctx, t)
+end
+
+# ── :evac_alarm handler ───────────────────────────────────────────────────────
+"""
+    _handle_evac_alarm!(ctx, ev)
+
+Boost `v_pref` on every MotionParams component in the ECS world to `ev.params.v_panic`.
+This causes ORCA agents to walk faster toward their existing goals immediately.
+Also bumps `sim_world.stats.total_events` so the stats panel shows the alarm.
+"""
+function _handle_evac_alarm!(ctx::ScenarioContext, ev::ScheduledEvent)
+    F   = Float32
+    v_p = F(get(ev.params, :v_panic, 1.8))
+
+    # Patch MotionParams.v_pref on every agent in the Ark world.
+    # MotionParams is an immutable struct — we replace each entry entirely.
+    if _world_has_component(ctx.ark_world, MotionParams{F})
+        for (_, mp_col) in Query(ctx.ark_world, (MotionParams{F},))
+            for i in eachindex(mp_col)
+                old = mp_col[i]
+                mp_col[i] = MotionParams{F}(old.mass, v_p, old.τ, old.σ)
+            end
+        end
+    end
+
+    # Record in SimStats so the stats panel shows the alarm
+    ctx.sim_world.stats.total_events += 1
+    @info "[SimViz] 🚨 evac_alarm fired at t=$(round(ctx.sim_time,digits=1))s → v_pref=$(v_p) m/s"
+end
+
+# ── :start_mm1_queue handler ──────────────────────────────────────────────────
+"""
+    _handle_start_mm1!(ctx, ev, t)
+
+Initialize the M/M/1 DES queue:
+- Store λ and μ in `ctx._mm1_lambda` / `ctx._mm1_mu`
+- Register zone 1 in `ctx.sim_world`
+- Schedule the first customer arrival at `t + Exponential(1/λ)`
+"""
+function _handle_start_mm1!(ctx::ScenarioContext, ev::ScheduledEvent, t::Float64)
+    λ = Float64(get(ev.params, :lambda, 0.9))
+    μ = Float64(get(ev.params, :mu,     1.0))
+    ctx._mm1_lambda = λ
+    ctx._mm1_mu     = μ
+    # Seed RNG deterministically from config seed (0 = random)
+    ctx._mm1_rng = ctx.config.rng_seed == 0 ?
+        MersenneTwister() : MersenneTwister(ctx.config.rng_seed + 999)
+    # Register zone 1 (the single server)
+    haskey(ctx.sim_world.zone_states, 1) || add_zone!(ctx.sim_world, 1; num_servers=1)
+    # Schedule first arrival
+    t_first = t + randexp(ctx._mm1_rng) / λ
+    push!(ctx._mm1_fel, (t_first, :arrival, UInt64(0)))
+    sort!(ctx._mm1_fel)
+    @info "[SimViz] M/M/1 queue started: λ=$λ, μ=$μ, first arrival at t=$(round(t_first,digits=2))s"
+end
+
+# ── M/M/1 FEL tick ────────────────────────────────────────────────────────────
+"""
+    _tick_mm1!(ctx, t)
+
+Drain all M/M/1 future events with `time <= t`.
+
+Event types in `_mm1_fel`:
+- `:arrival`  → new customer enters; placed in queue or starts service immediately;
+                self-schedules next arrival; if server idle, schedules `:service_end`
+- `:service_end` → customer departs; if queue non-empty, starts next; updates SimStats
+
+Each customer is visualized as a `CrowdAgent` in `ctx.sim_world.crowd_agents`
+with a corridor position:  queue position = x = 1.0 + 0.8 × queue_index,
+                           service position = x = 13.5 (near east exit).
+"""
+function _tick_mm1!(ctx::ScenarioContext, t::Float64)
+    λ = ctx._mm1_lambda
+    μ = ctx._mm1_mu
+    W = Float32(ctx.config.room.width)
+    H = Float32(ctx.config.room.height)
+    y_mid = H / 2f0
+    x_service = W - 1.5f0  # service station near east exit
+
+    # Work off a local copy; sort once after all insertions
+    needs_sort = false
+
+    i = 1
+    while i <= length(ctx._mm1_fel)
+        (ev_t, ev_type, ev_id) = ctx._mm1_fel[i]
+        ev_t > t && break  # FEL is sorted; remaining events are in the future
+
+        if ev_type === :arrival
+            # 1. Self-schedule next arrival
+            t_next = ev_t + randexp(ctx._mm1_rng) / λ
+            push!(ctx._mm1_fel, (t_next, :arrival, UInt64(0)))
+            needs_sort = true
+
+            # 2. Assign ID and register customer in sim_world
+            cid = new_entity_id!(ctx.sim_world)
+            zone = ctx.sim_world.zone_states[1]
+
+            # Record arrival
+            ctx.sim_world.stats.total_arrivals += 1
+            ctx.sim_world.stats.total_events   += 1
+            ctx.sim_world.entry_times[cid]      = ev_t
+
+            if zone.busy_servers < zone.num_servers
+                # Server free → enter service immediately
+                zone.busy_servers += 1
+                t_svc_end = ev_t + randexp(ctx._mm1_rng) / μ
+                push!(ctx._mm1_fel, (t_svc_end, :service_end, cid))
+                needs_sort = true
+                # Place at service position
+                svc_pos = SVector{2,Float32}(x_service, y_mid)
+                agent = CrowdAgent(svc_pos, svc_pos; desired_speed=Float32(μ))
+                ctx.sim_world.crowd_agents[cid] = agent
+            else
+                # Queue
+                push!(zone.queue, cid)
+                zone.queue_length += 1
+                # Place at queue position (x = 1.0 + 0.8 * queue_index)
+                q_idx = Float32(zone.queue_length)
+                x_q   = clamp(1.0f0 + 0.8f0 * q_idx, 1.0f0, x_service - 1.0f0)
+                q_pos = SVector{2,Float32}(x_q, y_mid)
+                agent = CrowdAgent(q_pos, q_pos)
+                ctx.sim_world.crowd_agents[cid] = agent
+            end
+
+        elseif ev_type === :service_end
+            # Customer finishes service
+            zone = ctx.sim_world.zone_states[1]
+            zone.busy_servers = max(0, zone.busy_servers - 1)
+
+            # Record stats
+            ctx.sim_world.stats.total_departures += 1
+            ctx.sim_world.stats.total_events     += 1
+            if haskey(ctx.sim_world.entry_times, ev_id)
+                sojourn = ev_t - ctx.sim_world.entry_times[ev_id]
+                ctx.sim_world.stats.busy_time += sojourn
+                delete!(ctx.sim_world.entry_times, ev_id)
+            end
+            delete!(ctx.sim_world.crowd_agents, ev_id)
+
+            # Serve next in queue (if any)
+            if zone.queue_length > 0
+                next_id = popfirst!(zone.queue)
+                zone.queue_length -= 1
+                zone.busy_servers += 1
+                t_svc_end = ev_t + randexp(ctx._mm1_rng) / μ
+                push!(ctx._mm1_fel, (t_svc_end, :service_end, next_id))
+                needs_sort = true
+                # Move to service position
+                if haskey(ctx.sim_world.crowd_agents, next_id)
+                    svc_pos = SVector{2,Float32}(x_service, y_mid)
+                    ctx.sim_world.crowd_agents[next_id] = CrowdAgent(svc_pos, svc_pos; desired_speed=Float32(μ))
+                end
+                # Reposition remaining queue members
+                for (qi, qid) in enumerate(zone.queue)
+                    if haskey(ctx.sim_world.crowd_agents, qid)
+                        x_q  = clamp(1.0f0 + 0.8f0 * Float32(qi), 1.0f0, x_service - 1.0f0)
+                        qpos = SVector{2,Float32}(x_q, y_mid)
+                        ctx.sim_world.crowd_agents[qid] = CrowdAgent(qpos, qpos)
+                    end
+                end
+            end
+        end
+
+        i += 1
+    end
+
+    # Remove processed events (indices 1..i-1)
+    if i > 1
+        deleteat!(ctx._mm1_fel, 1:(i-1))
+    end
+    needs_sort && sort!(ctx._mm1_fel)
+end
+
 
 # ── serialize_world_ctx — full WorldSnapshot with panic + DES stats ───────────
 

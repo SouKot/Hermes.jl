@@ -13,18 +13,20 @@ Observables = "510215fc-4207-5dde-b226-833fc4488ee2"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 SimCore = "0c356fe6-1c88-4cf8-b16c-a521627c3420"
 SimCrowd = "10200f98-6de3-48c3-a2a4-7c6f453ce806"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
 [compat]
 Accessors = "0.1"
 Ark = "0.5.1"
 ColorSchemes = "3.28"
-GLMakie = "0.10"
+GLMakie = "0.13"
 LinearAlgebra = "1"
 Observables = "0.5"
 Random = "1"
+KernelAbstractions = "0.9"
 StaticArrays = "1.9"
-julia = "1.10"
+julia = "1.12"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

@@ -233,6 +233,8 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
     viz = SimVizState(
         positions     = Observable(Pos2f[]),
         agent_colors  = Observable(RGBAfTuple[]),
+        des_positions = Observable(Pos2f[]),
+        des_colors    = Observable(RGBAfTuple[]),
         density_grid  = Observable(zeros(Float32, nx, ny)),
         stats_text    = Observable(""),
         sim_time      = Observable(0.0),
@@ -289,7 +291,7 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
         linewidth = 3f0,
     )
 
-    # ── Agent scatter ─────────────────────────────────────────────────────────
+    # ── Agent scatter (ABM crowd) ─────────────────────────────────────────────
     # markersize = Vec2f(2r) in DATA units: each agent appears as a circle
     # of radius r meters, correctly scaled with the axis zoom/extent.
     # markerspace = :data ensures the marker size is in data coordinates, not
@@ -307,6 +309,21 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
         strokewidth = 0.5f0,
         strokecolor = RGBAf(1f0, 1f0, 1f0, 0.25f0),
     )
+
+    # ── DES agent scatter (M/M/1 dots) ────────────────────────────────────────
+    # Rendered on top of the crowd layer. DES dots are smaller (0.3m radius) and
+    # colored by queue state: green=waiting, blue=in_service (set in update_viz!).
+    makie_des_pos    = map(ps  -> Point2f[Point2f(p) for p in ps],  viz.des_positions)
+    makie_des_colors = map(cls -> RGBAf[RGBAf(c...) for c in cls],  viz.des_colors)
+    scatter!(ax, makie_des_pos;
+        color       = makie_des_colors,
+        marker      = Circle,
+        markersize  = Vec2f(0.6f0),  # 0.3m radius — visually distinct from crowd dots
+        markerspace = :data,
+        strokewidth = 1.0f0,
+        strokecolor = RGBAf(1f0, 1f0, 1f0, 0.5f0),
+    )
+
 
     # ── Row 2 Right: stats panel ──────────────────────────────────────────────
     stats_panel = gl[2, 2] = GridLayout()
@@ -392,6 +409,25 @@ function update_viz!(viz::SimVizState, ctx::ScenarioContext,
     # ── Wall geometry (cheap; only non-trivially changes after door-width Reset)
     viz.wall_segments[] = _build_wall_segments(ctx.ark_world)
 
+    # ── DES agent dots (M/M/1 customers from sim_world.crowd_agents) ──────────
+    # Color: green = waiting in queue; blue = in service.
+    # desired_speed field acts as a proxy for service state:
+    # default (1.34 m/s) = waiting; elevated (μ) = in service.
+    _GREEN_WAIT = (0.18f0, 0.80f0, 0.44f0, 0.95f0)  # emerald green
+    _BLUE_SVC   = (0.25f0, 0.60f0, 0.95f0, 0.95f0)  # sky blue
+    agents = ctx.sim_world.crowd_agents
+    n_des  = length(agents)
+    des_pos_buf = Vector{Pos2f}(undef, n_des)
+    des_clr_buf = Vector{RGBAfTuple}(undef, n_des)
+    for (k, (_, ag)) in enumerate(agents)
+        des_pos_buf[k] = Pos2f(ag.position[1], ag.position[2])
+        # Agents at service position have elevated desired_speed (set to μ)
+        # Waiting agents use default 1.34 m/s — treat anything ≠ 1.34 as in-service
+        des_clr_buf[k] = ag.desired_speed ≈ 1.34f0 ? _GREEN_WAIT : _BLUE_SVC
+    end
+    viz.des_positions[] = des_pos_buf
+    viz.des_colors[]    = des_clr_buf
+
     return nothing
 end
 
@@ -457,6 +493,8 @@ function run_visualization!(config::ScenarioConfig; cell_size::Float32 = 0.5f0)
             if !is_paused[]
                 step!(ctx_ref[].scene)
                 ctx_ref[].sim_time += ctx_ref[].config.dt
+                # Dispatch any DES events that have fired (alarm, M/M/1 tick, etc.)
+                _dispatch_events!(ctx_ref[], ctx_ref[].sim_time)
                 # Remove agents that have reached their goal (flux_boundary=true)
                 for bc in ctx_ref[].boundaries
                     apply_boundary!(ctx_ref[].ark_world, bc)
