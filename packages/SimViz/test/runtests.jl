@@ -4,8 +4,12 @@
 These tests cover the headless layer only (viz_state, scenario_config, density).
 GLMakie rendering tests are manual — a display server is not available in CI.
 
-Run with:
-    julia --project=packages/SimViz -e "using Pkg; Pkg.test()"
+Run with (from workspace root ABM/):
+    julia --project=. --compiled-modules=no -e "import Pkg; Pkg.test(\"SimViz\")"
+
+NOTE (Julia 1.12 workspace): --project=packages/SimViz activates the WORKSPACE
+ROOT (ABM/), not the SimViz subpackage. Pkg.test("SimViz") from the workspace
+root correctly sets up the test env with SimViz's own [deps] (e.g. Observables).
 """
 
 # ── Bootstrap: load headless layer directly so GLMakie is never imported ──────
@@ -304,7 +308,9 @@ end
         snap = HL.serialize_world_ctx(ctx)
         W = Float32(cfg.room.width)
         H = Float32(cfg.room.height)
-        margin = Float32(cfg.r_body) * 2f0
+        # _random_positions uses margin = r_body * 1.1 (not 2.0).
+        # Use the same formula here so the test checks actual spawn bounds.
+        margin = Float32(cfg.r_body) * 1.1f0
         for (x, y) in snap.positions
             @test x >= margin - 0.1f0
             @test x <= W - margin + 0.1f0

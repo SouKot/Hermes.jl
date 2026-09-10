@@ -33,6 +33,12 @@ The data layer uses headless-safe tuples:
 
 Both conversions happen once per frame in `update_viz!`, before pushing
 to Observables, so no GLMakie types leak into the data layer.
+
+# GLMakie markersize must be Vec2f
+`markersize` passed to `scatter!` **must** be `Vec2f`, never a plain `Float32`.
+A scalar `Float32` causes GLMakie 0.10.x (Makie 0.21.x) to emit `uniform float scale`
+in `sprites.vert`, but the shader swizzles it as `scale.xy` → C7505 GLSL link error.
+`Vec2f` forces `uniform vec2 scale` → `.xy` is valid. (Confirmed by diagnostic, 2026-09-09.)
 """
 
 # ── GLMakie is loaded here — this file is only included when a display is
@@ -42,7 +48,7 @@ using GLMakie
 using GLMakie: Figure, Axis, Observable, scatter!, heatmap!, linesegments!,
                Label, Menu, SliderGrid, Toggle, Button, Colorbar,
                DataAspect, RGBAf, Point2f, Vec2f, on, @lift,
-               deregister_interaction!, rowgap!, colgap!, GridLayout, Box
+               deregister_interaction!, rowgap!, colgap!, GridLayout, Box, Circle
 using SimCrowd: WallSegment, step!
 using Ark: Query
 
@@ -148,15 +154,15 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
         figure_padding  = (8, 8, 8, 8),
     )
 
-    # ── GridLayout: 3 rows × 2 cols ───────────────────────────────────────────
+    # ── GridLayout skeleton ─────────────────────────────────────────────────────
+    # GridLayoutBase requires a row/col to exist (have content) before rowsize!/
+    # colsize! can be called on it.  We defer sizing to after content is placed:
+    #   Row 2 sizes → set below, after Axis + stats panel are placed
+    #   Row 1 + 3 sizes → set in wire_controls! after ctrl_bar + SliderGrid placed
     gl = fig[1, 1] = GridLayout()
-    rowsize!(gl, 1, Fixed(44))    # controls bar
-    rowsize!(gl, 2, Relative(1))  # canvas + stats (flex)
-    rowsize!(gl, 3, Fixed(120))   # parameter sliders
-    colsize!(gl, 1, Relative(0.70))
-    colsize!(gl, 2, Relative(0.30))
     rowgap!(gl, 6)
     colgap!(gl, 6)
+
 
     # ── Row 2 Left: simulation Axis ───────────────────────────────────────────
     ax = Axis(
@@ -193,9 +199,12 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
     )
 
     # ── Makie positions / colors: convert from data-layer tuples to Makie types
-    # Use @lift so they update automatically when the underlying Observables change
-    makie_positions = @lift Point2f.($( viz.positions ))
-    makie_colors    = @lift RGBAf.($( viz.agent_colors ))
+    # IMPORTANT: use map() + typed comprehension, NOT @lift + broadcast.
+    # @lift RGBAf.(empty_vec) yields Vector{Union{}} when the source array is empty
+    # (Makie can't infer the broadcast return type), which breaks assemble_colors.
+    # Typed comprehensions always return the concrete element type, even for [].
+    makie_positions = map(ps  -> Point2f[Point2f(p) for p in ps],  viz.positions)
+    makie_colors    = map(cls -> RGBAf[RGBAf(c...) for c in cls],  viz.agent_colors)
 
     # ── Density heatmap (rendered first = below agents) ───────────────────────
     xs = LinRange(0f0, W, nx + 1)
@@ -221,11 +230,16 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
     )
 
     # ── Wall linesegments ─────────────────────────────────────────────────────
+    # Makie 0.21+ linesegments! expects a single interleaved vector:
+    # [start1, end1, start2, end2, ...] — NOT two separate vectors.
     wall_starts, wall_ends = _extract_wall_points(ctx.ark_world)
     if !isempty(wall_starts)
-        linesegments!(ax,
-            [Point2f(wall_starts[i]) for i in eachindex(wall_starts)],
-            [Point2f(wall_ends[i])   for i in eachindex(wall_ends)];
+        seg_pts = Point2f[]
+        for i in eachindex(wall_starts)
+            push!(seg_pts, Point2f(wall_starts[i]))
+            push!(seg_pts, Point2f(wall_ends[i]))
+        end
+        linesegments!(ax, seg_pts;
             color     = _SIMVIZ_WALL_CLR,
             linewidth = 3f0,
         )
@@ -234,7 +248,11 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
     # ── Agent scatter ─────────────────────────────────────────────────────────
     scatter!(ax, makie_positions;
         color      = makie_colors,
-        markersize = 2r * 80f0,   # markersize is in screen-pixels: scale by ~80 px/m
+        marker     = Circle,        # explicit type avoids :circle Symbol → BezierPath GLSL bug
+        markersize = Vec2f(2r * 80f0),  # MUST be Vec2f: Float32 scalar causes GLMakie to emit
+                                        # `uniform float scale` in sprites.vert, but the shader
+                                        # does `scale.xy` (swizzle on scalar) → C7505 link error.
+                                        # Vec2f → `uniform vec2 scale` → .xy valid. (diag Part D ✓)
         strokewidth = 0.5f0,
         strokecolor = RGBAf(1f0, 1f0, 1f0, 0.25f0),
     )
@@ -252,6 +270,12 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
         word_wrap    = false,
         justification = :left,
     )
+
+    # ── Size row 2 + cols 1,2 (content now exists in all three) ──────────────
+    rowsize!(gl, 2, Relative(1))    # canvas + stats (flex)
+    colsize!(gl, 1, Relative(0.70))
+    colsize!(gl, 2, Relative(0.30))
+    # Rows 1 and 3 are sized in wire_controls! after ctrl_bar/SliderGrid placed.
 
     return fig, viz
 end

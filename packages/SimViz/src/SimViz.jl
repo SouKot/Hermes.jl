@@ -108,4 +108,81 @@ export evacuation_scenario, run_evacuation_demo!
 export mm1_scenario, run_mm1_demo!
 export integration_scenario, run_integration_demo!
 
+# ── Julia 1.12 / MakieCore compatibility shim ─────────────────────────────────
+# MakieCore ≤ 0.9.x (shipped with Makie 0.21.x) accesses Core.TypeName.mt in
+# func2string(), but Julia 1.12 removed that field from Core.TypeName.
+# We override the method at runtime from __init__ so that:
+#   • No installed package file is modified
+#   • The fix is version-controlled alongside our code
+#   • It re-applies automatically on every Julia session
+#   • The isdefined guard makes it a no-op on older Julia versions where .mt exists
+function __init__()
+    _mc_uuid = Base.UUID("20f20a25-4f0e-4fdf-b5d1-57303727442b")
+    _mc_id   = Base.PkgId(_mc_uuid, "MakieCore")
+    _mk_uuid = Base.UUID("ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a")
+    _mk_id   = Base.PkgId(_mk_uuid, "Makie")
+
+    # ── Shim 1: func2string ───────────────────────────────────────────────────
+    # Julia 1.12 removed Core.TypeName.mt; func2string in MakieCore ≤ 0.9.x
+    # accesses it → FieldError when rendering any plot type.
+    if !isdefined(Core.TypeName, :mt) && haskey(Base.loaded_modules, _mc_id)
+        _mc = Base.loaded_modules[_mc_id]
+        Core.eval(_mc, quote
+            function func2string(func::F) where F <: Function
+                string(F.name.name)   # equivalent to old F.name.mt.name
+            end
+        end)
+    end
+
+    # ── Shim 2: uv_transform(::Automatic) ────────────────────────────────────
+    # Makie 0.21.18 has NO method for uv_transform(::Automatic).
+    # The varargs fallback uv_transform(packed...) wraps it into a Tuple, which
+    # calls mapfoldl(uv_transform, *, (Automatic(),)) → calls the missing method
+    # again → StackOverflowError.  Fix: add the missing method returning the
+    # mesh UV default (Y-flip: matches convert_attribute(::Automatic, key"mesh")).
+    if haskey(Base.loaded_modules, _mk_id)
+        _mk = Base.loaded_modules[_mk_id]
+
+        # ── Shim 2: uv_transform(::Automatic) ────────────────────────────────
+        # Makie 0.21.18 has NO method for uv_transform(::Automatic).
+        # The varargs fallback uv_transform(packed...) wraps it into a Tuple, which
+        # calls mapfoldl(uv_transform, *, (Automatic(),)) → calls the missing method
+        # again → StackOverflowError.  Fix: add the missing method returning the
+        # mesh UV default (Y-flip: matches convert_attribute(::Automatic, key"mesh")).
+        Core.eval(_mk, quote
+            function uv_transform(::Automatic)
+                Mat{2, 3, Float32}(0, 1, -1, 0, 1, 0)
+            end
+        end)
+
+        # ── Shim 3: marker_to_sdf_shape(::Symbol) ────────────────────────────
+        # GLMakie draw_atomic lifts directly on the marker Observable value and
+        # passes a bare Symbol to marker_to_sdf_shape (drawing_primitives.jl:430).
+        # No Symbol overload exists — the function only handles concrete geometry
+        # types and Observables.  to_spritemarker(::Symbol) IS correctly defined
+        # (conversions.jl:1922, uses DEFAULT_MARKER_MAP) so we just bridge it.
+        Core.eval(_mk, quote
+            function marker_to_sdf_shape(x::Symbol)
+                marker_to_sdf_shape(to_spritemarker(x))
+            end
+        end)
+
+        # ── Shim 4: convert_attribute with TYPE keys (Julia 1.12 singleton) ──
+        # Julia 1.12 optimizes zero-field struct singletons captured in closures:
+        # Key{:markersize}() is sometimes represented as the TYPE Key{:markersize}
+        # rather than as an instance.  lift_convert_inner's inner closure then
+        # calls convert_attribute(val, Key{:markersize}, Key{:scatter}) where
+        # args 2/3 are the TYPES (Type{Key{K}}) rather than instances (Key{K}()).
+        # No existing Makie method matches that signature → MethodError at display.
+        # Fix: bridge TYPE dispatch to instance dispatch via Key{K}() construction.
+        Core.eval(_mk, quote
+            function convert_attribute(val,
+                                       ::Type{K1},
+                                       ::Type{K2}) where {K1 <: Key, K2 <: Key}
+                convert_attribute(val, K1(), K2())
+            end
+        end)
+    end
+end
+
 end
