@@ -152,10 +152,10 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
     #
     #    Layout overhead (fixed rows + gaps + padding):
     #      Row 1 (ctrl_bar): 44 px
-    #      Row 3 (sliders) : 130 px
+    #      Row 3 (sliders) : 185 px   (6 sliders × ~28px + padding)
     #      2 rowgaps        :  12 px
     #      figure_padding   :  16 px
-    #      total overhead   : 202 px
+    #      total overhead   : 257 px
     #
     #    Canvas column is ~70% of figure width (after 16px padding + 6px colgap).
     #    Subtract ~40px for y-axis labels to get the DataAspect-constrained
@@ -166,7 +166,7 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
     _inner_w_px    = _canvas_col_px - 40f0           # subtract y-axis label width
     _canvas_h_px   = _inner_w_px * (H / W)           # DataAspect-required height
     _row2_h_px     = _canvas_h_px + 60f0             # add axis title + xlabel space
-    _fig_h         = round(Int, _row2_h_px + 202f0)  # add fixed row overhead
+    _fig_h         = round(Int, _row2_h_px + 257f0)  # add fixed row overhead (44+185+12+16)
     _fig_h         = clamp(_fig_h, 480, 980)         # safety clamp
 
     fig = Figure(

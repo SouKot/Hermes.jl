@@ -228,7 +228,7 @@ function wire_controls!(fig, viz, ctx_ref::Ref{ScenarioContext},
     #               height after Fixed rows and gaps. ✔
     rowsize!(gl, 1, Fixed(44))       # controls bar
     rowsize!(gl, 2, Auto(false))     # canvas — fills remaining space (not content-sized)
-    rowsize!(gl, 3, Fixed(130))      # parameter sliders
+    rowsize!(gl, 3, Fixed(185))      # parameter sliders: 6 rows × ~28px + padding ≈ 175px; 185 gives margin
     colsize!(gl, 1, Relative(0.70))  # simulation canvas
     colsize!(gl, 2, Relative(0.30))  # stats panel
 
