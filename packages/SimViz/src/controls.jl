@@ -149,8 +149,7 @@ function wire_controls!(fig, viz, ctx_ref::Ref{ScenarioContext},
         cell_color_inactive_even      = _SIMVIZ_PANEL_BG,
         cell_color_inactive_odd       = _SIMVIZ_PANEL_BG,
         selection_cell_color_inactive = _SIMVIZ_DARK_BG,
-        cell_color_hover_even         = RGBAf(0.25f0, 0.35f0, 0.55f0, 1f0),
-        cell_color_hover_odd          = RGBAf(0.25f0, 0.35f0, 0.55f0, 1f0),
+        cell_color_hover                = RGBAf(0.25f0, 0.35f0, 0.55f0, 1f0),
         cell_color_active             = _SIMVIZ_ACCENT,
     )
 
