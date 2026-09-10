@@ -94,25 +94,51 @@ function _build_stats_text(snap::WorldSnapshot, fps_str::String,
     s = snap.stats
     ρ_avg = snap.n_agents > 0 ?
         round(sum(snap.local_densities) / snap.n_agents, digits=2) : 0.00
+
+    # ── Server utilisation ρ = busy_time / elapsed_sim_time
     rho_util = s.elapsed_sim_time > 0.0 ?
         round(s.busy_time / s.elapsed_sim_time, digits=3) : 0.000
+
+    # ── Derived M/M/1 queue metrics (from current snapshot)
+    # n_des_agents = L = total in system (queue + server)
+    # server is busy iff at least one agent is in service (n_des - n_queue = 1)
+    L      = snap.n_des_agents                    # mean system length (current)
+    server_busy = L > 0                           # at least one agent present
+    n_queue = max(0, L - (server_busy ? 1 : 0))  # waiting in queue
+    n_svc   = server_busy ? 1 : 0                 # currently being served
+
+    # Throughput (departures per sim-second)
+    λ_eff = s.elapsed_sim_time > 0.0 ?
+        round(s.total_departures / s.elapsed_sim_time, digits=3) : 0.000
+
+    # Mean sojourn time estimate W = L / λ_eff  (Little's Law)
+    W_est = λ_eff > 0.0 ? round(L / λ_eff, digits=2) : "—"
 
     return """
 Model:    $(model_name)
 ────────────────────
-t =       $(round(snap.sim_time, digits=3)) s
-N agents: $(snap.n_agents)
-N DES:    $(snap.n_des_agents)
+t =       $(round(snap.sim_time, digits=1)) s
 $(fps_str)
+
+── System State ─────
+🔵 In service:  $(n_svc)
+🟢 In queue:    $(n_queue)
+   Total (L):   $(L)
+
+── Event Counts ─────
+Arrived (total): $(s.total_arrivals)
+Departed (done): $(s.total_departures)
+In system now:   $(L)  [= arr − dep]
+Events fired:    $(s.total_events)
+
+── Performance ──────
+ρ server:  $(rho_util)  [busy frac]
+λ_eff:     $(λ_eff) /s  [throughput]
+W (est):   $(W_est) s   [sojourn]
 
 ── FSM Density ──────
 ρ̄ local:  $(ρ_avg) ped/m²
-
-── DES Stats ────────
-Events:   $(s.total_events)
-Arrivals: $(s.total_arrivals)
-Departs:  $(s.total_departures)
-ρ server: $(rho_util)
+N ABM:    $(snap.n_agents)
 """
 end
 
