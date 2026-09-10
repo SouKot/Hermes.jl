@@ -279,11 +279,14 @@ end
     ScenarioContext
 
 Holds all runtime state for one live simulation scenario:
-- `ark_world`: `Ark.World` — ECS agents (Position, Velocity, AgentFSMState, …)
-- `sim_world`: `SimCore.SimWorld` — DES agents, SimStats, zone queues
-- `scene`:     `SimScene` — wraps `ark_world` + neighbor search + config
-- `config`:    `ScenarioConfig` — the parameter set that built this context
-- `sim_time`:  current simulated time (s)
+- `ark_world`:   `Ark.World` — ECS agents (Position, Velocity, AgentFSMState, …)
+- `sim_world`:   `SimCore.SimWorld` — DES agents, SimStats, zone queues
+- `scene`:       `SimScene` — wraps `ark_world` + neighbor search + config
+- `config`:      `ScenarioConfig` — the parameter set that built this context
+- `sim_time`:    current simulated time (s)
+- `boundaries`:  active `BoundaryCondition{Float32}` list — called after each
+                 `step!` to remove/spawn agents (e.g. `AbsorbingBoundary`).
+                 Populated by `build_world!` when `config.flux_boundary == true`.
 
 The `SimCore.SimWorld` reference is needed to read `panic_level` (stored on
 `CrowdAgent`) and `SimStats` (arrivals, busy time) in the stats panel.
@@ -292,11 +295,12 @@ Mutated in-place by `reset_scenario!`. GLMakie Observables in `SimVizState`
 subscribe to slices of this object.
 """
 mutable struct ScenarioContext
-    ark_world :: World
-    sim_world :: SimWorld
-    scene     :: SimScene
-    config    :: ScenarioConfig
-    sim_time  :: Float64
+    ark_world  :: World
+    sim_world  :: SimWorld
+    scene      :: SimScene
+    config     :: ScenarioConfig
+    sim_time   :: Float64
+    boundaries :: Vector{BoundaryCondition{Float32}}
 end
 
 # ── Internal: SimConfig builder ───────────────────────────────────────────────
@@ -396,16 +400,19 @@ Return the 2D center point of each door in world coordinates.
 Used to set agent goal = nearest door (evacuation scenario).
 """
 function _door_centers(room::RoomGeometry, ::Type{F}) where {F<:AbstractFloat}
+    # Goals are placed 0.5 m BEYOND the wall so agents must physically cross
+    # the door plane before apply_boundary! removes them.
+    offset = F(0.5)
     centers = SVector{2,F}[]
     for d in room.doors
         if d.wall == :east
-            push!(centers, SVector{2,F}(F(room.width),            F(d.center * room.height)))
+            push!(centers, SVector{2,F}(F(room.width) + offset,  F(d.center * room.height)))
         elseif d.wall == :west
-            push!(centers, SVector{2,F}(zero(F),                  F(d.center * room.height)))
+            push!(centers, SVector{2,F}(-offset,                  F(d.center * room.height)))
         elseif d.wall == :north
-            push!(centers, SVector{2,F}(F(d.center * room.width), F(room.height)))
+            push!(centers, SVector{2,F}(F(d.center * room.width), F(room.height) + offset))
         else  # :south
-            push!(centers, SVector{2,F}(F(d.center * room.width), zero(F)))
+            push!(centers, SVector{2,F}(F(d.center * room.width), -offset))
         end
     end
     return centers
@@ -498,7 +505,10 @@ function _build_sfm_world(config::ScenarioConfig, ::Type{F},
     sim_cfg = _make_simconfig(config, F)
     search  = _make_neighbor_search(config, F)
     scene   = SimScene(world, search, sim_cfg)
-    return ScenarioContext(world, SimWorld(), scene, config, 0.0)
+    bcs = config.flux_boundary ?
+        BoundaryCondition{Float32}[AbsorbingBoundary(0.75f0)] :
+        BoundaryCondition{Float32}[]
+    return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs)
 end
 
 function _build_orca_world(config::ScenarioConfig, ::Type{F},
@@ -540,7 +550,10 @@ function _build_orca_world(config::ScenarioConfig, ::Type{F},
     sim_cfg = _make_simconfig(config, F)
     search  = _make_neighbor_search(config, F)
     scene   = SimScene(world, search, sim_cfg)
-    return ScenarioContext(world, SimWorld(), scene, config, 0.0)
+    bcs = config.flux_boundary ?
+        BoundaryCondition{Float32}[AbsorbingBoundary(0.75f0)] :
+        BoundaryCondition{Float32}[]
+    return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs)
 end
 
 function _build_hybrid_world(config::ScenarioConfig, ::Type{F},
@@ -595,7 +608,10 @@ function _build_hybrid_world(config::ScenarioConfig, ::Type{F},
     sim_cfg = _make_simconfig(config, F)
     search  = _make_neighbor_search(config, F)
     scene   = SimScene(world, search, sim_cfg)
-    return ScenarioContext(world, SimWorld(), scene, config, 0.0)
+    bcs = config.flux_boundary ?
+        BoundaryCondition{Float32}[AbsorbingBoundary(0.75f0)] :
+        BoundaryCondition{Float32}[]
+    return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs)
 end
 
 function _build_csm_world(config::ScenarioConfig, ::Type{F},
@@ -637,7 +653,10 @@ function _build_csm_world(config::ScenarioConfig, ::Type{F},
     grid_max = SVector{2,F}(F(config.room.width), F(config.room.height))
     search   = CPUNeighborSearch(config.n_agents, grid_min, grid_max, r_search_csm)
     scene    = SimScene(world, search, sim_cfg)
-    return ScenarioContext(world, SimWorld(), scene, config, 0.0)
+    bcs = config.flux_boundary ?
+        BoundaryCondition{Float32}[AbsorbingBoundary(0.75f0)] :
+        BoundaryCondition{Float32}[]
+    return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs)
 end
 
 # ── build_world! ─────────────────────────────────────────────────────────────
@@ -691,12 +710,13 @@ Used by the Reset button in the controls panel (4A-06).
 """
 function reset_scenario!(ctx::ScenarioContext;
                           config::ScenarioConfig = ctx.config) :: ScenarioContext
-    new_ctx       = build_world!(config)
-    ctx.ark_world = new_ctx.ark_world
-    ctx.sim_world = new_ctx.sim_world
-    ctx.scene     = new_ctx.scene
-    ctx.config    = new_ctx.config
-    ctx.sim_time  = 0.0
+    new_ctx        = build_world!(config)
+    ctx.ark_world  = new_ctx.ark_world
+    ctx.sim_world  = new_ctx.sim_world
+    ctx.scene      = new_ctx.scene
+    ctx.config     = new_ctx.config
+    ctx.sim_time   = 0.0
+    ctx.boundaries = new_ctx.boundaries
     return ctx
 end
 

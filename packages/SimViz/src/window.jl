@@ -46,10 +46,10 @@ in `sprites.vert`, but the shader swizzles it as `scale.xy` → C7505 GLSL link 
 # to load without a display.
 using GLMakie
 using GLMakie: Figure, Axis, Observable, scatter!, heatmap!, linesegments!,
-               Label, Menu, SliderGrid, Toggle, Button, Colorbar,
+               Label, Menu, Slider, SliderGrid, Toggle, Button, Colorbar,
                DataAspect, RGBAf, Point2f, Vec2f, on, @lift,
                deregister_interaction!, rowgap!, colgap!, GridLayout, Box, Circle
-using SimCrowd: WallSegment, step!
+using SimCrowd: WallSegment, step!, apply_boundary!
 using Ark: Query
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
@@ -271,11 +271,9 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
         justification = :left,
     )
 
-    # ── Size row 2 + cols 1,2 (content now exists in all three) ──────────────
-    rowsize!(gl, 2, Relative(1))    # canvas + stats (flex)
-    colsize!(gl, 1, Relative(0.70))
-    colsize!(gl, 2, Relative(0.30))
-    # Rows 1 and 3 are sized in wire_controls! after ctrl_bar/SliderGrid placed.
+    # Row 2 (canvas) is sized in wire_controls! together with Rows 1 and 3,
+    # after all row content is placed. Using Auto() there lets it fill the
+    # remaining space after the Fixed control bar and slider rows.
 
     return fig, viz
 end
@@ -376,17 +374,28 @@ function run_visualization!(config::ScenarioConfig; cell_size::Float32 = 0.5f0)
     fig, viz = create_window!(ctx; cell_size)
 
     # Mutable playback state — shared between the UI callbacks and the sim loop
-    is_paused = Observable(true)
-    speed     = Observable(1.0)   # 1.0 = real-time; 2.0 = 2× speed
+    is_paused = Observable(false)  # start RUNNING immediately (was true → paused)
+    speed     = Observable(1.0)    # 1.0 = real-time; 2.0 = 2× speed
 
     model_name = string(config.crowd_model)
 
     # ── Wire controls ─────────────────────────────────────────────────────────
     wire_controls!(fig, viz, ctx_ref, is_paused, speed; cell_size)
 
+    # ── Initial frame: paint agents in their starting positions before the
+    #    async loop has a chance to tick.  Without this, the scatter Observable
+    #    starts empty (Pos2f[]) so no dots appear until the first @async tick.
+    update_viz!(viz, ctx_ref[], "FPS: —", model_name; cell_size)
+
     # ── FPS tracking ──────────────────────────────────────────────────────────
     last_frame_ns  = Ref(time_ns())
     fps_filter     = Ref(60.0)       # exponential moving average
+
+    # ── Open window FIRST so isopen(fig.scene) == true when @async checks it ─
+    # Diagnostic confirmed: isopen() returns false before display() attaches a
+    # GLFW screen.  The @async loop would see false on its first iteration and
+    # exit immediately, leaving the simulation permanently frozen at t=0.
+    display(fig)
 
     # ── Async simulation loop ─────────────────────────────────────────────────
     @async while isopen(fig.scene)
@@ -394,6 +403,10 @@ function run_visualization!(config::ScenarioConfig; cell_size::Float32 = 0.5f0)
             if !is_paused[]
                 step!(ctx_ref[].scene)
                 ctx_ref[].sim_time += ctx_ref[].config.dt
+                # Remove agents that have reached their goal (flux_boundary=true)
+                for bc in ctx_ref[].boundaries
+                    apply_boundary!(ctx_ref[].ark_world, bc)
+                end
             end
 
             # FPS EMA: α=0.1 → ~10-frame smoothing
@@ -411,6 +424,5 @@ function run_visualization!(config::ScenarioConfig; cell_size::Float32 = 0.5f0)
         leftover > 0.001 && sleep(leftover)
     end
 
-    display(fig)
     return nothing
 end

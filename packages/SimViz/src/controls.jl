@@ -7,7 +7,7 @@ figure created by `create_window!` (window.jl).
 # Layout (rows 1 + 3 of the GridLayout from create_window!)
 
 ## Row 1 — Controls bar
-    [▶ Run] [⏸ Pause] [⏭ Step] [⏹ Reset]  │  Speed: ───●───  │
+    [▶ Run] [|| Pause] [▶| Step] [■ Reset]  │  Speed: ───●───  │
     Overlay: [Panic ▼]  │  Density heatmap: [○]
 
 ## Row 3 — Parameter sliders (6 knobs, disabled while running)
@@ -78,9 +78,9 @@ simulation state.
 # Controls created
 ## Row 1 — Controls bar
 - **▶ Run** button → `is_paused[] = false`
-- **⏸ Pause** button → `is_paused[] = true`
-- **⏭ Step** button → runs one `step!` + one `update_viz!` call
-- **⏹ Reset** button → `reset_scenario!(ctx_ref[], config=config_ref[])`,
+- **|| Pause** button → `is_paused[] = true`
+- **▶| Step** button → runs one `step!` + one `update_viz!` call
+- **■ Reset** button → `reset_scenario!(ctx_ref[], config=config_ref[])`,
   reinitializes wall segments on the Axis
 - **Speed slider** (0.1×–5×, step 0.1) → writes `speed[]`
 - **Overlay Menu** → writes `viz.overlay_mode[]`
@@ -115,45 +115,45 @@ function wire_controls!(fig, viz, ctx_ref::Ref{ScenarioContext},
 
     # ── Row 1: Controls bar ───────────────────────────────────────────────────
     ctrl_bar = gl[1, 1:2] = GridLayout()
-    colsize!(ctrl_bar, 1, Fixed(72))   # ▶ Run
-    colsize!(ctrl_bar, 2, Fixed(72))   # ⏸ Pause
-    colsize!(ctrl_bar, 3, Fixed(72))   # ⏭ Step
-    colsize!(ctrl_bar, 4, Fixed(72))   # ⏹ Reset
-    colsize!(ctrl_bar, 5, Fixed(12))   # spacer
-    colsize!(ctrl_bar, 6, Relative(1)) # Speed slider (flex)
-    colsize!(ctrl_bar, 7, Fixed(12))   # spacer
-    colsize!(ctrl_bar, 8, Fixed(140))  # Overlay menu
-    colsize!(ctrl_bar, 9, Fixed(12))   # spacer
-    colsize!(ctrl_bar, 10, Fixed(26))  # Density toggle label
-    colsize!(ctrl_bar, 11, Fixed(36))  # Density toggle widget
     colgap!(ctrl_bar, 4)
 
-    btn_run   = Button(ctrl_bar[1, 1];  label="▶  Run",  buttoncolor=RGBAf(0.2,0.55,0.3,1), labelcolor=:white)
-    btn_pause = Button(ctrl_bar[1, 2];  label="⏸ Pause", buttoncolor=RGBAf(0.55,0.45,0.1,1), labelcolor=:white)
-    btn_step  = Button(ctrl_bar[1, 3];  label="⏭ Step",  buttoncolor=RGBAf(0.25,0.35,0.6,1), labelcolor=:white)
-    btn_reset = Button(ctrl_bar[1, 4];  label="⏹ Reset", buttoncolor=RGBAf(0.55,0.15,0.15,1), labelcolor=:white)
 
-    # Speed slider (0.1×–5×)
+    btn_run   = Button(ctrl_bar[1, 1];  label="▶  Run",   buttoncolor=RGBAf(0.2,0.55,0.3,1),   labelcolor=:white)
+    btn_pause = Button(ctrl_bar[1, 2];  label="||  Pause", buttoncolor=RGBAf(0.55,0.45,0.1,1), labelcolor=:white)
+    btn_step  = Button(ctrl_bar[1, 3];  label="▶|  Step",  buttoncolor=RGBAf(0.25,0.35,0.6,1), labelcolor=:white)
+    btn_reset = Button(ctrl_bar[1, 4];  label="■   Reset", buttoncolor=RGBAf(0.55,0.15,0.15,1), labelcolor=:white)
+
+    # Speed label (col 5) + slider (col 6 — flex)
+    Label(ctrl_bar[1, 5], "Speed:"; color = _SIMVIZ_TEXT_CLR, fontsize = 12f0, halign = :right)
     spd_slider = Slider(ctrl_bar[1, 6];
         range   = 0.1:0.1:5.0,
         startvalue = 1.0,
         color_active = _SIMVIZ_ACCENT,
     )
-    Label(ctrl_bar[1, 6], @lift("Speed: $( round($(spd_slider.value), digits=1) )×");
-        halign = :left, color = _SIMVIZ_TEXT_CLR, fontsize = 12f0,
-    )
 
-    # Overlay menu
-    Label(ctrl_bar[1, 8], "Overlay: "; color = _SIMVIZ_TEXT_CLR, fontsize=12f0, halign=:right)
+    # Overlay label (col 7) + menu (col 8)
+    Label(ctrl_bar[1, 7], "Overlay:"; color = _SIMVIZ_TEXT_CLR, fontsize=12f0, halign=:right)
     overlay_menu = Menu(ctrl_bar[1, 8];
         options = _OVERLAY_OPTIONS,
         default = "FSM mode",
         textcolor = _SIMVIZ_TEXT_CLR,
     )
 
-    # Density toggle
-    Label(ctrl_bar[1, 10], "ρ heatmap"; color=_SIMVIZ_TEXT_CLR, fontsize=12f0)
-    density_toggle = Toggle(ctrl_bar[1, 11]; active=false, buttoncolor=_SIMVIZ_ACCENT)
+    # Density toggle: label (col 9) + widget (col 10)
+    Label(ctrl_bar[1, 9], "ρ heatmap"; color=_SIMVIZ_TEXT_CLR, fontsize=12f0)
+    density_toggle = Toggle(ctrl_bar[1, 10]; active=false, buttoncolor=_SIMVIZ_ACCENT)
+
+    # ── Set ctrl_bar column sizes (cols 1–10) ────────────────────────────────────────
+    colsize!(ctrl_bar, 1, Fixed(72))   # ▶ Run
+    colsize!(ctrl_bar, 2, Fixed(72))   # ⏸ Pause
+    colsize!(ctrl_bar, 3, Fixed(72))   # ⏭ Step
+    colsize!(ctrl_bar, 4, Fixed(72))   # ⏹ Reset
+    colsize!(ctrl_bar, 5, Fixed(56))   # "Speed:" label
+    colsize!(ctrl_bar, 6, Relative(1)) # Speed slider (flex)
+    colsize!(ctrl_bar, 7, Fixed(68))   # "Overlay:" label
+    colsize!(ctrl_bar, 8, Fixed(130))  # Overlay menu
+    colsize!(ctrl_bar, 9, Fixed(76))   # "ρ heatmap" label
+    colsize!(ctrl_bar, 10, Fixed(36))  # Density toggle widget
 
     # ── Button callbacks ──────────────────────────────────────────────────────
 
@@ -211,6 +211,18 @@ function wire_controls!(fig, viz, ctx_ref::Ref{ScenarioContext},
         (label = "Door w (m)",    range = 0.4:0.1:4.0,   startvalue = door_w_default,       format = "{:.1f}"),
         (label = "N agents",      range = 5:5:500,        startvalue = config.n_agents,     format = "{:d}"),
     )
+
+    # ── Size all rows + cols now that every row/col has content ──────────────
+    # IMPORTANT: size all three rows in one place, AFTER content exists in each.
+    # Relative(1) for Row 2 alone caused overflow (Row 2 claimed 100% of total
+    # height, leaving zero space for Fixed Rows 1 and 3, clipping the controls
+    # bar off the top of the window).
+    rowsize!(gl, 1, Fixed(44))      # controls bar
+    rowsize!(gl, 2, Auto())         # canvas — fills remaining space after Fixed rows
+    rowsize!(gl, 3, Fixed(130))     # parameter sliders (was Fixed(120), +10 for comfort)
+    colsize!(gl, 1, Relative(0.70)) # simulation canvas
+    colsize!(gl, 2, Relative(0.30)) # stats panel
+
 
     sl_v0, sl_σ, sl_rho_on, sl_rho_off, sl_door, sl_N = sg.sliders
 
