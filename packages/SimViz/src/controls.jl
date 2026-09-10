@@ -143,17 +143,21 @@ function wire_controls!(fig, viz, ctx_ref::Ref{ScenarioContext},
     Label(ctrl_bar[1, 9], "ρ heatmap"; color=_SIMVIZ_TEXT_CLR, fontsize=12f0)
     density_toggle = Toggle(ctrl_bar[1, 10]; active=false, buttoncolor=_SIMVIZ_ACCENT)
 
-    # ── Set ctrl_bar column sizes (cols 1–10) ────────────────────────────────────────
-    colsize!(ctrl_bar, 1, Fixed(72))   # ▶ Run
-    colsize!(ctrl_bar, 2, Fixed(72))   # ⏸ Pause
-    colsize!(ctrl_bar, 3, Fixed(72))   # ⏭ Step
-    colsize!(ctrl_bar, 4, Fixed(72))   # ⏹ Reset
-    colsize!(ctrl_bar, 5, Fixed(56))   # "Speed:" label
-    colsize!(ctrl_bar, 6, Relative(1)) # Speed slider (flex)
-    colsize!(ctrl_bar, 7, Fixed(68))   # "Overlay:" label
-    colsize!(ctrl_bar, 8, Fixed(130))  # Overlay menu
-    colsize!(ctrl_bar, 9, Fixed(76))   # "ρ heatmap" label
-    colsize!(ctrl_bar, 10, Fixed(36))  # Density toggle widget
+    # ── Set ctrl_bar column sizes (cols 1–10) ───────────────────────────────────────
+    colsize!(ctrl_bar, 1, Fixed(72))     # ▶ Run
+    colsize!(ctrl_bar, 2, Fixed(72))     # ⏸ Pause
+    colsize!(ctrl_bar, 3, Fixed(72))     # ⏭ Step
+    colsize!(ctrl_bar, 4, Fixed(72))     # ⏹ Reset
+    colsize!(ctrl_bar, 5, Fixed(56))     # "Speed:" label
+    colsize!(ctrl_bar, 6, Auto(false))   # Speed slider: remaining space after Fixed cols.
+                                         # MUST be Auto(false), not Relative(1):
+                                         # Relative(f) = f×TOTAL width → overflows by
+                                         # sum-of-fixed-cols (≈654px), pushing Run/Pause/Step
+                                         # off-screen. Auto(false) = "take remaining space".
+    colsize!(ctrl_bar, 7, Fixed(68))     # "Overlay:" label
+    colsize!(ctrl_bar, 8, Fixed(130))    # Overlay menu
+    colsize!(ctrl_bar, 9, Fixed(76))     # "ρ heatmap" label
+    colsize!(ctrl_bar, 10, Fixed(36))    # Density toggle widget
 
     # ── Button callbacks ──────────────────────────────────────────────────────
 
@@ -212,43 +216,66 @@ function wire_controls!(fig, viz, ctx_ref::Ref{ScenarioContext},
         (label = "N agents",      range = 5:5:500,        startvalue = config.n_agents,     format = "{:d}"),
     )
 
-    # ── Size all rows + cols now that every row/col has content ──────────────
-    # IMPORTANT: size all three rows in one place, AFTER content exists in each.
-    # Relative(1) for Row 2 alone caused overflow (Row 2 claimed 100% of total
-    # height, leaving zero space for Fixed Rows 1 and 3, clipping the controls
-    # bar off the top of the window).
-    rowsize!(gl, 1, Fixed(44))      # controls bar
-    rowsize!(gl, 2, Auto())         # canvas — fills remaining space after Fixed rows
-    rowsize!(gl, 3, Fixed(130))     # parameter sliders (was Fixed(120), +10 for comfort)
-    colsize!(gl, 1, Relative(0.70)) # simulation canvas
-    colsize!(gl, 2, Relative(0.30)) # stats panel
+    # ── Size all rows + cols now that every row/col has content ───────────────
+    # IMPORTANT: All three rows sized together, AFTER content is placed in each.
+    # Row 2 uses Auto(false) [trydetermine=false]:
+    #   Auto(true)  [default]: shrinks to Axis content's minimum size. With
+    #               DataAspect, Axis reports ~149px minimum → tiny canvas;
+    #               unused 549px is centered → huge black space above ctrl_bar.
+    #   Relative(f): f × TOTAL figure height → overflows when Fixed rows exist
+    #               → Fixed rows pushed off-screen (original ctrl-bar-invisible bug).
+    #   Auto(false): row joins the "remaining space" pool and gets ALL remaining
+    #               height after Fixed rows and gaps. ✔
+    rowsize!(gl, 1, Fixed(44))       # controls bar
+    rowsize!(gl, 2, Auto(false))     # canvas — fills remaining space (not content-sized)
+    rowsize!(gl, 3, Fixed(130))      # parameter sliders
+    colsize!(gl, 1, Relative(0.70))  # simulation canvas
+    colsize!(gl, 2, Relative(0.30))  # stats panel
 
 
     sl_v0, sl_σ, sl_rho_on, sl_rho_off, sl_door, sl_N = sg.sliders
 
-    # σ noise is live — patch ECS directly
+    # σ noise is live — patch ECS directly.
+    # NOTE: Extract config_ref[] into a local `cfg` first, then apply @set to
+    # the plain ScenarioConfig value.  Writing `@set config_ref[].field = v`
+    # makes Accessors.jl traverse the Ref as a lens and return a new
+    # Ref{ScenarioConfig} — which cannot be assigned back to config_ref[].
     on(sl_σ.value) do σ
-        config_ref[] = @set config_ref[].sigma_noise = Float64(σ)
+        cfg = config_ref[]
+        config_ref[] = @set cfg.sigma_noise = Float64(σ)
         _update_sigma!(ctx_ref[], Float64(σ))
     end
 
     # All other sliders: update config_ref[] only (applied on Reset)
-    on(sl_v0.value)     do v;  config_ref[] = @set config_ref[].v_pref = Float64(v)  end
-    on(sl_rho_on.value) do v;  config_ref[] = @set config_ref[].rho_on = Float64(v)  end
-    on(sl_rho_off.value) do v; config_ref[] = @set config_ref[].rho_off = Float64(v) end
-    on(sl_N.value)      do v;  config_ref[] = @set config_ref[].n_agents = Int(v)    end
+    on(sl_v0.value) do v
+        cfg = config_ref[]
+        config_ref[] = @set cfg.v_pref = Float64(v)
+    end
+    on(sl_rho_on.value) do v
+        cfg = config_ref[]
+        config_ref[] = @set cfg.rho_on = Float64(v)
+    end
+    on(sl_rho_off.value) do v
+        cfg = config_ref[]
+        config_ref[] = @set cfg.rho_off = Float64(v)
+    end
+    on(sl_N.value) do v
+        cfg = config_ref[]
+        config_ref[] = @set cfg.n_agents = Int(v)
+    end
     on(sl_door.value) do v
         # Patch first door width
-        if !isempty(config_ref[].room.doors)
-            old_door  = config_ref[].room.doors[1]
+        cfg = config_ref[]
+        if !isempty(cfg.room.doors)
+            old_door  = cfg.room.doors[1]
             new_door  = DoorSpec(wall=old_door.wall, center=old_door.center, width=Float64(v))
-            new_doors = vcat([new_door], config_ref[].room.doors[2:end])
+            new_doors = vcat([new_door], cfg.room.doors[2:end])
             new_room  = RoomGeometry(
-                width  = config_ref[].room.width,
-                height = config_ref[].room.height,
+                width  = cfg.room.width,
+                height = cfg.room.height,
                 doors  = new_doors,
             )
-            config_ref[] = @set config_ref[].room = new_room
+            config_ref[] = @set cfg.room = new_room
         end
     end
 

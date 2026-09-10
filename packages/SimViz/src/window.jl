@@ -147,9 +147,30 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
     H = Float32(config.room.height)
     r = Float32(config.r_body)
 
-    # ── Figure ────────────────────────────────────────────────────────────────
+    # ── Figure size: sized dynamically so the DataAspect canvas row (Row 2)
+    #    fills most of the window with minimal wasted black space.
+    #
+    #    Layout overhead (fixed rows + gaps + padding):
+    #      Row 1 (ctrl_bar): 44 px
+    #      Row 3 (sliders) : 130 px
+    #      2 rowgaps        :  12 px
+    #      figure_padding   :  16 px
+    #      total overhead   : 202 px
+    #
+    #    Canvas column is ~70% of figure width (after 16px padding + 6px colgap).
+    #    Subtract ~40px for y-axis labels to get the DataAspect-constrained
+    #    inner axis width, then scale by the room aspect ratio (H/W) to get the
+    #    required canvas row height.  Add 60px for x-axis/title decorations.
+    _fig_w         = 1440
+    _canvas_col_px = 0.70f0 * Float32(_fig_w - 22)  # 22 = padding16 + colgap6
+    _inner_w_px    = _canvas_col_px - 40f0           # subtract y-axis label width
+    _canvas_h_px   = _inner_w_px * (H / W)           # DataAspect-required height
+    _row2_h_px     = _canvas_h_px + 60f0             # add axis title + xlabel space
+    _fig_h         = round(Int, _row2_h_px + 202f0)  # add fixed row overhead
+    _fig_h         = clamp(_fig_h, 480, 980)         # safety clamp
+
     fig = Figure(
-        size            = (1440, 900),
+        size            = (_fig_w, _fig_h),
         backgroundcolor = _SIMVIZ_DARK_BG,
         figure_padding  = (8, 8, 8, 8),
     )
@@ -246,13 +267,20 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
     end
 
     # ── Agent scatter ─────────────────────────────────────────────────────────
+    # markersize = Vec2f(2r) in DATA units: each agent appears as a circle
+    # of radius r meters, correctly scaled with the axis zoom/extent.
+    # markerspace = :data ensures the marker size is in data coordinates, not
+    # pixels — so agents don't look oversized when the canvas is large.
+    #
+    # IMPORTANT: Vec2f is mandatory (not Float32 / scalar).  A Float32 scalar
+    # makes GLMakie 0.10.x emit `uniform float scale` in sprites.vert, but the
+    # shader swizzles it as `scale.xy` → C7505 GLSL link error.
+    # Vec2f → `uniform vec2 scale` → .xy valid. (Confirmed: diagnostic Part D)
     scatter!(ax, makie_positions;
-        color      = makie_colors,
-        marker     = Circle,        # explicit type avoids :circle Symbol → BezierPath GLSL bug
-        markersize = Vec2f(2r * 80f0),  # MUST be Vec2f: Float32 scalar causes GLMakie to emit
-                                        # `uniform float scale` in sprites.vert, but the shader
-                                        # does `scale.xy` (swizzle on scalar) → C7505 link error.
-                                        # Vec2f → `uniform vec2 scale` → .xy valid. (diag Part D ✓)
+        color       = makie_colors,
+        marker      = Circle,
+        markersize  = Vec2f(2r),    # diameter = 2×r in DATA units (meters)
+        markerspace = :data,        # scale with axis, not pixels
         strokewidth = 0.5f0,
         strokecolor = RGBAf(1f0, 1f0, 1f0, 0.25f0),
     )
