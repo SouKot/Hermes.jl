@@ -191,18 +191,21 @@ function wire_controls!(fig, viz, ctx_ref::Ref{ScenarioContext},
         # Step exactly once, regardless of paused state
         step!(ctx_ref[].scene)
         ctx_ref[].sim_time += ctx_ref[].config.dt
+        # Also dispatch DES events so M/M/1 / evac_alarm fire during manual stepping
+        _dispatch_events!(ctx_ref[], ctx_ref[].sim_time)
         fps_str = viz.fps_display[]
         model_name = string(ctx_ref[].config.crowd_model)
         update_viz!(viz, ctx_ref[], fps_str, model_name; cell_size)
     end
 
     on(btn_reset.clicks) do _
-        was_paused = is_paused[]
-        is_paused[] = true
+        is_paused[] = true          # pause during reset
         reset_scenario!(ctx_ref[]; config = config_ref[])
         model_name = string(ctx_ref[].config.crowd_model)
         update_viz!(viz, ctx_ref[], viz.fps_display[], model_name; cell_size)
-        is_paused[] = was_paused
+        # Leave paused after Reset: user always gets clean t=0 before pressing Run
+        # (was_paused was previously restored, but starting paused is always correct
+        #  behaviour for Reset — the user expects a fresh start, not auto-run)
     end
 
     # Speed

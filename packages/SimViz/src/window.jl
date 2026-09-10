@@ -482,7 +482,10 @@ function run_visualization!(config::ScenarioConfig; cell_size::Float32 = 0.5f0)
     fig, viz = create_window!(ctx; cell_size)
 
     # Mutable playback state — shared between the UI callbacks and the sim loop
-    is_paused = Observable(false)  # start RUNNING immediately (was true → paused)
+    # NOTE: start PAUSED so the window opens with a clean t=0 state. The user
+    # presses ▶ Run to begin the simulation. This also prevents the M/M/1
+    # ScheduledEvent at t=0 from firing before the window is fully visible.
+    is_paused = Observable(true)
     speed     = Observable(1.0)    # 1.0 = real-time; 2.0 = 2× speed
 
     model_name = string(config.crowd_model)
@@ -506,26 +509,36 @@ function run_visualization!(config::ScenarioConfig; cell_size::Float32 = 0.5f0)
     display(fig)
 
     # ── Async simulation loop ─────────────────────────────────────────────────
+    # IMPORTANT: The entire body is wrapped in try/catch so that any error
+    # (e.g. from step! on a rebuilt scene after Reset) is logged rather than
+    # silently killing the loop. Without this, a single error after Reset would
+    # permanently freeze the simulation with no visible feedback.
     @async while isopen(fig.scene)
         t_frame = @elapsed begin
-            if !is_paused[]
-                step!(ctx_ref[].scene)
-                ctx_ref[].sim_time += ctx_ref[].config.dt
-                # Dispatch any DES events that have fired (alarm, M/M/1 tick, etc.)
-                _dispatch_events!(ctx_ref[], ctx_ref[].sim_time)
-                # Remove agents that have reached their goal (flux_boundary=true)
-                for bc in ctx_ref[].boundaries
-                    apply_boundary!(ctx_ref[].ark_world, bc)
+            try
+                if !is_paused[]
+                    step!(ctx_ref[].scene)
+                    ctx_ref[].sim_time += ctx_ref[].config.dt
+                    # Dispatch any DES events that have fired (alarm, M/M/1 tick, etc.)
+                    _dispatch_events!(ctx_ref[], ctx_ref[].sim_time)
+                    # Remove agents that have reached their goal (flux_boundary=true)
+                    for bc in ctx_ref[].boundaries
+                        apply_boundary!(ctx_ref[].ark_world, bc)
+                    end
                 end
+
+                # FPS EMA: α=0.1 → ~10-frame smoothing
+                dt_frame = (time_ns() - last_frame_ns[]) * 1e-9
+                last_frame_ns[] = time_ns()
+                fps_filter[] = 0.9 * fps_filter[] + 0.1 * (1.0 / max(dt_frame, 1e-6))
+                fps_str = "FPS: $(round(fps_filter[], digits=1))"
+
+                update_viz!(viz, ctx_ref[], fps_str, model_name; cell_size)
+            catch err
+                @warn "[SimViz] Sim loop error (loop continues): $err" exception=(err, catch_backtrace())
+                # Pause on error so user sees the frozen state rather than a crash
+                is_paused[] = true
             end
-
-            # FPS EMA: α=0.1 → ~10-frame smoothing
-            dt_frame = (time_ns() - last_frame_ns[]) * 1e-9
-            last_frame_ns[] = time_ns()
-            fps_filter[] = 0.9 * fps_filter[] + 0.1 * (1.0 / max(dt_frame, 1e-6))
-            fps_str = "FPS: $(round(fps_filter[], digits=1))"
-
-            update_viz!(viz, ctx_ref[], fps_str, model_name; cell_size)
         end
 
         # Sleep remaining frame budget (target: dt / speed)
