@@ -898,6 +898,7 @@ function _tick_mm1!(ctx::ScenarioContext, t::Float64)
                 t_svc_end = ev_t + randexp(ctx._mm1_rng) / μ
                 push!(ctx._mm1_fel, (t_svc_end, :service_end, cid))
                 needs_sort = true
+                ctx.sim_world.entry_times[cid] = ev_t  # service start time (for ρ)
                 # Place at service position
                 svc_pos = SVector{2,Float32}(x_service, y_mid)
                 agent = CrowdAgent(svc_pos, svc_pos; desired_speed=Float32(μ))
@@ -919,12 +920,12 @@ function _tick_mm1!(ctx::ScenarioContext, t::Float64)
             zone = ctx.sim_world.zone_states[1]
             zone.busy_servers = max(0, zone.busy_servers - 1)
 
-            # Record stats
+            # Record stats — busy_time = service duration (NOT sojourn)
             ctx.sim_world.stats.total_departures += 1
             ctx.sim_world.stats.total_events     += 1
             if haskey(ctx.sim_world.entry_times, ev_id)
-                sojourn = ev_t - ctx.sim_world.entry_times[ev_id]
-                ctx.sim_world.stats.busy_time += sojourn
+                service_duration = ev_t - ctx.sim_world.entry_times[ev_id]
+                ctx.sim_world.stats.busy_time += service_duration
                 delete!(ctx.sim_world.entry_times, ev_id)
             end
             delete!(ctx.sim_world.crowd_agents, ev_id)
@@ -937,6 +938,7 @@ function _tick_mm1!(ctx::ScenarioContext, t::Float64)
                 t_svc_end = ev_t + randexp(ctx._mm1_rng) / μ
                 push!(ctx._mm1_fel, (t_svc_end, :service_end, next_id))
                 needs_sort = true
+                ctx.sim_world.entry_times[next_id] = ev_t  # service start time (for ρ)
                 # Move to service position
                 if haskey(ctx.sim_world.crowd_agents, next_id)
                     svc_pos = SVector{2,Float32}(x_service, y_mid)
