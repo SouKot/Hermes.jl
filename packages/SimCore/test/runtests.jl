@@ -1,6 +1,7 @@
 using SimCore
 using Test
 using StaticArrays: SVector
+using Random
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Phase 1 validation — SimCore test suite
@@ -21,6 +22,7 @@ using StaticArrays: SVector
             project_extras   = true,
             stale_deps       = true,
             deps_compat      = (check_extras = false,),  # Test stdlib has no compat
+            persistent_tasks = false,   # false positive: GLMakie async workers in precompile
         )
     end
 
@@ -373,3 +375,506 @@ using StaticArrays: SVector
     end
 
 end  # @testset "SimCore"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 4I — StatsPipeline test suite
+# Tasks 1-16: collectors, warmup, pipeline, analysis
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "Sprint 4I — StatsPipeline" begin
+
+    # ── Task 17: WelchDetector (moved to SimCore) ─────────────────────────────
+    @testset "WelchDetector" begin
+        wd = WelchDetector(window_size=5, threshold=0.05)
+        @test !warmup_complete(wd)
+
+        # Feed steady observations — should detect convergence after 3+ windows
+        for _ in 1:14
+            update!(wd, 3.0)   # 14 obs → 2 complete windows of 5 + 4 buffered
+        end
+        update!(wd, 3.0)   # 15th → 3rd window complete → CV ≈ 0 < 0.05
+        @test warmup_complete(wd)
+
+        # Once complete, update! is a no-op
+        update!(wd, 999.0)
+        @test warmup_complete(wd)
+
+        # Zero queue → immediate steady state
+        wd2 = WelchDetector(window_size=3, threshold=0.05)
+        for _ in 1:9; update!(wd2, 0.0); end
+        @test warmup_complete(wd2)
+    end
+
+    # ── Task 7: WarmupPolicy ─────────────────────────────────────────────────
+    @testset "WarmupPolicy" begin
+
+        @testset "WARMUP_NONE" begin
+            p = WarmupPolicy(mode=WARMUP_NONE)
+            @test p.complete == true
+            @test tick_warmup!(p, 5.0, 0) == true
+        end
+
+        @testset "WARMUP_IMMEDIATE" begin
+            p = WarmupPolicy(mode=WARMUP_IMMEDIATE)
+            @test p.complete == true
+        end
+
+        @testset "WARMUP_FIXED" begin
+            p = WarmupPolicy(mode=WARMUP_FIXED, warmup_n=3)
+            @test tick_warmup!(p, 0.0, 1) == false
+            @test tick_warmup!(p, 0.0, 2) == false
+            @test tick_warmup!(p, 0.0, 3) == true
+            @test tick_warmup!(p, 0.0, 4) == true   # stays true
+            @test p.complete == true
+        end
+
+        @testset "WARMUP_AUTO" begin
+            p = WarmupPolicy(mode=WARMUP_AUTO, welch_window_size=5, welch_threshold=0.05)
+            @test p.complete == false
+            @test p._welch !== nothing
+            # Feed enough to trigger convergence
+            for i in 1:15
+                tick_warmup!(p, 3.0, i)
+            end
+            @test p.complete == true
+        end
+    end
+
+    # ── Tasks 1-6: Collectors ────────────────────────────────────────────────
+    @testset "MeanCollector" begin
+        c = MeanCollector()
+        @test isnan(value(c))
+
+        fit!(c, 3.0); fit!(c, 5.0); fit!(c, 7.0)
+        @test value(c) ≈ 5.0
+
+        # merge! (exact parallel mean formula)
+        a = MeanCollector(); fit!(a, 1.0); fit!(a, 2.0)   # mean=1.5, n=2
+        b = MeanCollector(); fit!(b, 3.0); fit!(b, 4.0); fit!(b, 5.0)  # mean=4, n=3
+        merge!(a, b)
+        @test value(a) ≈ (1+2+3+4+5)/5   # = 3.0
+        @test a.n == 5
+
+        # merge! into empty dst
+        e = MeanCollector()
+        f = MeanCollector(); fit!(f, 7.0)
+        merge!(e, f)
+        @test value(e) ≈ 7.0
+
+        # merge! with empty src is no-op
+        g = MeanCollector(); fit!(g, 2.0)
+        merge!(g, MeanCollector())
+        @test value(g) ≈ 2.0
+
+        # reset!
+        reset!(a)
+        @test isnan(value(a)) && a.n == 0
+    end
+
+    @testset "WeightedMeanCollector" begin
+        c = WeightedMeanCollector()
+        @test isnan(value(c))
+
+        fit!(c, 3.0, 2.0); fit!(c, 7.0, 2.0)
+        @test value(c) ≈ 5.0
+
+        # merge!
+        a = WeightedMeanCollector(); fit!(a, 2.0, 1.0)   # L*dt = 2
+        b = WeightedMeanCollector(); fit!(b, 4.0, 1.0)   # L*dt = 4
+        merge!(a, b)
+        @test value(a) ≈ 3.0  # (2+4)/(1+1)
+
+        # zero-weight guard
+        z = WeightedMeanCollector()
+        @test isnan(value(z))
+        reset!(z)
+        @test isnan(value(z))
+    end
+
+    @testset "P2QuantileCollector" begin
+        c = P2QuantileCollector(0.5)   # median
+        @test isnan(value(c))
+
+        # Feed 10 samples; P² should estimate ~3.0 (median of 1..5 uniform)
+        for x in [2.0,4.0,1.0,3.0,5.0,2.0,4.0,1.0,3.0,5.0]
+            fit!(c, x)
+        end
+        @test 2.0 <= value(c) <= 4.0   # P² converges loosely
+
+        # merge! should throw — P² algorithm cannot merge streams
+        c2 = P2QuantileCollector(0.5)
+        @test_throws ArgumentError merge!(c, c2)
+
+        # reset! clears back to uninitialized
+        reset!(c)
+        @test isnan(value(c))
+    end
+
+    @testset "ExtremaCollector" begin
+        c = ExtremaCollector()
+        v = value(c)
+        @test isnan(v.min) && isnan(v.max)
+
+        fit!(c, 3.0); fit!(c, 1.0); fit!(c, 7.0)
+        v = value(c)
+        @test v.min == 1.0 && v.max == 7.0
+
+        # merge!
+        a = ExtremaCollector(); fit!(a, 2.0)
+        b = ExtremaCollector(); fit!(b, 5.0)
+        merge!(a, b)
+        @test value(a).min == 2.0 && value(a).max == 5.0
+
+        # merge into empty
+        e = ExtremaCollector()
+        f = ExtremaCollector(); fit!(f, 9.0)
+        merge!(e, f)
+        @test value(e).min == 9.0 && value(e).max == 9.0
+
+        reset!(c)
+        @test isnan(value(c).min)
+    end
+
+    @testset "CounterCollector" begin
+        c = CounterCollector()
+        @test value(c) == 0
+
+        fit!(c, 1); fit!(c, 3)
+        @test value(c) == 4
+
+        # merge!
+        a = CounterCollector(); fit!(a, 2)
+        b = CounterCollector(); fit!(b, 3)
+        merge!(a, b)
+        @test value(a) == 5
+
+        reset!(a)
+        @test value(a) == 0
+    end
+
+    # ── Tasks 8-9: StatsPipeline record_*! ──────────────────────────────────
+    @testset "StatsPipeline construction" begin
+        p = StatsPipeline()
+        @test p isa StatsPipeline
+        @test p.warmup.mode == WARMUP_AUTO
+        @test !p.warmup.complete
+
+        # WARMUP_NONE is immediately open
+        p2 = StatsPipeline(warmup=WARMUP_NONE)
+        @test p2.warmup.complete
+
+        # record_samples preallocates hint-sized buffers
+        p3 = StatsPipeline(record_samples=true, max_samples=100)
+        @test p3._record_samples == true
+        @test p3._max_samples == 100
+    end
+
+    @testset "record_arrival! / record_blocked!" begin
+        p = StatsPipeline(warmup=WARMUP_NONE)
+        record_arrival!(p)
+        record_arrival!(p)
+        @test p._total_arrivals_raw == 2
+        @test value(p.events) == 2
+        @test value(p.arrivals) == 2
+
+        record_blocked!(p)
+        @test p._total_arrivals_raw == 3
+        @test value(p.blocked) == 1
+    end
+
+    @testset "record_departure! gates on warmup" begin
+        p = StatsPipeline(warmup=WARMUP_FIXED, warmup_n=2)
+
+        # Departure 1: pre-warmup — sojourn should NOT be recorded
+        record_departure!(p, 1.0, 2.0)
+        @test isnan(value(p.sojourn))   # still NaN — gated
+
+        # Departure 2: triggers warmup completion AND is recorded (warmup opens then falls through)
+        record_departure!(p, 3.0, 4.0)
+        @test p.warmup.complete == true
+        @test value(p.sojourn) ≈ 4.0   # the triggering departure IS recorded
+        @test value(p.wait) ≈ 3.0
+
+        # Departure 3: post-warmup
+        record_departure!(p, 5.0, 6.0)
+        @test value(p.sojourn) ≈ (4.0 + 6.0) / 2   # mean of dep2 + dep3
+        @test value(p.wait) ≈ (3.0 + 5.0) / 2
+    end
+
+    @testset "record_queue_length! (3-arg and 2-arg)" begin
+        p = StatsPipeline(warmup=WARMUP_NONE)
+        record_queue_length!(p, 3, 2, 5.0)   # 3-arg: sys=3, q=2, dt=5
+        @test value(p.sys_size) ≈ 3.0
+        @test value(p.q_size)   ≈ 2.0
+
+        p2 = StatsPipeline(warmup=WARMUP_NONE)
+        record_queue_length!(p2, 4, 5.0)     # 2-arg compat: q = max(0, 4-1) = 3
+        @test value(p2.q_size) ≈ 3.0
+    end
+
+    @testset "record_utilization! / record_idle!" begin
+        p = StatsPipeline(warmup=WARMUP_NONE)
+        record_utilization!(p, 8.0)   # busy for 8s
+        record_idle!(p, 2.0)          # idle for 2s
+        @test value(p.util) ≈ 0.8     # busy_time / total_time = 8/(8+2)
+    end
+
+    @testset "record_samples buffering" begin
+        p = StatsPipeline(warmup=WARMUP_NONE, record_samples=true, max_samples=5)
+        for i in 1:7
+            record_departure!(p, Float64(i), Float64(i) * 2.0)
+        end
+        @test length(p._sojourn_samples) == 5   # capped at max_samples
+        @test length(p._wait_samples)    == 5
+    end
+
+    # ── Task 11: sim_summary ─────────────────────────────────────────────────
+    @testset "sim_summary — backward-compat and new keys" begin
+        p = StatsPipeline(warmup=WARMUP_NONE)
+        record_arrival!(p)
+        record_departure!(p, 2.0, 7.0)
+        record_queue_length!(p, 1, 0, 5.0)
+        record_queue_length!(p, 0, 0, 3.0)
+        record_utilization!(p, 7.0)
+        record_idle!(p, 3.0)
+
+        sm = sim_summary(p)
+
+        # Backward-compat keys
+        @test haskey(sm, :L)              && !isnan(sm.L)
+        @test haskey(sm, :Wq)             && sm.Wq ≈ 2.0
+        @test haskey(sm, :W)              && sm.W  ≈ 7.0
+        @test haskey(sm, :utilization)    && sm.utilization ≈ 0.7
+        @test haskey(sm, :blocking_prob)
+        @test haskey(sm, :total_arrivals) && sm.total_arrivals == 1
+        @test haskey(sm, :total_departures) && sm.total_departures == 1
+        @test haskey(sm, :blocked_count)  && sm.blocked_count == 0
+        @test haskey(sm, :total_events)
+
+        # New keys
+        @test haskey(sm, :Lq)
+        @test haskey(sm, :availability)
+        @test haskey(sm, :throughput)
+        @test haskey(sm, :W_quantile)
+        @test haskey(sm, :Wq_quantile)
+        @test haskey(sm, :queue_min)
+        @test haskey(sm, :queue_max)
+        @test haskey(sm, :warmup_complete) && sm.warmup_complete == true
+
+        # Little's Law sanity: L̄ = (1*5+0*3)/(8) = 5/8, λ_eff = 1/8, W=7
+        # L̄ ≠ λ_eff*W here because queue length and departure are tracked differently
+        # (illustrative only — full Little's Law test below in Analysis section)
+    end
+
+    # ── Task 10: add_collector! ───────────────────────────────────────────────
+    @testset "add_collector! — user extension API" begin
+        p = StatsPipeline(warmup=WARMUP_NONE)
+
+        # Add P99 sojourn collector
+        p99 = P2QuantileCollector(0.99)
+        add_collector!(p, :p99_sojourn, p99; trigger=:departure, extract=d -> d.sojourn)
+
+        # Add peak queue collector
+        peak = ExtremaCollector()
+        add_collector!(p, :peak_queue, peak; trigger=:queue_change, extract=d -> Float64(d.sys))
+
+        # Feed some data
+        for i in 1:15
+            record_arrival!(p)
+            record_queue_length!(p, i, max(0, i-1), Float64(i))
+            record_departure!(p, Float64(i)*0.1, Float64(i))
+        end
+
+        sm = sim_summary(p)
+        @test haskey(sm, :p99_sojourn)
+        @test haskey(sm, :peak_queue)
+        v = sm.peak_queue
+        @test v.max == 15.0   # max queue was 15
+
+        # Invalid trigger should throw
+        @test_throws ArgumentError add_collector!(p, :bad, MeanCollector(); trigger=:invalid, extract=identity)
+    end
+
+    # ── Task 12: reset! ───────────────────────────────────────────────────────
+    @testset "reset! StatsPipeline" begin
+        p = StatsPipeline(warmup=WARMUP_NONE, record_samples=true)
+        record_arrival!(p)
+        record_departure!(p, 1.0, 2.0)
+
+        reset!(p)
+        @test p._total_arrivals_raw == 0
+        @test p._total_departures_raw == 0
+        @test isnan(value(p.sojourn))
+        @test isempty(p._sojourn_samples)
+        @test p.warmup.complete == true   # WARMUP_NONE stays open after reset
+
+        # WARMUP_FIXED: warmup re-arms after reset
+        p2 = StatsPipeline(warmup=WARMUP_FIXED, warmup_n=5)
+        for _ in 1:6; record_departure!(p2, 1.0, 2.0); end
+        @test p2.warmup.complete == true
+        reset!(p2)
+        @test p2.warmup.complete == false   # re-armed
+
+        # WARMUP_AUTO: WelchDetector is recreated
+        p3 = StatsPipeline(warmup=WARMUP_AUTO, welch_window=5)
+        for _ in 1:15; record_departure!(p3, 3.0, 3.0); end
+        @test p3.warmup.complete == true
+        reset!(p3)
+        @test p3.warmup.complete == false   # re-armed
+        @test p3.warmup._welch !== nothing
+    end
+
+    # ── Task 13: merge! ───────────────────────────────────────────────────────
+    @testset "merge! StatsPipeline" begin
+        p1 = StatsPipeline(warmup=WARMUP_NONE)
+        p2 = StatsPipeline(warmup=WARMUP_NONE)
+
+        record_departure!(p1, 1.0, 2.0)   # sojourn=2, wait=1
+        record_departure!(p2, 3.0, 4.0)   # sojourn=4, wait=3
+
+        merge!(p1, p2)
+
+        @test value(p1.sojourn) ≈ 3.0   # (2+4)/2
+        @test value(p1.wait)    ≈ 2.0   # (1+3)/2
+        @test p1._total_departures_raw == 2
+        @test p1._total_arrivals_raw   == 0
+
+        # Warmup: complete if either is complete
+        pa = StatsPipeline(warmup=WARMUP_FIXED, warmup_n=5)
+        pb = StatsPipeline(warmup=WARMUP_NONE)   # immediately open
+        @test pb.warmup.complete == true
+        merge!(pa, pb)
+        @test pa.warmup.complete == true   # pa now complete
+    end
+
+    # ── Tasks 14-16: Analysis ─────────────────────────────────────────────────
+    @testset "check_littles_law" begin
+        # Perfect Little's Law: L = λW, λ=2, W=1 → L=2 ✓
+        sm = (L=2.0, W=1.0, throughput=2.0, Wq=0.5, utilization=0.8,
+              total_arrivals=100, total_departures=100, blocked_count=0,
+              total_events=200, Lq=1.0, availability=1.0,
+              W_quantile=1.5, Wq_quantile=0.7,
+              queue_min=0.0, queue_max=5.0, warmup_complete=true)
+        ok, err = check_littles_law(sm)
+        @test ok && err < 0.01
+
+        # 20% error → violation at 10% tolerance
+        sm2 = merge(sm, (L=2.4,))   # L_pred=2.0, L_meas=2.4 → err=0.167
+        ok2, err2 = check_littles_law(sm2)
+        @test !ok2
+
+        # NaN throughput → skip check gracefully
+        sm3 = merge(sm, (throughput=NaN,))
+        ok3, err3 = check_littles_law(sm3)
+        @test ok3 && isnan(err3)
+    end
+
+    @testset "batch_means_ci" begin
+        # 300 samples with true mean=5.0
+        rng_samples = [5.0 + 0.1 * sin(Float64(i)) for i in 1:300]
+        ci = batch_means_ci(rng_samples; k=30)
+        @test ci.n_batches == 30
+        @test ci.batch_size == 10
+        @test ci.ci_lo < ci.mean < ci.ci_hi
+        @test 4.5 <= ci.mean <= 5.5
+
+        # Too few samples → all NaN
+        ci2 = batch_means_ci([1.0, 2.0]; k=10)
+        @test isnan(ci2.mean)
+        @test ci2.n_batches == 0
+
+        # Exact constant series → CI of width 0
+        ci3 = batch_means_ci(fill(7.0, 100); k=10)
+        @test ci3.mean ≈ 7.0
+        @test ci3.ci_lo ≈ 7.0 atol=1e-10
+        @test ci3.ci_hi ≈ 7.0 atol=1e-10
+    end
+
+    @testset "replicate" begin
+        # Synthetic: rep i returns W=i (seeds 1..5)
+        result = replicate(5) do seed
+            (W=Float64(seed), L=Float64(seed)*0.9, Wq=0.5,
+             utilization=0.9, blocking_prob=0.0,
+             total_arrivals=100, total_departures=90,
+             blocked_count=0, total_events=190,
+             Lq=0.0, availability=1.0, throughput=0.9,
+             W_quantile=NaN, Wq_quantile=NaN,
+             queue_min=0.0, queue_max=5.0, warmup_complete=true)
+        end
+
+        @test haskey(result, :W)
+        @test result.W.mean ≈ 3.0   # (1+2+3+4+5)/5
+        @test result.W.ci_lo < result.W.mean < result.W.ci_hi
+        @test result.W.std_dev > 0.0
+
+        # Numeric fields only; Bool (warmup_complete) should be skipped
+        @test !haskey(result, :warmup_complete)
+
+        # Minimum reps check
+        @test_throws ArgumentError replicate(1) do seed; (W=1.0,); end
+    end
+
+    @testset "M/M/1 numerical accuracy (ρ=0.7)" begin
+        # Run a short M/M/1 simulation with StatsPipeline to validate accuracy
+        # Theory: λ=0.7, μ=1.0 → W = 1/(μ-λ) = 10/3, L = ρ/(1-ρ) = 7/3, ρ = 0.7
+        rng    = MersenneTwister(42)
+        λ, μ   = 0.7, 1.0
+        N      = 50_000
+        p      = StatsPipeline(warmup=WARMUP_FIXED, warmup_n=2_000)
+
+        t      = 0.0
+        queue  = 0
+        server = false
+        entry_times = Dict{Int,Float64}()
+        next_arr = -log(rand(rng)) / λ
+        next_dep = Inf
+        id = 0
+
+        for _ in 1:N
+            if next_arr <= next_dep
+                dt = next_arr - t
+                t  = next_arr
+                record_queue_length!(p, queue + (server ? 1 : 0), max(0, queue), dt)
+                server ? (record_idle!(p, 0.0); record_utilization!(p, dt)) : record_idle!(p, dt)
+                id += 1; entry_times[id] = t
+                record_arrival!(p)
+                if !server
+                    server = true
+                    next_dep = t - log(rand(rng)) / μ
+                else
+                    queue += 1
+                end
+                next_arr = t + (-log(rand(rng)) / λ)
+            else
+                dt = next_dep - t
+                t  = next_dep
+                record_queue_length!(p, queue + 1, queue, dt)
+                record_utilization!(p, dt)
+                sojourn = t - entry_times[id - queue]  # FIFO
+                wait    = sojourn - (1/μ)
+                record_departure!(p, max(0.0, wait), sojourn)
+                delete!(entry_times, id - queue)
+                if queue > 0
+                    queue -= 1
+                    next_dep = t - log(rand(rng)) / μ
+                else
+                    server = false
+                    next_dep = Inf
+                end
+            end
+        end
+
+        sm = sim_summary(p)
+        W_theory  = 1.0 / (μ - λ)        # 10/3 ≈ 3.333
+        ρ_theory  = λ / μ                 # 0.7
+
+        if sm.warmup_complete
+            W_err = abs(sm.W - W_theory) / W_theory
+            ρ_err = abs(sm.utilization - ρ_theory)
+            # Generous 15% tolerance for 50k events
+            @test W_err < 0.15   # W̄=$(round(sm.W,digits=3)) theory=$(round(W_theory,digits=3))
+            @test ρ_err < 0.05   # ρ=$(round(sm.utilization,digits=3)) theory=$ρ_theory
+        end
+    end
+
+end  # @testset "Sprint 4I — StatsPipeline"

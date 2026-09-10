@@ -1,14 +1,19 @@
 """
     SimCore
 
-Shared foundation for the Hermes simulation platform.
+Shared foundation for the Hermes/Antigravity simulation platform.
 
 Provides:
 - Abstract event hierarchy and cancellable event wrapper
 - `SimClock` — adjustable-speed simulation clock
 - ECS component structs (`CrowdAgent`, `FluidParticle`, `DESAgent`, etc.)
 - `SimWorld` — global simulation state container
-- `SimStats` — statistics accumulator
+- `SimStats` — legacy statistics accumulator (retained for backward compat)
+- `WelchDetector` — online steady-state detector (Welch 1983)
+- `AbstractCollector` + 5 concrete collectors (Sprint 4I)
+- `StatsPipeline` — composable, warmup-aware statistics pipeline (Sprint 4I)
+- `WarmupPolicy` — pluggable warmup strategies (Sprint 4I)
+- Output analysis: `check_littles_law`, `batch_means_ci`, `replicate` (Sprint 4I)
 - `SimEntity` ID management
 """
 module SimCore
@@ -16,11 +21,15 @@ module SimCore
 using DataStructures: PriorityQueue, enqueue!, dequeue!, dequeue_pair!, peek, isempty
 using StaticArrays: SVector
 
-# ── Source files ──────────────────────────────────────────────────────────────
+# ── Source files (order matters: dependencies first) ─────────────────────────
 include("events.jl")
 include("clock.jl")
 include("components.jl")
-include("stats.jl")    # SimStats must be defined before SimWorld uses it
+include("warmup.jl")     # WelchDetector — must precede pipeline.jl
+include("collectors.jl") # AbstractCollector + 5 collectors — must precede pipeline.jl
+include("pipeline.jl")   # StatsPipeline, WarmupPolicy — uses warmup + collectors
+include("analysis.jl")   # check_littles_law, batch_means_ci, replicate — uses pipeline
+include("stats.jl")      # SimStats (legacy) — must be defined before SimWorld
 include("world.jl")
 
 # ── Public API exports ────────────────────────────────────────────────────────
@@ -40,17 +49,36 @@ export DESAgent, CrowdAgent, FluidParticle, CrowdObstacle,
        width, height, center
 
 # World
-export SimWorld, ZoneState, new_entity_id!, 
-       add_des_agent!, remove_des_agent!, 
+export SimWorld, ZoneState, new_entity_id!,
+       add_des_agent!, remove_des_agent!,
        add_crowd_agent!, remove_crowd_agent!,
        add_fluid_particle!, add_obstacle!, remove_entity!,
        get_des_agent, get_crowd_agent, update_crowd_agent!,
        add_zone!, get_zone, entity_count
 
-# Stats
+# Legacy stats (SimStats — retained for backward compat with SimViz)
 export SimStats, record_arrival!, record_departure!, record_queue_length!,
        record_utilization!, record_uptime!, record_blocked!, reset_stats!, sim_summary,
        mean_queue_length, mean_wait_time, mean_sojourn_time,
        utilization, blocking_probability
 
+# ── Sprint 4I: Warmup ─────────────────────────────────────────────────────────
+export WelchDetector, update!, warmup_complete
+export WarmupMode, WARMUP_AUTO, WARMUP_NONE, WARMUP_FIXED, WARMUP_IMMEDIATE
+export WarmupPolicy, tick_warmup!
+
+# ── Sprint 4I: Collectors ─────────────────────────────────────────────────────
+export AbstractCollector
+export MeanCollector, WeightedMeanCollector, P2QuantileCollector
+export ExtremaCollector, CounterCollector
+export fit!, value, reset!
+
+# ── Sprint 4I: Pipeline ───────────────────────────────────────────────────────
+export StatsPipeline, add_collector!, reset!
+export record_idle!   # new — not in legacy SimStats
+
+# ── Sprint 4I: Analysis ───────────────────────────────────────────────────────
+export check_littles_law, batch_means_ci, replicate
+
 end
+
