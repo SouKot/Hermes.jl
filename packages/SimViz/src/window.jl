@@ -112,7 +112,7 @@ function _build_stats_text(snap::WorldSnapshot, fps_str::String,
         round(s.total_departures / s.elapsed_sim_time, digits=3) : 0.000
 
     # Mean sojourn time estimate W = L / λ_eff  (Little's Law)
-    W_est = λ_eff > 0.0 ? round(L / λ_eff, digits=2) : "—"
+    W_est = λ_eff > 0.0 ? string(round(L / λ_eff, digits=2)) : "-"
 
     return """
 Model:    $(model_name)
@@ -121,9 +121,9 @@ t =       $(round(snap.sim_time, digits=1)) s
 $(fps_str)
 
 ── System State ─────
-🔵 In service:  $(n_svc)
-🟢 In queue:    $(n_queue)
-   Total (L):   $(L)
+[SVC] In service: $(n_svc)  (blue)
+[QUE] In queue:   $(n_queue)  (green)
+      Total (L):  $(L)
 
 ── Event Counts ─────
 Arrived (total): $(s.total_arrivals)
