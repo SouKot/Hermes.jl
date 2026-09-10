@@ -440,7 +440,7 @@ function update_viz!(viz::SimVizState, ctx::ScenarioContext,
     des_pos_buf = Vector{Pos2f}(undef, n_des)
     des_clr_buf = Vector{RGBAfTuple}(undef, n_des)
     for (k, (_, ag)) in enumerate(agents)
-        des_pos_buf[k] = Pos2f(ag.position[1], ag.position[2])
+        des_pos_buf[k] = (Float32(ag.position[1]), Float32(ag.position[2]))
         # Agents at service position have elevated desired_speed (set to μ)
         # Waiting agents use default 1.34 m/s — treat anything ≠ 1.34 as in-service
         des_clr_buf[k] = ag.desired_speed ≈ 1.34f0 ? _GREEN_WAIT : _BLUE_SVC
