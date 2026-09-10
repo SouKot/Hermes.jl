@@ -231,19 +231,27 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
     # ── Build SimVizState ─────────────────────────────────────────────────────
     nx, ny = density_grid_size(W, H, cell_size)
     viz = SimVizState(
-        positions     = Observable(Pos2f[]),
-        agent_colors  = Observable(RGBAfTuple[]),
-        des_positions = Observable(Pos2f[]),
-        des_colors    = Observable(RGBAfTuple[]),
-        density_grid  = Observable(zeros(Float32, nx, ny)),
-        stats_text    = Observable(""),
-        sim_time      = Observable(0.0),
-        agent_count   = Observable(0),
-        fps_display   = Observable("FPS: —"),
-        overlay_mode  = Observable(OVERLAY_FSM),
-        show_density  = Observable(false),
-        wall_segments = Observable(_build_wall_segments(ctx.ark_world)),
+        positions        = Observable(Pos2f[]),
+        agent_colors     = Observable(RGBAfTuple[]),
+        des_positions    = Observable(Pos2f[]),
+        des_colors       = Observable(RGBAfTuple[]),
+        agent_markersize = Observable((2f0*r, 2f0*r)),   # diameter = 2×r_body as (w,h) tuple
+        axis_limits      = Observable((-0.5f0, W + 0.5f0, -0.5f0, H + 0.5f0)),
+        density_grid     = Observable(zeros(Float32, nx, ny)),
+        stats_text       = Observable(""),
+        sim_time         = Observable(0.0),
+        agent_count      = Observable(0),
+        fps_display      = Observable("FPS: —"),
+        overlay_mode     = Observable(OVERLAY_FSM),
+        show_density     = Observable(false),
+        wall_segments    = Observable(_build_wall_segments(ctx.ark_world)),
     )
+
+    # ── Reactive Axis limits: wired to viz.axis_limits so room-resize updates the view
+    on(viz.axis_limits) do lims
+        xlims!(ax, lims[1], lims[2])
+        ylims!(ax, lims[3], lims[4])
+    end
 
     # ── Makie positions / colors: convert from data-layer tuples to Makie types
     # IMPORTANT: use map() + typed comprehension, NOT @lift + broadcast.
@@ -291,21 +299,21 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
         linewidth = 3f0,
     )
 
-    # ── Agent scatter (ABM crowd) ─────────────────────────────────────────────
-    # markersize = Vec2f(2r) in DATA units: each agent appears as a circle
-    # of radius r meters, correctly scaled with the axis zoom/extent.
-    # markerspace = :data ensures the marker size is in data coordinates, not
-    # pixels — so agents don't look oversized when the canvas is large.
+    # markersize = agent_markersize Observable (NTuple→Vec2f mapped, data units).
+    # Observable binding means: when r_body slider fires + Reset is pressed,
+    # push!(viz.agent_markersize, (2*new_r, 2*new_r)) → scatter redraws with new dot size.
+    # markerspace = :data ensures the size scales with axis zoom, not pixels.
     #
     # IMPORTANT: Vec2f is mandatory (not Float32 / scalar).  A Float32 scalar
     # makes GLMakie 0.10.x emit `uniform float scale` in sprites.vert, but the
     # shader swizzles it as `scale.xy` → C7505 GLSL link error.
     # Vec2f → `uniform vec2 scale` → .xy valid. (Confirmed: diagnostic Part D)
+    makie_markersize = map(t -> Vec2f(t[1], t[2]), viz.agent_markersize)
     scatter!(ax, makie_positions;
         color       = makie_colors,
         marker      = Circle,
-        markersize  = Vec2f(2r),    # diameter = 2×r in DATA units (meters)
-        markerspace = :data,        # scale with axis, not pixels
+        markersize  = makie_markersize,  # Observable{Vec2f} — updated by radius slider
+        markerspace = :data,
         strokewidth = 0.5f0,
         strokecolor = RGBAf(1f0, 1f0, 1f0, 0.25f0),
     )
@@ -408,6 +416,16 @@ function update_viz!(viz::SimVizState, ctx::ScenarioContext,
 
     # ── Wall geometry (cheap; only non-trivially changes after door-width Reset)
     viz.wall_segments[] = _build_wall_segments(ctx.ark_world)
+
+    # ── Reactive geometry: sync markersize + axis bounds from current config ───
+    # Called every frame so that after Reset (with new r_body / room dims) the
+    # scatter dot size and axis view update immediately without recreating the window.
+    let r = Float32(ctx.config.r_body),
+        W = Float32(ctx.config.room.width),
+        H = Float32(ctx.config.room.height)
+        viz.agent_markersize[] = (2f0 * r, 2f0 * r)     # NTuple{2,Float32} — mapped to Vec2f in scatter
+        viz.axis_limits[]      = (-0.5f0, W + 0.5f0, -0.5f0, H + 0.5f0)
+    end
 
     # ── DES agent dots (M/M/1 customers from sim_world.crowd_agents) ──────────
     # Color: green = waiting in queue; blue = in service.

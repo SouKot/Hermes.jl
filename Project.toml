@@ -5,3 +5,7 @@ projects = ["packages/SimCore", "packages/SimDES", "packages/SimCrowd", "package
 
 [deps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
+SimCore = "0c356fe6-1c88-4cf8-b16c-a521627c3420"
+SimCrowd = "10200f98-6de3-48c3-a2a4-7c6f453ce806"
+SimViz = "1d3a18c2-5789-4809-a60e-48e89172195e"

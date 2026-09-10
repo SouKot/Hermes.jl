@@ -91,14 +91,17 @@ All sliders except σ are disabled while `!is_paused[]`.
 Slider values propagate into a mutable `config_ref[]` via `@set`.
 Values are applied on Reset.
 
-| Label      | Range       | Default        | Live? |
-|:---------- |:----------- |:-------------- |:----- |
-| v₀ (m/s)  | 0.5 – 4.0  | config.v_pref  | ✗     |
-| σ noise    | 0.0 – 0.5  | config.sigma_noise | ✓ |
-| ρ_on       | 1.0 – 7.0  | config.rho_on  | ✗     |
-| ρ_off      | 0.5 – 6.5  | config.rho_off | ✗     |
-| Door width | 0.4 – 4.0  | first door width | ✗   |
-| N agents   | 5 – 500    | config.n_agents | ✗    |
+| Label      | Range         | Default              | Live? |
+|:---------- |:------------- |:-------------------- |:----- |
+| v₀ (m/s)  | 0.5 – 4.0    | config.v_pref        | ✗     |
+| σ noise    | 0.0 – 0.5    | config.sigma_noise   | ✓     |
+| ρ_on       | 1.0 – 7.0    | config.rho_on        | ✗     |
+| ρ_off      | 0.5 – 6.5    | config.rho_off       | ✗     |
+| Door width | 0.4 – 4.0    | first door width     | ✗     |
+| N agents   | 5 – 500      | config.n_agents      | ✗     |
+| Room W (m) | 4 – 40       | config.room.width    | ✗     |
+| Room H (m) | 3 – 30       | config.room.height   | ✗     |
+| r body (m) | 0.10 – 0.50  | config.r_body        | ✗     |
 """
 function wire_controls!(fig, viz, ctx_ref::Ref{ScenarioContext},
                          is_paused::Observable{Bool},
@@ -229,6 +232,9 @@ function wire_controls!(fig, viz, ctx_ref::Ref{ScenarioContext},
         (label = "ρ_off(ped/m²)", range = 0.5:0.25:6.5,  startvalue = config.rho_off,      format = "{:.2f}"),
         (label = "Door w (m)",    range = 0.4:0.1:4.0,   startvalue = door_w_default,       format = "{:.1f}"),
         (label = "N agents",      range = 5:5:500,        startvalue = config.n_agents,     format = "{:d}"),
+        (label = "Room W (m)",    range = 4.0:1.0:40.0,  startvalue = config.room.width,     format = "{:.0f}"),
+        (label = "Room H (m)",    range = 3.0:1.0:30.0,  startvalue = config.room.height,    format = "{:.0f}"),
+        (label = "r body (m)",    range = 0.10:0.05:0.5, startvalue = config.r_body,         format = "{:.2f}"),
     )
 
     # ── Dark-theme SliderGrid internal labels ─────────────────────────────────
@@ -255,12 +261,12 @@ function wire_controls!(fig, viz, ctx_ref::Ref{ScenarioContext},
     #               height after Fixed rows and gaps. ✔
     rowsize!(gl, 1, Fixed(44))       # controls bar
     rowsize!(gl, 2, Auto(false))     # canvas — fills remaining space (not content-sized)
-    rowsize!(gl, 3, Fixed(185))      # parameter sliders: 6 rows × ~28px + padding ≈ 175px; 185 gives margin
+    rowsize!(gl, 3, Fixed(240))      # parameter sliders: 9 rows × ~26px + padding ≈ 240px
     colsize!(gl, 1, Relative(0.70))  # simulation canvas
     colsize!(gl, 2, Relative(0.30))  # stats panel
 
 
-    sl_v0, sl_σ, sl_rho_on, sl_rho_off, sl_door, sl_N = sg.sliders
+    sl_v0, sl_σ, sl_rho_on, sl_rho_off, sl_door, sl_N, sl_room_w, sl_room_h, sl_r = sg.sliders
 
     # σ noise is live — patch ECS directly.
     # NOTE: Extract config_ref[] into a local `cfg` first, then apply @set to
@@ -304,6 +310,28 @@ function wire_controls!(fig, viz, ctx_ref::Ref{ScenarioContext},
             )
             config_ref[] = @set cfg.room = new_room
         end
+    end
+    on(sl_room_w.value) do v
+        cfg = config_ref[]
+        new_room = RoomGeometry(
+            width  = Float64(v),
+            height = cfg.room.height,
+            doors  = cfg.room.doors,
+        )
+        config_ref[] = @set cfg.room = new_room
+    end
+    on(sl_room_h.value) do v
+        cfg = config_ref[]
+        new_room = RoomGeometry(
+            width  = cfg.room.width,
+            height = Float64(v),
+            doors  = cfg.room.doors,
+        )
+        config_ref[] = @set cfg.room = new_room
+    end
+    on(sl_r.value) do v
+        cfg = config_ref[]
+        config_ref[] = @set cfg.r_body = Float64(v)
     end
 
     # ── Disable non-live sliders while running ────────────────────────────────

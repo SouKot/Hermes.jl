@@ -78,38 +78,44 @@ All agent arrays are indexed 1..N where N = number of crowd agents
 in the current frame (re-built each call to `update_viz!`).
 
 # Fields
-- `positions`     : `Pos2f[]`        — 2D positions in world coords (m)
-- `agent_colors`  : `RGBAfTuple[]`   — per-agent (r,g,b,a) color tuple
-- `des_positions` : `Pos2f[]`        — 2D positions of DES agents (M/M/1 dots)
-- `des_colors`    : `RGBAfTuple[]`   — per-DES-agent color (green=waiting, blue=in_service)
-- `density_grid`  : `Matrix{Float32}` — cell density (ped/m²); 100×100 by default
-- `stats_text`    : `String`         — preformatted multi-line stats panel text
-- `sim_time`      : `Float64`        — current simulated time (s)
-- `agent_count`   : `Int`            — number of live crowd agents
-- `fps_display`   : `String`         — "FPS: 60.3" — updated each render frame
-- `overlay_mode`  : `OverlayMode`    — which attribute drives agent color
-- `show_density`  : `Bool`           — whether density heatmap is visible
-- `wall_segments` : `Pos2f[]`        — interleaved wall segment endpoints
-                                       [start1, end1, start2, end2, ...]
-                                       Updated on Reset so door-width changes
-                                       are reflected in the rendered geometry.
+- `positions`       : `Pos2f[]`          — 2D positions in world coords (m)
+- `agent_colors`    : `RGBAfTuple[]`     — per-agent (r,g,b,a) color tuple
+- `des_positions`   : `Pos2f[]`          — 2D positions of DES agents (M/M/1 dots)
+- `des_colors`      : `RGBAfTuple[]`     — per-DES-agent color (green=waiting, blue=in_service)
+- `agent_markersize`: `NTuple{2,Float32}` — crowd-scatter dot diameter as (w,h) in data units (2×r_body);
+                                           updated when the radius slider fires; window.jl maps to Vec2f
+- `axis_limits`     : `NTuple{4,Float32}` — (xmin, xmax, ymin, ymax) of the simulation Axis;
+                                           updated when room W/H sliders fire
+- `density_grid`    : `Matrix{Float32}`  — cell density (ped/m²); 100×100 by default
+- `stats_text`      : `String`           — preformatted multi-line stats panel text
+- `sim_time`        : `Float64`          — current simulated time (s)
+- `agent_count`     : `Int`              — number of live crowd agents
+- `fps_display`     : `String`           — "FPS: 60.3" — updated each render frame
+- `overlay_mode`    : `OverlayMode`      — which attribute drives agent color
+- `show_density`    : `Bool`             — whether density heatmap is visible
+- `wall_segments`   : `Pos2f[]`          — interleaved wall segment endpoints
+                                           [start1, end1, start2, end2, ...]
+                                           Updated on Reset so door-width changes
+                                           are reflected in the rendered geometry.
 
 `window.jl` converts `Pos2f` → `Point2f` and `RGBAfTuple` → `RGBAf` for
 Makie scatter/heatmap primitives.
 """
 Base.@kwdef mutable struct SimVizState
-    positions     :: Observable{Vector{Pos2f}}        = Observable(Pos2f[])
-    agent_colors  :: Observable{Vector{RGBAfTuple}}   = Observable(RGBAfTuple[])
-    des_positions :: Observable{Vector{Pos2f}}        = Observable(Pos2f[])
-    des_colors    :: Observable{Vector{RGBAfTuple}}   = Observable(RGBAfTuple[])
-    density_grid  :: Observable{Matrix{Float32}}      = Observable(zeros(Float32, 100, 100))
-    stats_text    :: Observable{String}               = Observable("")
-    sim_time      :: Observable{Float64}              = Observable(0.0)
-    agent_count   :: Observable{Int}                  = Observable(0)
-    fps_display   :: Observable{String}               = Observable("FPS: —")
-    overlay_mode  :: Observable{OverlayMode}          = Observable(OVERLAY_PANIC)
-    show_density  :: Observable{Bool}                 = Observable(false)
-    wall_segments :: Observable{Vector{Pos2f}}        = Observable(Pos2f[])
+    positions        :: Observable{Vector{Pos2f}}           = Observable(Pos2f[])
+    agent_colors     :: Observable{Vector{RGBAfTuple}}      = Observable(RGBAfTuple[])
+    des_positions    :: Observable{Vector{Pos2f}}           = Observable(Pos2f[])
+    des_colors       :: Observable{Vector{RGBAfTuple}}      = Observable(RGBAfTuple[])
+    agent_markersize :: Observable{NTuple{2,Float32}}      = Observable((0.5f0, 0.5f0))
+    axis_limits      :: Observable{NTuple{4,Float32}}       = Observable((-0.5f0, 10.5f0, -0.5f0, 6.5f0))
+    density_grid     :: Observable{Matrix{Float32}}         = Observable(zeros(Float32, 100, 100))
+    stats_text       :: Observable{String}                  = Observable("")
+    sim_time         :: Observable{Float64}                 = Observable(0.0)
+    agent_count      :: Observable{Int}                     = Observable(0)
+    fps_display      :: Observable{String}                  = Observable("FPS: —")
+    overlay_mode     :: Observable{OverlayMode}             = Observable(OVERLAY_PANIC)
+    show_density     :: Observable{Bool}                    = Observable(false)
+    wall_segments    :: Observable{Vector{Pos2f}}           = Observable(Pos2f[])
 end
 
 # ── Phase 7-compatible world serialization ────────────────────────────────────

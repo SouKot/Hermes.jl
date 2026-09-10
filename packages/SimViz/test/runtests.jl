@@ -28,7 +28,8 @@ module HeadlessLayer
         AgentModel, SFMModel, ORCAModel, HybridModel,
         SimConfig, SimScene, JacobiCorrection, XPBDCorrection,
         VelocityImpulseParams, CPUNeighborSearch,
-        ORCA_MODE, SFM_MODE, step!
+        ORCA_MODE, SFM_MODE, step!,
+        apply_boundary!, AbsorbingBoundary, BoundaryCondition
     using Random: MersenneTwister
     using LinearAlgebra: norm
 
@@ -467,3 +468,123 @@ end
         @test all(m -> m == UInt8(HL.ORCA_MODE) || m == UInt8(HL.SFM_MODE), snap.fsm_modes)
     end
 end
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Integration: flux_boundary pipeline
+#
+# These tests guard the exact integration gap that allowed a real bug to
+# ship: flux_boundary=true was stored in ScenarioConfig but never wired
+# through to build_world! or the step loop.  Agents accumulated at the
+# door instead of being removed, so N agents never decreased.
+#
+# Each test exercises one level of the chain:
+#   ScenarioConfig(flux_boundary=true)
+#       → build_world!()          # must attach AbsorbingBoundary
+#       → step!() × N + apply_boundary!()  # must remove arrivals
+#       → n_agents < n_initial    # observable outcome
+# ══════════════════════════════════════════════════════════════════════════════
+
+@testset "Integration: flux_boundary pipeline" begin
+
+    @testset "flux_boundary=false → boundaries is empty" begin
+        cfg = HL.ScenarioConfig(n_agents=10, crowd_model=HL.MODEL_SFM,
+                                flux_boundary=false, rng_seed=1)
+        ctx = HL.build_world!(cfg)
+        @test isempty(ctx.boundaries)
+    end
+
+    @testset "flux_boundary=true → AbsorbingBoundary attached" begin
+        cfg = HL.ScenarioConfig(n_agents=10, crowd_model=HL.MODEL_SFM,
+                                flux_boundary=true, rng_seed=1)
+        ctx = HL.build_world!(cfg)
+        @test length(ctx.boundaries) == 1
+        @test ctx.boundaries[1] isa HL.AbsorbingBoundary{Float32}
+    end
+
+    @testset "flux_boundary=true wired for all crowd models" begin
+        for model in (HL.MODEL_SFM, HL.MODEL_ORCA, HL.MODEL_HYBRID_FSM, HL.MODEL_CSM)
+            @testset "$model" begin
+                cfg = HL.ScenarioConfig(n_agents=5, crowd_model=model,
+                                        flux_boundary=true, rng_seed=2)
+                ctx = HL.build_world!(cfg)
+                @test length(ctx.boundaries) == 1
+            end
+        end
+    end
+
+    @testset "reset_scenario! preserves boundaries" begin
+        cfg = HL.ScenarioConfig(n_agents=10, crowd_model=HL.MODEL_SFM,
+                                flux_boundary=true, rng_seed=3)
+        ctx = HL.build_world!(cfg)
+        @test length(ctx.boundaries) == 1
+        HL.reset_scenario!(ctx)
+        @test length(ctx.boundaries) == 1  # must survive reset
+        @test ctx.boundaries[1] isa HL.AbsorbingBoundary{Float32}
+    end
+
+    @testset "Evacuation: n_agents decreases with apply_boundary! (SFM)" begin
+        # Small room, wide door, few agents — guarantees some evacuate in ~600 steps
+        # Room: 6m x 4m, door: east wall width=3m (half height), arrival_radius=1.5m
+        # At v_pref=1.34m/s, dt=0.05s → ~90 steps to cross 6m without crowd effects.
+        # 600 steps (30 s sim-time) is conservative even with congestion.
+        room = HL.RoomGeometry(
+            width  = 6.0,
+            height = 4.0,
+            doors  = [HL.DoorSpec(wall=:east, center=0.5, width=3.0)],
+        )
+        cfg = HL.ScenarioConfig(
+            n_agents      = 10,
+            crowd_model   = HL.MODEL_SFM,
+            flux_boundary = true,
+            room          = room,
+            rng_seed      = 7,
+        )
+        ctx = HL.build_world!(cfg)
+        n_initial = HL.serialize_world_ctx(ctx).n_agents
+        @test n_initial == 10
+        @test !isempty(ctx.boundaries)  # boundary must be wired
+
+        for _ in 1:600
+            HL.step!(ctx.scene)
+            ctx.sim_time += ctx.config.dt
+            for bc in ctx.boundaries
+                HL.apply_boundary!(ctx.ark_world, bc)
+            end
+        end
+
+        n_after = HL.serialize_world_ctx(ctx).n_agents
+        @show n_after n_initial
+        @test n_after < n_initial
+    end
+
+    @testset "Evacuation: n_agents decreases with apply_boundary! (Hybrid-FSM)" begin
+        room = HL.RoomGeometry(
+            width  = 6.0,
+            height = 4.0,
+            doors  = [HL.DoorSpec(wall=:east, center=0.5, width=3.0)],
+        )
+        cfg = HL.ScenarioConfig(
+            n_agents      = 10,
+            crowd_model   = HL.MODEL_HYBRID_FSM,
+            flux_boundary = true,
+            room          = room,
+            rng_seed      = 8,
+        )
+        ctx = HL.build_world!(cfg)
+        n_initial = HL.serialize_world_ctx(ctx).n_agents
+
+        for _ in 1:600
+            HL.step!(ctx.scene)
+            ctx.sim_time += ctx.config.dt
+            for bc in ctx.boundaries
+                HL.apply_boundary!(ctx.ark_world, bc)
+            end
+        end
+
+        n_after = HL.serialize_world_ctx(ctx).n_agents
+        @show n_after n_initial
+        @test n_after < n_initial
+    end
+
+end
+

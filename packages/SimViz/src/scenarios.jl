@@ -71,7 +71,7 @@ function evacuation_scenario(;
     room = RoomGeometry(
         width  = 10.0,
         height = 4.0,
-        doors  = [DoorSpec(wall=:east, center=2.0, width=door_width)],
+        doors  = [DoorSpec(wall=:east, center=0.5, width=door_width)],
     )
 
     return ScenarioConfig(;
