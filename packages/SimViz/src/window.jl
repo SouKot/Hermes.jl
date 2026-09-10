@@ -319,17 +319,18 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
     )
 
     # ── DES agent scatter (M/M/1 dots) ────────────────────────────────────────
-    # Rendered on top of the crowd layer. DES dots are smaller (0.3m radius) and
-    # colored by queue state: green=waiting, blue=in_service (set in update_viz!).
+    # Rendered on top of the crowd layer. DES dots span ~0.5m radius in data
+    # units (1.0m diameter) — prominent in Demo 2's 2m-tall corridor.
+    # Color: green = waiting in queue; blue = in service (set in update_viz!).
     makie_des_pos    = map(ps  -> Point2f[Point2f(p) for p in ps],  viz.des_positions)
     makie_des_colors = map(cls -> RGBAf[RGBAf(c...) for c in cls],  viz.des_colors)
     scatter!(ax, makie_des_pos;
         color       = makie_des_colors,
         marker      = Circle,
-        markersize  = Vec2f(0.6f0),  # 0.3m radius — visually distinct from crowd dots
+        markersize  = Vec2f(1.0f0),  # 0.5m radius — clearly visible in 2m-tall corridor
         markerspace = :data,
-        strokewidth = 1.0f0,
-        strokecolor = RGBAf(1f0, 1f0, 1f0, 0.5f0),
+        strokewidth = 2.5f0,
+        strokecolor = RGBAf(1f0, 1f0, 1f0, 0.85f0),  # bright white halo
     )
 
 
@@ -431,8 +432,9 @@ function update_viz!(viz::SimVizState, ctx::ScenarioContext,
     # Color: green = waiting in queue; blue = in service.
     # desired_speed field acts as a proxy for service state:
     # default (1.34 m/s) = waiting; elevated (μ) = in service.
-    _GREEN_WAIT = (0.18f0, 0.80f0, 0.44f0, 0.95f0)  # emerald green
-    _BLUE_SVC   = (0.25f0, 0.60f0, 0.95f0, 0.95f0)  # sky blue
+    # Colors are vivid and saturated so dots stand out against the dark background.
+    _GREEN_WAIT = (0.10f0, 0.95f0, 0.40f0, 1.00f0)  # vivid lime-green (waiting)
+    _BLUE_SVC   = (0.15f0, 0.55f0, 1.00f0, 1.00f0)  # vivid electric-blue (in service)
     agents = ctx.sim_world.crowd_agents
     n_des  = length(agents)
     des_pos_buf = Vector{Pos2f}(undef, n_des)
