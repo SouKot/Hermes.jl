@@ -8,21 +8,25 @@ DataStructures = "864edb3b-99cc-5e75-8d2d-829cb0a9cfe8"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
 # ── GPU extension (optional) ──────────────────────────────────────────────────
-# SimCoreGPUExt is auto-loaded when BOTH CUDA and KernelAbstractions are present.
-# SimCore itself never depends on them — CPU-only machines are unaffected.
+# SimCoreGPUExt fires when both CUDA and KernelAbstractions are loaded.
+# SimCore itself gains zero mandatory dependencies.
+#
+# gpu_histogram is implemented via `mapreduce` per bin rather than `@atomic`
+# increments.  This avoids any dependency on Atomix and sidesteps the
+# AtomixCUDAExt / CUDACore type mismatch present in Atomix ≤1.2.1 + CUDA ≥6.
 [weakdeps]
-CUDA              = "052768ef-5323-5732-b1bb-66c8b64840ba"
+CUDA               = "052768ef-5323-5732-b1bb-66c8b64840ba"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 
 [extensions]
 SimCoreGPUExt = ["CUDA", "KernelAbstractions"]
 
 [compat]
-CUDA              = "4, 5, 6"
-DataStructures    = "0.18, 0.19"
+CUDA               = "4, 5, 6"
+DataStructures     = "0.18, 0.19"
 KernelAbstractions = "0.9"
-StaticArrays      = "1"
-julia             = "1.10"
+StaticArrays       = "1"
+julia              = "1.10"
 
 [extras]
 Aqua               = "4c88cf16-eb10-579e-8560-4a9242c79595"
