@@ -44,7 +44,10 @@ using LinearAlgebra: norm
 using StaticArrays: SVector
 
 using Ark: World, new_entity!, Query
-using SimCore: SimWorld, SimStats, CrowdAgent, add_zone!, new_entity_id!
+using SimCore: SimWorld, SimStats, CrowdAgent, add_zone!, new_entity_id!,
+                StatsPipeline, WARMUP_NONE,
+                record_arrival!, record_departure!, record_queue_length!,
+                record_utilization!, record_idle!, sim_summary
 using KernelAbstractions: CPU
 using SimCrowd:
     Position, Velocity, Force, Goal, WallSegment,
@@ -301,17 +304,21 @@ Mutated in-place by `reset_scenario!`. GLMakie Observables in `SimVizState`
 subscribe to slices of this object.
 """
 mutable struct ScenarioContext
-    ark_world     :: World
-    sim_world     :: SimWorld
-    scene         :: SimScene
-    config        :: ScenarioConfig
-    sim_time      :: Float64
-    boundaries    :: Vector{BoundaryCondition{Float32}}
-    _fired_events :: Set{Int}                                 # indices into config.events
-    _mm1_fel      :: Vector{Tuple{Float64, Symbol, UInt64}}  # (time, :arrival/:service, id)
-    _mm1_lambda   :: Float64   # M/M/1 arrival rate (0.0 = not active)
-    _mm1_mu       :: Float64   # M/M/1 service rate
-    _mm1_rng      :: MersenneTwister
+    ark_world           :: World
+    sim_world           :: SimWorld
+    scene               :: SimScene
+    config              :: ScenarioConfig
+    sim_time            :: Float64
+    boundaries          :: Vector{BoundaryCondition{Float32}}
+    _fired_events       :: Set{Int}                                 # indices into config.events
+    _mm1_fel            :: Vector{Tuple{Float64, Symbol, UInt64}}  # (time, :arrival/:service, id)
+    _mm1_lambda         :: Float64   # M/M/1 arrival rate (0.0 = not active)
+    _mm1_mu             :: Float64   # M/M/1 service rate
+    _mm1_rng            :: MersenneTwister
+    # Sprint 4I: StatsPipeline for accurate queuing stats
+    _mm1_pipeline         :: StatsPipeline               # composable stats collector
+    _mm1_arrival_times    :: Dict{UInt64, Float64}       # system-entry time (for sojourn)
+    _mm1_prev_event_time  :: Float64                     # for queue-length time-weighting
 end
 
 # ── Internal: SimConfig builder ───────────────────────────────────────────────
@@ -539,7 +546,8 @@ function _build_sfm_world(config::ScenarioConfig, ::Type{F},
         BoundaryCondition{Float32}[AbsorbingBoundary(0.75f0)] :
         BoundaryCondition{Float32}[]
     return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs,
-                           Set{Int}(), Tuple{Float64,Symbol,UInt64}[], 0.0, 0.0, MersenneTwister())
+                           Set{Int}(), Tuple{Float64,Symbol,UInt64}[], 0.0, 0.0, MersenneTwister(),
+                           StatsPipeline(warmup=WARMUP_NONE), Dict{UInt64,Float64}(), 0.0)
 end
 
 function _build_orca_world(config::ScenarioConfig, ::Type{F},
@@ -585,7 +593,8 @@ function _build_orca_world(config::ScenarioConfig, ::Type{F},
         BoundaryCondition{Float32}[AbsorbingBoundary(0.75f0)] :
         BoundaryCondition{Float32}[]
     return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs,
-                           Set{Int}(), Tuple{Float64,Symbol,UInt64}[], 0.0, 0.0, MersenneTwister())
+                           Set{Int}(), Tuple{Float64,Symbol,UInt64}[], 0.0, 0.0, MersenneTwister(),
+                           StatsPipeline(warmup=WARMUP_NONE), Dict{UInt64,Float64}(), 0.0)
 end
 
 
@@ -645,7 +654,8 @@ function _build_hybrid_world(config::ScenarioConfig, ::Type{F},
         BoundaryCondition{Float32}[AbsorbingBoundary(0.75f0)] :
         BoundaryCondition{Float32}[]
     return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs,
-                           Set{Int}(), Tuple{Float64,Symbol,UInt64}[], 0.0, 0.0, MersenneTwister())
+                           Set{Int}(), Tuple{Float64,Symbol,UInt64}[], 0.0, 0.0, MersenneTwister(),
+                           StatsPipeline(warmup=WARMUP_NONE), Dict{UInt64,Float64}(), 0.0)
 end
 
 function _build_csm_world(config::ScenarioConfig, ::Type{F},
@@ -691,7 +701,8 @@ function _build_csm_world(config::ScenarioConfig, ::Type{F},
         BoundaryCondition{Float32}[AbsorbingBoundary(0.75f0)] :
         BoundaryCondition{Float32}[]
     return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs,
-                           Set{Int}(), Tuple{Float64,Symbol,UInt64}[], 0.0, 0.0, MersenneTwister())
+                           Set{Int}(), Tuple{Float64,Symbol,UInt64}[], 0.0, 0.0, MersenneTwister(),
+                           StatsPipeline(warmup=WARMUP_NONE), Dict{UInt64,Float64}(), 0.0)
 end
 
 # ── build_world! ─────────────────────────────────────────────────────────────
@@ -754,9 +765,13 @@ function reset_scenario!(ctx::ScenarioContext;
     ctx.boundaries       = new_ctx.boundaries
     empty!(ctx._fired_events)
     empty!(ctx._mm1_fel)
-    ctx._mm1_lambda      = 0.0
-    ctx._mm1_mu          = 0.0
-    ctx._mm1_rng         = MersenneTwister()
+    ctx._mm1_lambda             = 0.0
+    ctx._mm1_mu                 = 0.0
+    ctx._mm1_rng                = MersenneTwister()
+    # Sprint 4I: reset StatsPipeline and sojourn tracking
+    ctx._mm1_pipeline           = StatsPipeline(warmup=WARMUP_NONE)
+    empty!(ctx._mm1_arrival_times)
+    ctx._mm1_prev_event_time    = 0.0
     return ctx
 end
 
@@ -884,13 +899,25 @@ function _tick_mm1!(ctx::ScenarioContext, t::Float64)
             needs_sort = true
 
             # 2. Assign ID and register customer in sim_world
-            cid = new_entity_id!(ctx.sim_world)
+            cid  = new_entity_id!(ctx.sim_world)
             zone = ctx.sim_world.zone_states[1]
 
-            # Record arrival
+            # ── Sprint 4I: time-weight queue-length observation before arrival ──
+            dt_since = ev_t - ctx._mm1_prev_event_time
+            n_sys    = length(ctx.sim_world.crowd_agents)   # before new customer joins
+            n_q      = zone.queue_length
+            server_was_busy = zone.busy_servers > 0
+            record_queue_length!(ctx._mm1_pipeline, n_sys, n_q, dt_since)
+            server_was_busy ? record_utilization!(ctx._mm1_pipeline, dt_since) :
+                              record_idle!(ctx._mm1_pipeline, dt_since)
+            ctx._mm1_prev_event_time = ev_t
+
+            # ── Record arrival to pipeline ────────────────────────────────────
+            record_arrival!(ctx._mm1_pipeline)
+            # Also update legacy SimStats for backward-compat stats panel raw counts
             ctx.sim_world.stats.total_arrivals += 1
             ctx.sim_world.stats.total_events   += 1
-            ctx.sim_world.entry_times[cid]      = ev_t
+            ctx._mm1_arrival_times[cid]         = ev_t   # system-entry time for sojourn
 
             if zone.busy_servers < zone.num_servers
                 # Server free → enter service immediately
@@ -898,7 +925,7 @@ function _tick_mm1!(ctx::ScenarioContext, t::Float64)
                 t_svc_end = ev_t + randexp(ctx._mm1_rng) / μ
                 push!(ctx._mm1_fel, (t_svc_end, :service_end, cid))
                 needs_sort = true
-                ctx.sim_world.entry_times[cid] = ev_t  # service start time (for ρ)
+                ctx.sim_world.entry_times[cid] = ev_t   # service-start time (for ρ fallback)
                 # Place at service position
                 svc_pos = SVector{2,Float32}(x_service, y_mid)
                 agent = CrowdAgent(svc_pos, svc_pos; desired_speed=Float32(μ))
@@ -918,17 +945,38 @@ function _tick_mm1!(ctx::ScenarioContext, t::Float64)
         elseif ev_type === :service_end
             # Customer finishes service
             zone = ctx.sim_world.zone_states[1]
+
+            # ── Sprint 4I: time-weight queue-length observation before departure ─
+            dt_since = ev_t - ctx._mm1_prev_event_time
+            n_sys    = length(ctx.sim_world.crowd_agents)   # before removal
+            n_q      = zone.queue_length
+            record_queue_length!(ctx._mm1_pipeline, n_sys, n_q, dt_since)
+            record_utilization!(ctx._mm1_pipeline, dt_since)   # server was busy
+            ctx._mm1_prev_event_time = ev_t
+
             zone.busy_servers = max(0, zone.busy_servers - 1)
 
-            # Record stats — busy_time = service duration (NOT sojourn)
+            # ── Record departure to pipeline with correct sojourn & wait ────────
+            sojourn_time = if haskey(ctx._mm1_arrival_times, ev_id)
+                ev_t - ctx._mm1_arrival_times[ev_id]
+            else
+                0.0
+            end
+            service_duration = if haskey(ctx.sim_world.entry_times, ev_id)
+                ev_t - ctx.sim_world.entry_times[ev_id]
+            else
+                0.0
+            end
+            wait_time = max(0.0, sojourn_time - service_duration)
+            record_departure!(ctx._mm1_pipeline, wait_time, sojourn_time)
+
+            # Legacy SimStats updates for backward-compat raw counts
             ctx.sim_world.stats.total_departures += 1
             ctx.sim_world.stats.total_events     += 1
-            if haskey(ctx.sim_world.entry_times, ev_id)
-                service_duration = ev_t - ctx.sim_world.entry_times[ev_id]
-                ctx.sim_world.stats.busy_time += service_duration
-                delete!(ctx.sim_world.entry_times, ev_id)
-            end
-            delete!(ctx.sim_world.crowd_agents, ev_id)
+            ctx.sim_world.stats.busy_time        += service_duration
+            delete!(ctx._mm1_arrival_times,         ev_id)
+            delete!(ctx.sim_world.entry_times,       ev_id)
+            delete!(ctx.sim_world.crowd_agents,      ev_id)
 
             # Serve next in queue (if any)
             if zone.queue_length > 0
@@ -938,7 +986,7 @@ function _tick_mm1!(ctx::ScenarioContext, t::Float64)
                 t_svc_end = ev_t + randexp(ctx._mm1_rng) / μ
                 push!(ctx._mm1_fel, (t_svc_end, :service_end, next_id))
                 needs_sort = true
-                ctx.sim_world.entry_times[next_id] = ev_t  # service start time (for ρ)
+                ctx.sim_world.entry_times[next_id] = ev_t  # service-start time
                 # Move to service position
                 if haskey(ctx.sim_world.crowd_agents, next_id)
                     svc_pos = SVector{2,Float32}(x_service, y_mid)
@@ -982,14 +1030,23 @@ function serialize_world_ctx(ctx::ScenarioContext) :: WorldSnapshot
     # Base serialization from Ark ECS
     snap = serialize_world(ctx.ark_world, ctx.sim_time)
 
-    # Overlay SimCore stats (populated in 4B DES scenarios)
-    sc   = ctx.sim_world.stats
+    # ── Sprint 4I: pull stats from StatsPipeline (composable, warmup-aware) ─────
+    sc   = ctx.sim_world.stats          # legacy SimStats (raw counters)
+    psm  = sim_summary(ctx._mm1_pipeline)  # Sprint 4I: accurate queuing metrics
     stats_snap = (
+        # ─ Legacy raw counters (backward compat with stats panel) ─────────────
         total_events     = sc.total_events,
         total_arrivals   = sc.total_arrivals,
         total_departures = sc.total_departures,
         busy_time        = sc.busy_time,
         elapsed_sim_time = ctx.sim_time,
+        # ─ Sprint 4I: accurate pipeline metrics ───────────────────────────────
+        W     = psm.W,           # mean sojourn time (s)
+        Wq    = psm.Wq,          # mean wait in queue (s)
+        L     = psm.L,           # mean system size (Little's Law)
+        Lq    = psm.Lq,          # mean queue size
+        rho   = psm.utilization, # server utilization (time-weighted)
+        throughput = psm.throughput,  # λ_eff (departures/s)
     )
 
     return (

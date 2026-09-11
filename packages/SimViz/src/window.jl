@@ -95,24 +95,37 @@ function _build_stats_text(snap::WorldSnapshot, fps_str::String,
     ρ_avg = snap.n_agents > 0 ?
         round(sum(snap.local_densities) / snap.n_agents, digits=2) : 0.00
 
-    # ── Server utilisation ρ = busy_time / elapsed_sim_time
-    rho_util = s.elapsed_sim_time > 0.0 ?
-        round(s.busy_time / s.elapsed_sim_time, digits=3) : 0.000
+    # ── Current system state from visualization (exact head count) ──────────
+    L_now       = snap.n_des_agents           # agents currently in system
+    server_busy = L_now > 0
+    n_queue_now = max(0, L_now - (server_busy ? 1 : 0))
+    n_svc_now   = server_busy ? 1 : 0
 
-    # ── Derived M/M/1 queue metrics (from current snapshot)
-    # n_des_agents = L = total in system (queue + server)
-    # server is busy iff at least one agent is in service (n_des - n_queue = 1)
-    L      = snap.n_des_agents                    # mean system length (current)
-    server_busy = L > 0                           # at least one agent present
-    n_queue = max(0, L - (server_busy ? 1 : 0))  # waiting in queue
-    n_svc   = server_busy ? 1 : 0                 # currently being served
+    # ── Sprint 4I: StatsPipeline metrics (accurate time-weighted estimates) ─
+    has_pipeline = hasproperty(s, :W)
+    W_str  = has_pipeline && !isnan(s.W)  ? string(round(s.W,  digits=2)) : "-"
+    Wq_str = has_pipeline && !isnan(s.Wq) ? string(round(s.Wq, digits=2)) : "-"
+    L_str  = has_pipeline && !isnan(s.L)  ? string(round(s.L,  digits=2)) : string(L_now)
+    Lq_str = has_pipeline && !isnan(s.Lq) ? string(round(s.Lq, digits=2)) : "-"
 
-    # Throughput (departures per sim-second)
-    λ_eff = s.elapsed_sim_time > 0.0 ?
-        round(s.total_departures / s.elapsed_sim_time, digits=3) : 0.000
+    # ρ: prefer pipeline (time-weighted), fall back to busy_time / elapsed
+    rho_str = if has_pipeline && !isnan(s.rho)
+        string(round(s.rho, digits=3))
+    elseif s.elapsed_sim_time > 0.0
+        string(round(s.busy_time / s.elapsed_sim_time, digits=3))
+    else
+        "0.000"
+    end
 
-    # Mean sojourn time estimate W = L / λ_eff  (Little's Law)
-    W_est = λ_eff > 0.0 ? string(round(L / λ_eff, digits=2)) : "-"
+    # λ_eff: prefer pipeline throughput
+    λ_eff = if has_pipeline && !isnan(s.throughput) && s.throughput > 0
+        s.throughput
+    elseif s.elapsed_sim_time > 0.0
+        s.total_departures / s.elapsed_sim_time
+    else
+        0.0
+    end
+    λ_str = string(round(λ_eff, digits=3))
 
     return """
 Model:    $(model_name)
@@ -121,26 +134,31 @@ t =       $(round(snap.sim_time, digits=1)) s
 $(fps_str)
 
 ── System State ─────
-[SVC] In service: $(n_svc)  (blue)
-[QUE] In queue:   $(n_queue)  (green)
-      Total (L):  $(L)
+[SVC] In service: $(n_svc_now)  (blue)
+[QUE] In queue:   $(n_queue_now)  (green)
+      Total now:  $(L_now)
 
 ── Event Counts ─────
 Arrived (total): $(s.total_arrivals)
 Departed (done): $(s.total_departures)
-In system now:   $(L)  [= arr − dep]
 Events fired:    $(s.total_events)
 
 ── Performance ──────
-ρ server:  $(rho_util)  [busy frac]
-λ_eff:     $(λ_eff) /s  [throughput]
-W (est):   $(W_est) s   [sojourn]
+ρ server:  $(rho_str)  [busy frac]
+λ_eff:     $(λ_str) /s
+
+── Queue Metrics ────
+W  (sojourn): $(W_str) s
+Wq (wait):    $(Wq_str) s
+L  (sys avg): $(L_str)
+Lq (q avg):   $(Lq_str)
 
 ── FSM Density ──────
 ρ̄ local:  $(ρ_avg) ped/m²
 N ABM:    $(snap.n_agents)
 """
 end
+
 
 # ── create_window! ─────────────────────────────────────────────────────────────
 

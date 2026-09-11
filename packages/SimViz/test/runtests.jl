@@ -20,7 +20,10 @@ module HeadlessLayer
     using Ark: World, Query
     using Observables: Observable
     using StaticArrays: SVector
-    using SimCore: SimWorld, SimStats
+    using SimCore: SimWorld, SimStats, CrowdAgent, add_zone!, new_entity_id!,
+                   StatsPipeline, WARMUP_NONE,
+                   record_arrival!, record_departure!, record_queue_length!,
+                   record_utilization!, record_idle!, sim_summary
     using SimCrowd:
         Position, Velocity, Force, Goal, WallSegment,
         AgentGeometry, MotionParams, SFMParams, ORCAParams,
@@ -96,13 +99,23 @@ end
         # sim_time stubbed at 0.0 initially
         @test snap.sim_time === 0.0
 
-        # stats sub-NT must have these 5 fields
+        # stats sub-NT must have these 5 legacy + 6 Sprint 4I pipeline fields
         s = snap.stats
         @test haskey(s, :total_events)
         @test haskey(s, :total_arrivals)
         @test haskey(s, :total_departures)
         @test haskey(s, :busy_time)
         @test haskey(s, :elapsed_sim_time)
+        # Sprint 4I: pipeline fields (NaN sentinel when pipeline not active)
+        @test haskey(s, :W)
+        @test haskey(s, :Wq)
+        @test haskey(s, :L)
+        @test haskey(s, :Lq)
+        @test haskey(s, :rho)
+        @test haskey(s, :throughput)
+        # Non-DES world: pipeline fields should be NaN
+        @test isnan(s.W)
+        @test isnan(s.Wq)
     end
 
     @testset "Field types (ORCA world)" begin

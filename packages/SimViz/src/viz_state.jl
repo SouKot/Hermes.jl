@@ -136,7 +136,27 @@ they become the WebSocket wire format in Phase 7 (Godot JSON/MsgPack).
 | `local_densities` | `Vector{Float32}`            | ρ_ema (ped/m²) from AgentFSMState, else 0f0  |
 | `n_agents`        | `Int`                        | Number of crowd agents this frame            |
 | `n_des_agents`    | `Int`                        | DES agents (populated in 4B M/M/1 demo)      |
-| `stats`           | `NamedTuple`                 | Flat stats from SimCore.SimWorld (if wired)  |
+| `stats`           | `NamedTuple`                 | See stats sub-fields below                   |
+
+### `stats` sub-NamedTuple fields
+
+| Key               | Type      | Notes                                                      |
+|:----------------- |:--------- |:---------------------------------------------------------- |
+| `total_events`    | `Int`     | Raw event count (legacy SimStats)                          |
+| `total_arrivals`  | `Int`     | Total arrivals since reset                                 |
+| `total_departures`| `Int`     | Total departures since reset                               |
+| `busy_time`       | `Float64` | Cumulative service time (legacy)                           |
+| `elapsed_sim_time`| `Float64` | Simulated seconds elapsed                                  |
+| `W`               | `Float64` | Mean sojourn time (s) — `NaN` if pipeline not yet active   |
+| `Wq`              | `Float64` | Mean queue wait time (s) — `NaN` if pipeline not active    |
+| `L`               | `Float64` | Time-weighted mean system size — `NaN` if not active       |
+| `Lq`              | `Float64` | Time-weighted mean queue size — `NaN` if not active        |
+| `rho`             | `Float64` | Server utilization ∈ [0,1] — `NaN` if not active          |
+| `throughput`      | `Float64` | Effective λ (departures/s) — `NaN` if not active           |
+
+The Sprint 4I fields (W, Wq, L, Lq, rho, throughput) are populated by
+`serialize_world_ctx` via `sim_summary(ctx._mm1_pipeline)`. For non-DES
+scenarios or before the first departure, they are `NaN`.
 
 !!! note "Phase 7 field freeze"
     Do NOT rename, reorder, or change the types of these fields without
@@ -157,6 +177,13 @@ const WorldSnapshot = @NamedTuple begin
         total_departures :: Int
         busy_time        :: Float64
         elapsed_sim_time :: Float64
+        # Sprint 4I: StatsPipeline metrics (NaN = pipeline not yet active)
+        W            :: Float64   # mean sojourn time (s)
+        Wq           :: Float64   # mean wait in queue (s)
+        L            :: Float64   # mean system length (time-weighted)
+        Lq           :: Float64   # mean queue length (time-weighted)
+        rho          :: Float64   # server utilization (time-weighted)
+        throughput   :: Float64   # λ_eff: departures/s
     end
 end
 
@@ -249,12 +276,19 @@ function serialize_world(world::World, sim_time::Float64 = 0.0) :: WorldSnapshot
     panic_levels_buf = zeros(F, n_agents)
 
     # ── Stats: stubbed — requires SimCore.SimWorld.stats bridge (4A-03) ──────
+    # Sprint 4I: pipeline fields default to NaN (inactive until MM1 queue fires)
     stats_snap = (
         total_events     = 0,
         total_arrivals   = 0,
         total_departures = 0,
         busy_time        = 0.0,
         elapsed_sim_time = sim_time,
+        W            = NaN,
+        Wq           = NaN,
+        L            = NaN,
+        Lq           = NaN,
+        rho          = NaN,
+        throughput   = NaN,
     )
 
     return (
