@@ -78,7 +78,9 @@ export StatsPipeline, add_collector!, reset!
 export record_idle!   # new — not in legacy SimStats
 
 # ── Sprint 4I: Analysis ───────────────────────────────────────────────────────
-export check_littles_law, batch_means_ci, replicate
+export check_littles_law, batch_means_ci, replicate, replicate_parallel
+# GPU extension: gpu_mean_var, batch_means_ci(CuArray), gpu_histogram
+# Auto-loaded via SimCoreGPUExt when CUDA + KernelAbstractions are in env.
 
 end
 

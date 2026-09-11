@@ -878,3 +878,122 @@ end  # @testset "SimCore"
     end
 
 end  # @testset "Sprint 4I — StatsPipeline"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Task 22 — GPU Post-Hoc Statistics (SimCoreGPUExt)
+# Tests are conditional on CUDA.functional() — skipped on CPU-only machines.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "Task 22 — GPU Extension (SimCoreGPUExt)" begin
+    cuda_ok = false
+    GPUExt  = nothing   # will be set to the resolved extension module if available
+    try
+        using CUDA: CUDA
+        using KernelAbstractions: KernelAbstractions
+        if CUDA.functional()
+            # Package extensions are submodules of the *parent* package, not importable
+            # by name from Main. Retrieve via Base.get_extension.
+            GPUExt = Base.get_extension(SimCore, :SimCoreGPUExt)
+            cuda_ok = GPUExt !== nothing
+        end
+    catch
+        cuda_ok = false
+    end
+
+    if !cuda_ok
+        @info "Task 22 GPU tests skipped — no CUDA device or SimCoreGPUExt not loaded."
+        @test true   # sentinel: task passes vacuously on CPU-only machines
+    else
+        @info "Task 22 GPU tests running — CUDA device available and SimCoreGPUExt loaded."
+
+        # ── gpu_mean_var ─────────────────────────────────────────────────────
+        @testset "gpu_mean_var" begin
+            rng  = Random.MersenneTwister(1234)
+            data = CUDA.CuArray(randn(rng, Float64, 100_000) .+ 5.0)
+            μ, var = GPUExt.gpu_mean_var(data)
+            @test abs(μ   - 5.0) < 0.05
+            @test abs(var - 1.0) < 0.05
+
+            empty_arr = CUDA.CuArray(Float64[])
+            μ_e, v_e = GPUExt.gpu_mean_var(empty_arr)
+            @test isnan(μ_e) && isnan(v_e)
+        end
+
+        # ── batch_means_ci(CuArray) — dispatches via SimCore overload ─────────
+        @testset "batch_means_ci(CuArray)" begin
+            rng     = Random.MersenneTwister(42)
+            samples = CUDA.CuArray(-log.(rand(rng, Float64, 10_000)) .* 5.0)
+            ci = batch_means_ci(samples; k=30)   # dispatches to GPU overload
+
+            @test !isnan(ci.mean)
+            @test 4.0 <= ci.mean <= 6.0
+            @test ci.ci_lo < ci.mean < ci.ci_hi
+            @test ci.n_batches == 30
+            @test ci.batch_size == 333
+
+            tiny   = CUDA.CuArray(Float64[1.0, 2.0])
+            ci_bad = batch_means_ci(tiny; k=30)
+            @test isnan(ci_bad.mean)
+        end
+
+        # ── gpu_histogram ─────────────────────────────────────────────────────
+        @testset "gpu_histogram" begin
+            rng           = Random.MersenneTwister(99)
+            samples       = CUDA.CuArray(rand(rng, Float64, 5_000) .* 10.0)
+            edges, counts = GPUExt.gpu_histogram(samples, 10)
+
+            @test length(edges)  == 11
+            @test length(counts) == 10
+            @test sum(counts)    == 5_000
+            for c in counts
+                @test 350 <= c <= 650
+            end
+            @test_throws ArgumentError GPUExt.gpu_histogram(samples, 0)
+            @test_throws ArgumentError GPUExt.gpu_histogram(samples, 10; lo=5.0, hi=2.0)
+        end
+    end
+end  # @testset "Task 22"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Task 23 — replicate_parallel
+# CPU tests always run.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "Task 23 — replicate_parallel" begin
+    @testset "parallel CI brackets true mean" begin
+        result = replicate_parallel(5; seed_offset=10) do seed
+            (W=Float64(seed), utilization=0.7, warmup_complete=true)
+        end
+        # seeds 11..15 → W values 11,12,13,14,15 → mean = 13.0
+        @test haskey(result, :W)
+        @test result.W.mean ≈ 13.0
+        @test result.W.ci_lo < result.W.mean < result.W.ci_hi
+        @test result.W.std_dev > 0.0
+        @test !haskey(result, :warmup_complete)
+    end
+
+    @testset "argument guards" begin
+        @test_throws ArgumentError replicate_parallel(1) do seed; (W=1.0,); end
+    end
+
+    @testset "thread-safe per-task pipelines" begin
+        result = replicate_parallel(4; seed_offset=0) do seed
+            p   = StatsPipeline(warmup=WARMUP_NONE)
+            rng = Random.MersenneTwister(seed)
+            for _ in 1:1_000
+                record_arrival!(p)
+                sojourn = -log(rand(rng)) / 1.0
+                record_departure!(p, 0.0, sojourn)
+            end
+            sim_summary(p)
+        end
+        @test haskey(result, :W)
+        @test 0.8 <= result.W.mean <= 1.2
+        @test result.W.ci_lo < result.W.mean < result.W.ci_hi
+    end
+
+    @testset "Tier-2 oversubscription warning" begin
+        @test_logs (:warn, r"replicate_parallel") replicate_parallel(
+            2; n_zones_per_rep=9999) do seed; (W=1.0,); end
+    end
+end  # @testset "Task 23"
