@@ -122,7 +122,8 @@ end
 # ── 4B-02: M/M/1 Queue Scenario ──────────────────────────────────────────────
 
 """
-    mm1_scenario(; lambda=0.9, mu=1.0, rng_seed=0) :: ScenarioConfig
+    mm1_scenario(; lambda=0.9, mu=1.0, warmup_mode=:fixed, warmup_n=50,
+                   rng_seed=0) :: ScenarioConfig
 
 A pure-DES M/M/1 queue visualized as colored dots in a narrow corridor.
 
@@ -142,6 +143,8 @@ A pure-DES M/M/1 queue visualized as colored dots in a narrow corridor.
 # Parameters
 - `lambda`: arrival rate (ped/s); must satisfy `lambda < mu` for stability
 - `mu`: service rate (ped/s)
+- `warmup_mode`: `:none`, `:fixed`, or `:auto` for queue-metric warmup policy
+- `warmup_n`: departures to discard when `warmup_mode=:fixed` (ignored otherwise)
 - At `lambda=0.9, mu=1.0`: ρ=0.9, theoretical L≈9.0
 
 # Stability warning
@@ -150,6 +153,8 @@ If `lambda >= mu`, the queue is unstable (grows without bound).
 function mm1_scenario(;
         lambda   :: Float64 = 0.9,
         mu       :: Float64 = 1.0,
+    warmup_mode::Symbol = :fixed,
+    warmup_n::Int = 50,
         rng_seed :: Int     = 0,
         kwargs...,
     ) :: ScenarioConfig
@@ -165,7 +170,7 @@ function mm1_scenario(;
     mm1_event = ScheduledEvent(
         time   = 0.0,
         type   = :start_mm1_queue,
-        params = (lambda=lambda, mu=mu),
+        params = (lambda=lambda, mu=mu, warmup_mode=warmup_mode, warmup_n=warmup_n),
     )
 
     return ScenarioConfig(;
@@ -176,7 +181,7 @@ function mm1_scenario(;
         dt          = 0.05,
         rng_seed    = rng_seed,
         label       = "M/M/1 Queue Demo",
-        description = "DES M/M/1 queue: λ=$lambda ped/s, μ=$mu ped/s, ρ=$(round(lambda/mu, digits=2))",
+        description = "DES M/M/1 queue: λ=$lambda ped/s, μ=$mu ped/s, ρ=$(round(lambda/mu, digits=2)), warmup=$warmup_mode$(warmup_mode == :fixed ? "($warmup_n)" : "")",
         kwargs...,
     )
 end
@@ -189,7 +194,7 @@ Open a GLMakie window showing the M/M/1 queue visualization.
 # What to observe
 - Colored dots appear in the corridor at rate `lambda`
 - One dot at a time enters service (rightmost position, blue)
-- Queue depth fluctuates; after warm-up it converges to L ≈ λ/(μ-λ)
+- Queue depth fluctuates; after warm-up it converges to Lq ≈ λ²/(μ(μ-λ))
 - Stats panel shows: `Arrivals`, `Departures`, `ρ server = busy_time/t`
 """
 function run_mm1_demo!(; kwargs...)

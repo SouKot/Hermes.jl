@@ -7,33 +7,39 @@ authors = ["Sourabh Kotnala <sauravkotnala@gmail.com>"]
 DataStructures = "864edb3b-99cc-5e75-8d2d-829cb0a9cfe8"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
-# ── GPU extension (optional) ──────────────────────────────────────────────────
-# SimCoreGPUExt fires when both CUDA and KernelAbstractions are loaded.
+# ── Accelerated statistics extension (optional) ──────────────────────────────
+# SimCoreGPUExt fires when AcceleratedKernels and KernelAbstractions are loaded.
 # SimCore itself gains zero mandatory dependencies.
 #
-# gpu_histogram is implemented via `mapreduce` per bin rather than `@atomic`
-# increments.  This avoids any dependency on Atomix and sidesteps the
-# AtomixCUDAExt / CUDACore type mismatch present in Atomix ≤1.2.1 + CUDA ≥6.
+# AcceleratedKernels.jl (AK) is the single cross-architecture parallel interface:
+#   CPU threads → KA CPU backend (Threads-based, default for plain Array)
+#   CUDA/NVIDIA → AK CUDAExt (user must also load CUDA.jl)
+#   ROCm/AMD    → AK AMDGPUExt (user must also load AMDGPU.jl)
+#   Metal/Apple → AK MetalExt  (user must also load Metal.jl)
+#
+# AK.mapreduce(f, op, arr) is the unified call — same code, any backend.
+# No Atomix dependency leaks into SimCore; AK handles its own atomics.
 [weakdeps]
-CUDA               = "052768ef-5323-5732-b1bb-66c8b64840ba"
+AcceleratedKernels = "6a4ca0a5-0e36-4168-a932-d9be78d558f1"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 
 [extensions]
-SimCoreGPUExt = ["CUDA", "KernelAbstractions"]
+SimCoreGPUExt = ["AcceleratedKernels", "KernelAbstractions"]
 
 [compat]
-CUDA               = "4, 5, 6"
+AcceleratedKernels = "0.1, 0.2, 0.3, 0.4"
 DataStructures     = "0.18, 0.19"
 KernelAbstractions = "0.9"
 StaticArrays       = "1"
 julia              = "1.10"
 
 [extras]
+AcceleratedKernels = "6a4ca0a5-0e36-4168-a932-d9be78d558f1"
 Aqua               = "4c88cf16-eb10-579e-8560-4a9242c79595"
-CUDA               = "052768ef-5323-5732-b1bb-66c8b64840ba"
+CUDA               = "052768ef-5323-5732-b1bb-66c8b64840ba"  # optional: load to use CUDA backend
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 Random             = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Test               = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Aqua", "CUDA", "KernelAbstractions", "Random", "Test"]
+test = ["AcceleratedKernels", "Aqua", "CUDA", "KernelAbstractions", "Random", "Test"]

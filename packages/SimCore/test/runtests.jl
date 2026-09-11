@@ -880,78 +880,152 @@ end  # @testset "SimCore"
 end  # @testset "Sprint 4I — StatsPipeline"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Task 22 — GPU Post-Hoc Statistics (SimCoreGPUExt)
-# Tests are conditional on CUDA.functional() — skipped on CPU-only machines.
+# Task 22 — Accelerated Post-Hoc Statistics (SimCoreGPUExt via AcceleratedKernels)
+#
+# Architecture: SimCoreGPUExt fires when AcceleratedKernels + KernelAbstractions
+# are loaded.  AK dispatches to the correct backend based on the array type:
+#   Vector{Float64}  → KA CPU backend (multithreaded, no GPU needed)
+#   CuArray{Float64} → CUDA/NVIDIA  (if CUDA.jl loaded + device present)
+#   ROCArray         → ROCm/AMD     (if AMDGPU.jl loaded)
+#   MtlArray         → Metal/Apple  (if Metal.jl loaded)
+#
+# CPU-threaded tests ALWAYS run.  GPU path is conditional (CUDA, ROCm, Metal).
 # ─────────────────────────────────────────────────────────────────────────────
 
-@testset "Task 22 — GPU Extension (SimCoreGPUExt)" begin
-    cuda_ok = false
-    GPUExt  = nothing   # will be set to the resolved extension module if available
+@testset "Task 22 — Accelerated Extension (SimCoreGPUExt)" begin
+
+    # ── Load AcceleratedKernels to fire the extension ─────────────────────────
+    # The extension triggers on AcceleratedKernels + KernelAbstractions.
+    # No GPU hardware required for this step.
+    ak_loaded = false
     try
-        using CUDA: CUDA
+        using AcceleratedKernels: AcceleratedKernels
         using KernelAbstractions: KernelAbstractions
-        if CUDA.functional()
-            # Package extensions are submodules of the *parent* package, not importable
-            # by name from Main. Retrieve via Base.get_extension.
-            GPUExt = Base.get_extension(SimCore, :SimCoreGPUExt)
-            cuda_ok = GPUExt !== nothing
-        end
+        ak_loaded = true
     catch
-        cuda_ok = false
+        ak_loaded = false
     end
 
-    if !cuda_ok
-        @info "Task 22 GPU tests skipped — no CUDA device or SimCoreGPUExt not loaded."
-        @test true   # sentinel: task passes vacuously on CPU-only machines
+    if !ak_loaded
+        @info "Task 22 skipped — AcceleratedKernels not in environment."
+        @test true   # sentinel
     else
-        @info "Task 22 GPU tests running — CUDA device available and SimCoreGPUExt loaded."
+        GPUExt = Base.get_extension(SimCore, :SimCoreGPUExt)
+        @test GPUExt !== nothing   # extension must load when AK + KA are present
+        @info "SimCoreGPUExt loaded: $(GPUExt)"
 
-        # ── gpu_mean_var ─────────────────────────────────────────────────────
-        @testset "gpu_mean_var" begin
+        # ── 1. gpu_mean_var — CPU-threaded (always runs) ──────────────────────
+        @testset "gpu_mean_var — CPU Array (multithreaded)" begin
             rng  = Random.MersenneTwister(1234)
-            data = CUDA.CuArray(randn(rng, Float64, 100_000) .+ 5.0)
-            μ, var = GPUExt.gpu_mean_var(data)
-            @test abs(μ   - 5.0) < 0.05
-            @test abs(var - 1.0) < 0.05
+            data = randn(rng, Float64, 100_000) .+ 5.0   # plain Vector — KA CPU backend
 
-            empty_arr = CUDA.CuArray(Float64[])
-            μ_e, v_e = GPUExt.gpu_mean_var(empty_arr)
+            μ, var = gpu_mean_var(data)
+
+            @test abs(μ   - 5.0) < 0.05   # mean ≈ 5
+            @test abs(var - 1.0) < 0.05   # variance ≈ 1
+
+            # Edge cases
+            μ_e, v_e = gpu_mean_var(Float64[])
             @test isnan(μ_e) && isnan(v_e)
+
+            μ_1, v_1 = gpu_mean_var([3.14])
+            @test μ_1 ≈ 3.14 && isnan(v_1)
         end
 
-        # ── batch_means_ci(CuArray) — dispatches via SimCore overload ─────────
-        @testset "batch_means_ci(CuArray)" begin
+        # ── 2. batch_means_ci(AbstractArray) — CPU-threaded (always runs) ─────
+        @testset "batch_means_ci — CPU Array (AK path)" begin
             rng     = Random.MersenneTwister(42)
-            samples = CUDA.CuArray(-log.(rand(rng, Float64, 10_000)) .* 5.0)
-            ci = batch_means_ci(samples; k=30)   # dispatches to GPU overload
+            # Exponential samples: mean = 5.0
+            samples = -log.(rand(rng, Float64, 10_000)) .* 5.0
+
+            ci = batch_means_ci(samples; k=30)   # dispatches to AK AbstractArray overload
 
             @test !isnan(ci.mean)
             @test 4.0 <= ci.mean <= 6.0
             @test ci.ci_lo < ci.mean < ci.ci_hi
-            @test ci.n_batches == 30
-            @test ci.batch_size == 333
+            @test ci.n_batches  == 30
+            @test ci.batch_size == 333   # 10_000 ÷ 30
 
-            tiny   = CUDA.CuArray(Float64[1.0, 2.0])
-            ci_bad = batch_means_ci(tiny; k=30)
+            # Too few observations → all-NaN guard
+            ci_bad = batch_means_ci(Float64[1.0, 2.0]; k=30)
             @test isnan(ci_bad.mean)
         end
 
-        # ── gpu_histogram ─────────────────────────────────────────────────────
-        @testset "gpu_histogram" begin
+        # ── 3. gpu_histogram — CPU-threaded (always runs) ─────────────────────
+        @testset "gpu_histogram — CPU Array (AK path)" begin
             rng           = Random.MersenneTwister(99)
-            samples       = CUDA.CuArray(rand(rng, Float64, 5_000) .* 10.0)
-            edges, counts = GPUExt.gpu_histogram(samples, 10)
+            samples       = rand(rng, Float64, 5_000) .* 10.0   # uniform [0,10)
 
-            @test length(edges)  == 11
-            @test length(counts) == 10
-            @test sum(counts)    == 5_000
+            edges, counts = gpu_histogram(samples, 10)
+
+            @test length(edges)  == 11        # nbins + 1 edges
+            @test length(counts) == 10        # nbins bin counts
+            @test sum(counts)    == 5_000     # every sample counted exactly once
+
+            # For uniform[0,10] with 10 equal bins each should hold ≈500 samples
             for c in counts
-                @test 350 <= c <= 650
+                @test 350 <= c <= 650   # ±30% tolerance
             end
-            @test_throws ArgumentError GPUExt.gpu_histogram(samples, 0)
-            @test_throws ArgumentError GPUExt.gpu_histogram(samples, 10; lo=5.0, hi=2.0)
+
+            # Explicit lo/hi
+            samples2 = rand(rng, Float64, 1_000) .* 5.0 .+ 2.0   # uniform [2,7)
+            edges2, counts2 = gpu_histogram(samples2, 5; lo=2.0, hi=7.0)
+            @test length(edges2)   == 6
+            @test sum(counts2)     == 1_000
+
+            # Error guards
+            @test_throws ArgumentError gpu_histogram(samples, 0)
+            @test_throws ArgumentError gpu_histogram(samples, 10; lo=5.0, hi=2.0)
+
+            # Empty array
+            e_e, c_e = gpu_histogram(Float64[], 5)
+            @test isempty(e_e) && isempty(c_e)
         end
-    end
+
+        # ── 4. _accel_available() reflects extension load ─────────────────────
+        @testset "_accel_available" begin
+            @test SimCore._accel_available() == true
+            # Backward-compat alias
+            @test SimCore._cuda_available()  == true
+        end
+
+        # ── 5. Optional GPU path — CUDA (skipped if no NVIDIA device) ─────────
+        @testset "gpu_mean_var — CuArray (CUDA, optional)" begin
+            cuda_ok = false
+            try
+                using CUDA: CUDA
+                cuda_ok = CUDA.functional()
+            catch
+                cuda_ok = false
+            end
+
+            if !cuda_ok
+                @info "CUDA GPU path skipped — no functional CUDA device."
+                @test true   # sentinel
+            else
+                @info "CUDA device available — running CuArray path."
+                rng  = Random.MersenneTwister(9999)
+                data = CUDA.CuArray(randn(rng, Float64, 100_000) .+ 7.0)
+
+                μ, var = gpu_mean_var(data)
+                @test abs(μ   - 7.0) < 0.05
+                @test abs(var - 1.0) < 0.05
+
+                # gpu_histogram on CuArray
+                s = CUDA.CuArray(rand(rng, Float64, 5_000) .* 10.0)
+                edges, counts = gpu_histogram(s, 10)
+                @test sum(counts) == 5_000
+
+                # batch_means_ci on CuArray
+                samp = CUDA.CuArray(-log.(rand(rng, Float64, 10_000)) .* 5.0)
+                ci   = batch_means_ci(samp; k=30)
+                @test 3.5 <= ci.mean <= 6.5
+                @test ci.ci_lo < ci.mean < ci.ci_hi
+            end
+        end
+
+    end  # ak_loaded
+
 end  # @testset "Task 22"
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -45,7 +45,7 @@ using StaticArrays: SVector
 
 using Ark: World, new_entity!, Query
 using SimCore: SimWorld, SimStats, CrowdAgent, add_zone!, new_entity_id!,
-                StatsPipeline, WARMUP_NONE,
+                StatsPipeline, WarmupMode, WARMUP_AUTO, WARMUP_FIXED, WARMUP_NONE,
                 record_arrival!, record_departure!, record_queue_length!,
                 record_utilization!, record_idle!, sim_summary
 using KernelAbstractions: CPU
@@ -768,11 +768,24 @@ function reset_scenario!(ctx::ScenarioContext;
     ctx._mm1_lambda             = 0.0
     ctx._mm1_mu                 = 0.0
     ctx._mm1_rng                = MersenneTwister()
-    # Sprint 4I: reset StatsPipeline and sojourn tracking
+    # Sprint 4I: reset StatsPipeline and sojourn tracking.
+    # MM1-specific warmup policy is applied when :start_mm1_queue fires.
     ctx._mm1_pipeline           = StatsPipeline(warmup=WARMUP_NONE)
     empty!(ctx._mm1_arrival_times)
     ctx._mm1_prev_event_time    = 0.0
     return ctx
+end
+
+@inline function _warmup_mode_from_symbol(sym::Symbol)::WarmupMode
+    if sym === :none
+        return WARMUP_NONE
+    elseif sym === :fixed
+        return WARMUP_FIXED
+    elseif sym === :auto
+        return WARMUP_AUTO
+    else
+        throw(ArgumentError("Unknown MM1 warmup_mode=:$sym. Valid: :none, :fixed, :auto"))
+    end
 end
 
 # ── _dispatch_events! ─────────────────────────────────────────────────────────
@@ -847,6 +860,17 @@ Initialize the M/M/1 DES queue:
 function _handle_start_mm1!(ctx::ScenarioContext, ev::ScheduledEvent, t::Float64)
     λ = Float64(get(ev.params, :lambda, 0.9))
     μ = Float64(get(ev.params, :mu,     1.0))
+    wm_sym = Symbol(get(ev.params, :warmup_mode, :fixed))
+    wn = Int(get(ev.params, :warmup_n, 50))
+    wn >= 0 || throw(ArgumentError("warmup_n must be ≥ 0, got $wn"))
+
+    warm_mode = _warmup_mode_from_symbol(wm_sym)
+    ctx._mm1_pipeline = warm_mode === WARMUP_FIXED ?
+        StatsPipeline(warmup=warm_mode, warmup_n=wn) :
+        StatsPipeline(warmup=warm_mode)
+    empty!(ctx._mm1_arrival_times)
+    ctx._mm1_prev_event_time = t
+
     ctx._mm1_lambda = λ
     ctx._mm1_mu     = μ
     # Seed RNG deterministically from config seed (0 = random)
@@ -858,7 +882,7 @@ function _handle_start_mm1!(ctx::ScenarioContext, ev::ScheduledEvent, t::Float64
     t_first = t + randexp(ctx._mm1_rng) / λ
     push!(ctx._mm1_fel, (t_first, :arrival, UInt64(0)))
     sort!(ctx._mm1_fel)
-    @info "[SimViz] M/M/1 queue started: λ=$λ, μ=$μ, first arrival at t=$(round(t_first,digits=2))s"
+    @info "[SimViz] M/M/1 queue started: λ=$λ, μ=$μ, warmup_mode=$wm_sym, warmup_n=$wn, first arrival at t=$(round(t_first,digits=2))s"
 end
 
 # ── M/M/1 FEL tick ────────────────────────────────────────────────────────────
@@ -931,12 +955,12 @@ function _tick_mm1!(ctx::ScenarioContext, t::Float64)
                 agent = CrowdAgent(svc_pos, svc_pos; desired_speed=Float32(μ))
                 ctx.sim_world.crowd_agents[cid] = agent
             else
-                # Queue
+                # Queue — pack right-to-left so people wait near the service station
                 push!(zone.queue, cid)
                 zone.queue_length += 1
-                # Place at queue position (x = 1.0 + 0.8 * queue_index)
                 q_idx = Float32(zone.queue_length)
-                x_q   = clamp(1.0f0 + 0.8f0 * q_idx, 1.0f0, x_service - 1.0f0)
+                # Position: start from (x_service - 1.5) and move leftward per slot
+                x_q   = clamp(x_service - 1.5f0 - 0.8f0 * (q_idx - 1.0f0), 1.0f0, x_service - 1.5f0)
                 q_pos = SVector{2,Float32}(x_q, y_mid)
                 agent = CrowdAgent(q_pos, q_pos)
                 ctx.sim_world.crowd_agents[cid] = agent
@@ -992,10 +1016,10 @@ function _tick_mm1!(ctx::ScenarioContext, t::Float64)
                     svc_pos = SVector{2,Float32}(x_service, y_mid)
                     ctx.sim_world.crowd_agents[next_id] = CrowdAgent(svc_pos, svc_pos; desired_speed=Float32(μ))
                 end
-                # Reposition remaining queue members
+                # Reposition remaining queue members (right-to-left: slot 1 is closest to server)
                 for (qi, qid) in enumerate(zone.queue)
                     if haskey(ctx.sim_world.crowd_agents, qid)
-                        x_q  = clamp(1.0f0 + 0.8f0 * Float32(qi), 1.0f0, x_service - 1.0f0)
+                        x_q  = clamp(x_service - 1.5f0 - 0.8f0 * (Float32(qi) - 1.0f0), 1.0f0, x_service - 1.5f0)
                         qpos = SVector{2,Float32}(x_q, y_mid)
                         ctx.sim_world.crowd_agents[qid] = CrowdAgent(qpos, qpos)
                     end
@@ -1011,7 +1035,30 @@ function _tick_mm1!(ctx::ScenarioContext, t::Float64)
         deleteat!(ctx._mm1_fel, 1:(i-1))
     end
     needs_sort && sort!(ctx._mm1_fel)
+
+    # ── Reconcile trailing interval [last_event → t] ───────────────────────
+    # All processed DES events above account for [prev_event → ev_t].
+    # The remaining gap [last_event → t] must also be accumulated so that ρ
+    # and L̄ stay accurate between event epochs (especially during long idle
+    # periods). We advance _mm1_prev_event_time = t so the next real event
+    # correctly computes dt_since = ev_t - t (no double-counting).
+    dt_tail = t - ctx._mm1_prev_event_time
+    if dt_tail > 0.0 && ctx._mm1_lambda > 0.0
+        zone_tail = get(ctx.sim_world.zone_states, 1, nothing)
+        if zone_tail !== nothing
+            n_sys_tail = length(ctx.sim_world.crowd_agents)
+            n_q_tail   = zone_tail.queue_length
+            record_queue_length!(ctx._mm1_pipeline, n_sys_tail, n_q_tail, dt_tail)
+            if zone_tail.busy_servers > 0
+                record_utilization!(ctx._mm1_pipeline, dt_tail)
+            else
+                record_idle!(ctx._mm1_pipeline, dt_tail)
+            end
+            ctx._mm1_prev_event_time = t
+        end
+    end
 end
+
 
 
 # ── serialize_world_ctx — full WorldSnapshot with panic + DES stats ───────────

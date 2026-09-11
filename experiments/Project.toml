@@ -2,5 +2,9 @@ name = "HermesExperiments"
 uuid = "00000000-0000-0000-0000-000000000002"
 version = "0.1.0"
 
+[deps]
+SimCore = "0c356fe6-1c88-4cf8-b16c-a521627c3420"
+SimDES = "4b36ed4b-0aee-48cb-8514-e2c6d0980b55"
+
 [compat]
 julia = "1.10"

@@ -279,8 +279,12 @@ across available threads.
 - `run_fn`          — `Function(seed::Int) → NamedTuple` (from `sim_summary`)
 - `n_reps`          — number of independent replications (≥ 2; recommend ≥ 10)
 - `seed_offset`     — base seed; replication `i` uses `seed_offset + i`
-- `gpu_postprocess` — when `true` and CUDA is available, reduces replication
-  summary scalars on GPU (only useful when `n_reps × n_fields ≳ 10_000`)
+- `gpu_postprocess` — when `true` and the `SimCoreGPUExt` extension is loaded
+  (i.e., `AcceleratedKernels` is in the active environment), reduces replication
+  summary scalars using `AK.mapreduce`.  On a plain CPU this uses KA's
+  multithreaded CPU backend; pass a device array at the call site to use GPU.
+  Only pays off when `n_reps ≳ 1_000`; for typical sizes the sequential path is
+  fast enough.
 - `n_zones_per_rep` — Chandy-Misra Tier-2 hint: number of LP threads each
   replication internally spawns. Warns if `n_reps × n_zones_per_rep` exceeds
   `Threads.nthreads()`.
@@ -296,10 +300,11 @@ result = replicate_parallel(16) do seed
 end
 ```
 
-## GPU note
+## AcceleratedKernels note
 DES event loops are **not** GPU-parallelised. The FEL (future event list) is
 an intrinsically sequential causal structure. `gpu_postprocess=true` applies
-GPU reduction only to the post-run summary scalars (mean, variance across reps).
+AK-accelerated reduction to the post-run summary scalars (mean, variance across
+reps) — via CPU threads or GPU depending on what's loaded in the environment.
 
 ## Tier-2 Chandy-Misra note
 `n_zones_per_rep > 1` signals that each replication itself spawns LP threads.
@@ -345,7 +350,7 @@ function replicate_parallel(run_fn::Function, n_reps::Int;
     fields          = keys(results[1])
     stats_per_field = Dict{Symbol, Any}()
 
-    use_gpu = gpu_postprocess && _cuda_available()
+    use_gpu = gpu_postprocess && _accel_available()
 
     for f in fields
         # Collect numeric (non-Bool, non-NaN) values for this field
@@ -359,14 +364,16 @@ function replicate_parallel(run_fn::Function, n_reps::Int;
 
         n = length(vals)
         μ, s = if use_gpu && n > 1000
-            # GPU reduction path — delegates to SimCoreGPUExt (loaded by ext mechanism)
-            # gpu_mean_var is defined in ext; if not loaded, falls back to CPU below
+            # AcceleratedKernels path — delegates to SimCoreGPUExt.
+            # gpu_mean_var is declared in SimCore (stub); the method is added by
+            # the extension.  Passing a plain Vector triggers the KA CPU-threaded
+            # backend; wrap in CuArray/ROCArray etc. at the call site for GPU.
             try
-                _d = Base.invokelatest(gpu_mean_var, convert(Vector{Float64}, vals))
+                _d = Base.invokelatest(gpu_mean_var, vals)
                 (_d[1], sqrt(max(0.0, _d[2])))
             catch
-                # Extension not loaded or GPU unavailable at runtime — silent CPU fallback
-                μ_cpu = sum(vals) / n
+                # Extension not loaded or AK unavailable — silent CPU fallback.
+                μ_cpu   = sum(vals) / n
                 var_sum = sum((v - μ_cpu)^2 for v in vals)
                 (μ_cpu, n > 1 ? sqrt(var_sum / (n - 1)) : 0.0)
             end
@@ -390,19 +397,21 @@ function replicate_parallel(run_fn::Function, n_reps::Int;
 end
 
 """
-    _cuda_available() → Bool
+    _accel_available() → Bool
 
-Internal helper. Returns `true` if CUDA.jl is loaded in the current session
-and a functional GPU device is present.
-Used by `replicate_parallel` to decide whether to attempt GPU post-processing.
+Internal helper. Returns `true` if the `SimCoreGPUExt` extension is loaded,
+meaning `AcceleratedKernels` and `KernelAbstractions` are present in the
+current environment.
+
+When `true`, `gpu_mean_var`, `gpu_histogram`, and the `AbstractArray` overload
+of `batch_means_ci` are available.  They dispatch to CPU threads by default;
+passing device arrays (`CuArray` etc.) routes to the appropriate GPU backend.
+
+Used by `replicate_parallel` to decide whether to attempt AK post-processing.
 """
-function _cuda_available()
-    cuda_mod = Base.get_extension(@__MODULE__, :SimCoreGPUExt)
-    cuda_mod === nothing && return false
-    # CUDA module is loaded; check device availability
-    try
-        return Base.invokelatest(cuda_mod.CUDA.functional)
-    catch
-        return false
-    end
+function _accel_available()
+    Base.get_extension(@__MODULE__, :SimCoreGPUExt) !== nothing
 end
+
+# Backward-compat alias (code that calls _cuda_available() still works).
+const _cuda_available = _accel_available

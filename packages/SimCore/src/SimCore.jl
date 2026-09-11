@@ -79,8 +79,39 @@ export record_idle!   # new — not in legacy SimStats
 
 # ── Sprint 4I: Analysis ───────────────────────────────────────────────────────
 export check_littles_law, batch_means_ci, replicate, replicate_parallel
-# GPU extension: gpu_mean_var, batch_means_ci(CuArray), gpu_histogram
-# Auto-loaded via SimCoreGPUExt when CUDA + KernelAbstractions are in env.
+# Accelerated extension (SimCoreGPUExt) — available when AcceleratedKernels +
+# KernelAbstractions are loaded.  Works on CPU threads AND all GPU backends.
+export gpu_mean_var, gpu_histogram
+
+# ── Accelerated-extension stubs (methods added by SimCoreGPUExt) ───────────────
+"""
+    gpu_mean_var(arr::AbstractArray{Float64}) → (mean::Float64, variance::Float64)
+
+Compute the mean and unbiased sample variance of an array in a single parallel pass.
+
+This function is a stub in `SimCore`. The implementation is added by `SimCoreGPUExt`
+when `AcceleratedKernels` and `KernelAbstractions` are loaded.  It then works on:
+- Plain `Array{Float64}` via KA CPU backend (multithreaded)
+- `CuArray{Float64}` via AK CUDA backend
+- `ROCArray{Float64}` via AK ROCm backend
+- `MtlArray{Float64}` via AK Metal backend
+
+Throws `MethodError` if the extension is not loaded (i.e., AcceleratedKernels not
+in the active environment).  Check `SimCore._accel_available()` before calling.
+"""
+function gpu_mean_var end
+
+"""
+    gpu_histogram(samples::AbstractArray{Float64}, nbins::Int;
+                  lo::Float64=0.0, hi::Union{Nothing,Float64}=nothing)
+    → (edges::Vector{Float64}, counts::Vector{Int32})
+
+Compute a histogram of `samples` using one `AK.mapreduce` per bin.
+
+This function is a stub in `SimCore`. The implementation is added by `SimCoreGPUExt`
+when `AcceleratedKernels` and `KernelAbstractions` are loaded.
+"""
+function gpu_histogram end
 
 end
 

@@ -19,7 +19,9 @@ References:
 
 using Pkg
 Pkg.activate(dirname(dirname(dirname(@__FILE__))))  # experiments/
-Pkg.develop(path=joinpath(dirname(dirname(dirname(dirname(@__FILE__)))), "packages", "SimDES"))
+abm_root = dirname(dirname(dirname(dirname(@__FILE__))))
+Pkg.develop(Pkg.PackageSpec(path=joinpath(abm_root, "packages", "SimCore")))
+Pkg.develop(Pkg.PackageSpec(path=joinpath(abm_root, "packages", "SimDES")))
 
 using SimDES, SimCore
 using Printf
@@ -121,8 +123,9 @@ println("\n=== DES-S-03: M/M/1 sweep ρ∈{0.3,0.5,0.7,0.9} — L monotone ===")
 Ls_sim    = Float64[]
 Ls_theory = Float64[]
 for ρ in ρs
-    λ = ρ * μ
-    sm = sim_summary(run_mm1!(λ, μ; n_arrivals=100_000, seed=42))
+    local λ = ρ * μ
+    local n = ρ >= 0.9 ? 500_000 : 100_000
+    local sm = sim_summary(run_mm1!(λ, μ; n_arrivals=n, seed=42))
     push!(Ls_sim,    sm.L)
     push!(Ls_theory, mm1_L(ρ))
     push!(results, check("DES-S-03", "L(ρ=$ρ)", sm.L, mm1_L(ρ); tol_pct=5.0))
@@ -189,10 +192,13 @@ wqs = [sim_summary(run_mg1!(λ, μ, ki; n_arrivals=100_000, seed=42)).Wq
 println("\n=== DES-S-08: Cancellation — 500/1000 events execute ===")
 fel  = FutureEventList()
 ids  = [schedule!(fel, NullEvent(), float(i)) for i in 1:1000]
-for i in 2:2:1000; cancel!(ids[i]); end
-executed = 0
-while (r = safe_dequeue!(fel)) !== nothing; executed += 1; end
-push!(results, check("DES-S-08", "count", float(executed), 500.0; tol_pct=0.01))
+for i in 2:2:1000; cancel!(fel, ids[i]); end
+let executed = 0
+    while (r = safe_dequeue!(fel)) !== nothing
+        executed += 1
+    end
+    push!(results, check("DES-S-08", "count", float(executed), 500.0; tol_pct=0.01))
+end
 print_result(results[end])
 
 # ─── DES-S-09: SimClock ──────────────────────────────────────────────────────
