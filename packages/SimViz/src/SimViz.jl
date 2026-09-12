@@ -26,6 +26,7 @@ run_visualization!(ScenarioConfig(
 run_evacuation_demo!()
 run_mm1_demo!()
 run_integration_demo!()
+run_des_orca_demo!()
 ```
 
 # Architecture
@@ -107,6 +108,7 @@ export wire_controls!
 export evacuation_scenario, run_evacuation_demo!
 export mm1_scenario, run_mm1_demo!
 export integration_scenario, run_integration_demo!
+export des_orca_scenario, run_des_orca_demo!
 
 # ── Module initialisation ─────────────────────────────────────────────────────
 # All Julia 1.12 / MakieCore compatibility shims removed on 2026-09-10.

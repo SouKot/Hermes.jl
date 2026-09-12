@@ -37,6 +37,11 @@ const _OVERLAY_MAP = Dict(
     "FSM mode"      => OVERLAY_FSM,
     "Local density" => OVERLAY_DENSITY,
 )
+const _OVERLAY_LABEL = Dict(
+    OVERLAY_PANIC   => "Panic level",
+    OVERLAY_FSM     => "FSM mode",
+    OVERLAY_DENSITY => "Local density",
+)
 
 # ── Live sigma update ─────────────────────────────────────────────────────────
 
@@ -147,7 +152,7 @@ function wire_controls!(fig, viz, ctx_ref::Ref{ScenarioContext},
     Label(ctrl_bar[1, 8], "Overlay:"; color = _SIMVIZ_TEXT_CLR, fontsize=12f0, halign=:right)
     overlay_menu = Menu(ctrl_bar[1, 9];
         options  = _OVERLAY_OPTIONS,
-        default  = "FSM mode",
+        default  = get(_OVERLAY_LABEL, config.default_overlay, "FSM mode"),
         textcolor                     = _SIMVIZ_TEXT_CLR,
         cell_color_inactive_even      = _SIMVIZ_PANEL_BG,
         cell_color_inactive_odd       = _SIMVIZ_PANEL_BG,

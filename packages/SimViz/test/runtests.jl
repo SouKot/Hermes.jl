@@ -369,6 +369,85 @@ end
         snap = HL.serialize_world_ctx(ctx)
         @test snap.n_agents == 20
     end
+
+    @testset "evac_alarm dispatch updates panic + motion" begin
+        ev = HL.ScheduledEvent(
+            time=0.0,
+            type=:evac_alarm,
+            params=(v_panic=1.8, panic_level=0.8),
+        )
+        cfg = HL.ScenarioConfig(
+            n_agents=12,
+            crowd_model=HL.MODEL_ORCA,
+            events=[ev],
+            rng_seed=11,
+        )
+        ctx = HL.build_world!(cfg)
+
+        # Fire at t=0.0
+        HL._dispatch_events!(ctx, 0.0)
+        snap = HL.serialize_world_ctx(ctx)
+
+        @test length(snap.panic_levels) == snap.n_agents
+        @test all(p -> isapprox(p, 0.8f0; atol=1f-6), snap.panic_levels)
+        @test snap.stats.total_events == 1
+
+        # MotionParams.v_pref should be patched to panic speed for all agents
+        all_panic_speed = true
+        for (_, mp_col) in HL.Query(ctx.ark_world, (HL.MotionParams{Float32},))
+            for mp in mp_col
+                if !isapprox(mp.v_pref, 1.8f0; atol=1f-6)
+                    all_panic_speed = false
+                    break
+                end
+            end
+        end
+        @test all_panic_speed
+
+        # One-shot event: re-dispatch at later t must not increment event count
+        HL._dispatch_events!(ctx, 10.0)
+        snap2 = HL.serialize_world_ctx(ctx)
+        @test snap2.stats.total_events == 1
+
+        # Reset clears panic overlay state
+        HL.reset_scenario!(ctx; config=cfg)
+        snap3 = HL.serialize_world_ctx(ctx)
+        @test all(==(0.0f0), snap3.panic_levels)
+    end
+
+    @testset "MM1 + evac_alarm preserve total_events visibility" begin
+        mm1_ev = HL.ScheduledEvent(
+            time=0.0,
+            type=:start_mm1_queue,
+            params=(lambda=0.7, mu=1.0, warmup_mode=:none, warmup_n=0),
+        )
+        alarm_ev = HL.ScheduledEvent(
+            time=0.0,
+            type=:evac_alarm,
+            params=(v_panic=1.8, panic_level=0.8),
+        )
+        cfg = HL.ScenarioConfig(
+            n_agents=8,
+            crowd_model=HL.MODEL_ORCA,
+            events=[mm1_ev, alarm_ev],
+            rng_seed=12,
+        )
+        ctx = HL.build_world!(cfg)
+
+        # At t=0 both events fire: MM1 starts + one alarm event
+        HL._dispatch_events!(ctx, 0.0)
+        snap0 = HL.serialize_world_ctx(ctx)
+        @test snap0.stats.total_events == 1
+        @test all(p -> isapprox(p, 0.8f0; atol=1f-6), snap0.panic_levels)
+
+        # Advance MM1 DES and verify alarm event is still included in total_events
+        HL._dispatch_events!(ctx, 20.0)
+        snap1 = HL.serialize_world_ctx(ctx)
+        psm = HL.sim_summary(ctx._mm1_pipeline)
+        @test snap1.stats.total_arrivals == psm.total_arrivals
+        @test snap1.stats.total_departures == psm.total_departures
+        @test snap1.stats.total_events == psm.total_events + 1
+    end
 end
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -599,5 +678,95 @@ end
         @test n_after < n_initial
     end
 
+end
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Integration: DES + ORCA statistical consistency
+# ══════════════════════════════════════════════════════════════════════════════
+
+@testset "Integration: DES + ORCA operational-law checks" begin
+    λ = 0.6
+    μ = 1.0
+    alarm_t = 20.0
+
+    mm1_ev = HL.ScheduledEvent(
+        time=0.0,
+        type=:start_mm1_queue,
+        params=(lambda=λ, mu=μ, warmup_mode=:none, warmup_n=0),
+    )
+    alarm_ev = HL.ScheduledEvent(
+        time=alarm_t,
+        type=:evac_alarm,
+        params=(v_panic=1.8, panic_level=0.8),
+    )
+
+    cfg = HL.ScenarioConfig(
+        n_agents=40,
+        crowd_model=HL.MODEL_ORCA,
+        events=[mm1_ev, alarm_ev],
+        flux_boundary=false,
+        dt=0.05,
+        rng_seed=2026,
+    )
+    ctx = HL.build_world!(cfg)
+
+    # Pre-alarm window — MM1 active, alarm off
+    n_pre = Int(round(10.0 / ctx.config.dt))
+    for _ in 1:n_pre
+        HL.step!(ctx.scene)
+        ctx.sim_time += ctx.config.dt
+        HL._dispatch_events!(ctx, ctx.sim_time)
+    end
+    snap_pre = HL.serialize_world_ctx(ctx)
+    @test maximum(snap_pre.panic_levels) == 0.0f0
+    @test snap_pre.stats.total_arrivals > 0
+
+    # Post-alarm horizon for queue metrics
+    n_post = Int(round(90.0 / ctx.config.dt))
+    for _ in 1:n_post
+        HL.step!(ctx.scene)
+        ctx.sim_time += ctx.config.dt
+        HL._dispatch_events!(ctx, ctx.sim_time)
+    end
+    snap = HL.serialize_world_ctx(ctx)
+    s = snap.stats
+
+    # Alarm one-shot + event accounting
+    @test all(p -> isapprox(p, 0.8f0; atol=1f-6), snap.panic_levels)
+    @test s.total_events == s.total_arrivals + s.total_departures + 1
+
+    # Pipeline fields active
+    @test !isnan(s.W)
+    @test !isnan(s.Wq)
+    @test !isnan(s.L)
+    @test !isnan(s.Lq)
+    @test !isnan(s.rho)
+    @test !isnan(s.throughput)
+
+    # Invariants
+    @test s.total_arrivals >= s.total_departures >= 0
+    @test s.W >= s.Wq >= 0
+    @test s.L >= s.Lq >= 0
+    @test 0.0 <= s.rho <= 1.0
+    @test s.throughput > 0
+
+    # Operational laws (Little's law consistency)
+    λ_eff = s.throughput
+    @test isapprox(s.L,  λ_eff * s.W;  atol=max(0.5, 0.35 * s.L))
+    @test isapprox(s.Lq, λ_eff * s.Wq; atol=max(0.5, 0.45 * s.Lq + 0.2))
+
+    # M/M/1 steady-state sanity (finite-horizon loose tolerances)
+    ρ_th  = λ / μ
+    W_th  = 1 / (μ - λ)
+    Wq_th = λ / (μ * (μ - λ))
+    L_th  = λ / (μ - λ)
+    Lq_th = λ^2 / (μ * (μ - λ))
+
+    @test isapprox(s.rho,  ρ_th;  atol=0.25)
+    @test isapprox(s.W,    W_th;  atol=1.5)
+    @test isapprox(s.Wq,   Wq_th; atol=1.5)
+    @test isapprox(s.L,    L_th;  atol=1.0)
+    @test isapprox(s.Lq,   Lq_th; atol=1.0)
+    @test isapprox(s.throughput, λ; atol=0.25)
 end
 

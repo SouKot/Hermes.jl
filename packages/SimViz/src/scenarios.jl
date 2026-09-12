@@ -9,6 +9,7 @@ entry points:
 | `evacuation_scenario` | Hybrid-FSM ORCA↔SFM switching at a bottleneck     |
 | `mm1_scenario`        | DES M/M/1 queue visualized as a corridor of dots  |
 | `integration_scenario`| DES event (alarm at t=60s) triggers crowd panic   |
+| `des_orca_scenario`   | ORCA crowd + live M/M/1 DES + alarm in one demo   |
 
 # Usage
 
@@ -18,6 +19,7 @@ run_evacuation_demo!()                       # default 80 agents
 run_evacuation_demo!(n_agents=200, door_width=0.8)
 run_mm1_demo!(lambda=0.8, mu=1.0)
 run_integration_demo!(n_agents=100)
+run_des_orca_demo!(n_agents=80, lambda=0.7, mu=1.0)
 ```
 
 Each `run_*_demo!` calls `run_visualization!(config)`, which opens a GLMakie
@@ -216,7 +218,7 @@ response in all agents simultaneously.
 - At `t = evac_alarm_time`, the `evac_alarm` DES event fires:
   - `v_pref` is boosted to 1.8 m/s (panic speed)
   - All agents' goals are redirected to the nearest exit
-  - `panic_level` is raised to 0.8 (affects color in `OVERLAY_PANIC` mode)
+    - panic overlay is raised to 0.8 (agents shift green → orange/red)
   - Stats panel shows a 🚨 ALARM indicator
 - Default overlay: `OVERLAY_PANIC` — agents shift from green → orange/red
 
@@ -261,9 +263,11 @@ function integration_scenario(;
         orca_max_neighbors = 15,
         events      = [alarm_event],
         dt          = 0.05,
+        flux_boundary = true,
         rng_seed    = rng_seed,
+        default_overlay = OVERLAY_PANIC,
         label       = "DES + Crowd Integration Demo",
-        description = "$(n_agents) ORCA agents; 🚨 evac alarm fires at t=$(evac_alarm_time)s",
+        description = "$(n_agents) ORCA agents; evac alarm fires at t=$(evac_alarm_time)s",
         kwargs...,
     )
 end
@@ -281,5 +285,90 @@ Open a GLMakie window showing the DES + crowd integration scenario.
 """
 function run_integration_demo!(; kwargs...)
     config = integration_scenario(; kwargs...)
+    run_visualization!(config)
+end
+
+# ── 4B-04: ORCA + DES (MM1 + Alarm) Composite Demo ─────────────────────────
+
+"""
+    des_orca_scenario(; n_agents=80, lambda=0.7, mu=1.0,
+                        mm1_start_time=0.0, evac_alarm_time=45.0,
+                        warmup_mode=:none, warmup_n=0, rng_seed=0,
+                        kwargs...) :: ScenarioConfig
+
+Composite DES+ABM demo that runs a live M/M/1 queue and an ORCA crowd in the
+same scene:
+
+- DES stream starts at `mm1_start_time` via `:start_mm1_queue`
+- Crowd panic event fires at `evac_alarm_time` via `:evac_alarm`
+
+This provides a richer integration example than `integration_scenario` by
+exercising both DES queue metrics (`W`, `Wq`, `L`, `Lq`, `ρ`, `throughput`)
+and ORCA alarm-driven behavior in one visualization.
+"""
+function des_orca_scenario(;
+        n_agents         :: Int      = 80,
+        lambda           :: Float64  = 0.7,
+        mu               :: Float64  = 1.0,
+        mm1_start_time   :: Float64  = 0.0,
+        evac_alarm_time  :: Float64  = 45.0,
+        warmup_mode      :: Symbol   = :none,
+        warmup_n         :: Int      = 0,
+        rng_seed         :: Int      = 0,
+        kwargs...,
+    ) :: ScenarioConfig
+
+    lambda >= mu && @warn "DES stream is UNSTABLE (λ=$lambda ≥ μ=$mu). Queue metrics will diverge."
+
+    room = RoomGeometry(
+        width  = 20.0,
+        height = 10.0,
+        doors  = [
+            DoorSpec(wall=:east, center=5.0, width=2.0),
+            DoorSpec(wall=:west, center=5.0, width=2.0),
+        ],
+    )
+
+    mm1_event = ScheduledEvent(
+        time   = mm1_start_time,
+        type   = :start_mm1_queue,
+        params = (lambda=lambda, mu=mu, warmup_mode=warmup_mode, warmup_n=warmup_n),
+    )
+    alarm_event = ScheduledEvent(
+        time   = evac_alarm_time,
+        type   = :evac_alarm,
+        params = (v_panic=1.8, panic_level=0.8),
+    )
+
+    return ScenarioConfig(;
+        room        = room,
+        n_agents    = n_agents,
+        crowd_model = MODEL_ORCA,
+        v_pref      = 1.34,
+        orca_tau    = 2.0,
+        orca_max_neighbors = 15,
+        events      = [mm1_event, alarm_event],
+        dt          = 0.05,
+        flux_boundary = true,
+        rng_seed    = rng_seed,
+        default_overlay = OVERLAY_PANIC,
+        label       = "DES + ORCA Composite Demo",
+        description = "$(n_agents) ORCA agents + M/M/1(λ=$(lambda), μ=$(mu)); alarm at t=$(evac_alarm_time)s",
+        kwargs...,
+    )
+end
+
+"""
+    run_des_orca_demo!(; kwargs...) -> nothing
+
+Launch the composite DES+ORCA visualization (`des_orca_scenario`).
+
+# Expected behavior
+- Queue stats (`W`, `Wq`, `L`, `Lq`, `ρ`, `λ_eff`) are populated from DES.
+- ORCA crowd runs continuously in the same world.
+- At alarm time, panic overlay activates and crowd speed increases.
+"""
+function run_des_orca_demo!(; kwargs...)
+    config = des_orca_scenario(; kwargs...)
     run_visualization!(config)
 end

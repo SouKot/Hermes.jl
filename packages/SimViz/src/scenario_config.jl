@@ -22,7 +22,7 @@ tweak in SimViz. It is designed to be:
 - `SimCore.SimWorld`  — DES agents, SimStats, zone queues
 
 `serialize_world_ctx` is the full version of `serialize_world` that includes
-panic levels and DES stats from the SimCore side.
+panic levels and DES/MM1 stats from the ScenarioContext bridge.
 
 # File layout
 
@@ -214,6 +214,7 @@ over the WebSocket when a user saves or loads a simulation configuration.
 - `label`:       display name shown in the window title
 - `description`: one-line description for the scenario selector menu
 - `rng_seed`:    random seed for reproducible agent placement. 0 = random
+- `default_overlay`: initial visualization overlay mode on window open
 """
 Base.@kwdef struct ScenarioConfig
     # ── Geometry ──────────────────────────────────────────────────────────────
@@ -275,6 +276,7 @@ Base.@kwdef struct ScenarioConfig
     label                :: String    = "Custom scenario"
     description          :: String    = "User-defined scenario"
     rng_seed             :: Int       = 0         # 0 = random
+    default_overlay      :: OverlayMode = OVERLAY_FSM
 end
 
 # ── ScenarioContext — runtime bridge ──────────────────────────────────────────
@@ -309,6 +311,7 @@ mutable struct ScenarioContext
     scene               :: SimScene
     config              :: ScenarioConfig
     sim_time            :: Float64
+    _global_panic       :: Float32
     boundaries          :: Vector{BoundaryCondition{Float32}}
     _fired_events       :: Set{Int}                                 # indices into config.events
     _mm1_fel            :: Vector{Tuple{Float64, Symbol, UInt64}}  # (time, :arrival/:service, id)
@@ -545,7 +548,7 @@ function _build_sfm_world(config::ScenarioConfig, ::Type{F},
     bcs = config.flux_boundary ?
         BoundaryCondition{Float32}[AbsorbingBoundary(0.75f0)] :
         BoundaryCondition{Float32}[]
-    return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs,
+    return ScenarioContext(world, SimWorld(), scene, config, 0.0, 0.0f0, bcs,
                            Set{Int}(), Tuple{Float64,Symbol,UInt64}[], 0.0, 0.0, MersenneTwister(),
                            StatsPipeline(warmup=WARMUP_NONE), Dict{UInt64,Float64}(), 0.0)
 end
@@ -592,7 +595,7 @@ function _build_orca_world(config::ScenarioConfig, ::Type{F},
     bcs = config.flux_boundary ?
         BoundaryCondition{Float32}[AbsorbingBoundary(0.75f0)] :
         BoundaryCondition{Float32}[]
-    return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs,
+    return ScenarioContext(world, SimWorld(), scene, config, 0.0, 0.0f0, bcs,
                            Set{Int}(), Tuple{Float64,Symbol,UInt64}[], 0.0, 0.0, MersenneTwister(),
                            StatsPipeline(warmup=WARMUP_NONE), Dict{UInt64,Float64}(), 0.0)
 end
@@ -653,7 +656,7 @@ function _build_hybrid_world(config::ScenarioConfig, ::Type{F},
     bcs = config.flux_boundary ?
         BoundaryCondition{Float32}[AbsorbingBoundary(0.75f0)] :
         BoundaryCondition{Float32}[]
-    return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs,
+    return ScenarioContext(world, SimWorld(), scene, config, 0.0, 0.0f0, bcs,
                            Set{Int}(), Tuple{Float64,Symbol,UInt64}[], 0.0, 0.0, MersenneTwister(),
                            StatsPipeline(warmup=WARMUP_NONE), Dict{UInt64,Float64}(), 0.0)
 end
@@ -700,7 +703,7 @@ function _build_csm_world(config::ScenarioConfig, ::Type{F},
     bcs = config.flux_boundary ?
         BoundaryCondition{Float32}[AbsorbingBoundary(0.75f0)] :
         BoundaryCondition{Float32}[]
-    return ScenarioContext(world, SimWorld(), scene, config, 0.0, bcs,
+    return ScenarioContext(world, SimWorld(), scene, config, 0.0, 0.0f0, bcs,
                            Set{Int}(), Tuple{Float64,Symbol,UInt64}[], 0.0, 0.0, MersenneTwister(),
                            StatsPipeline(warmup=WARMUP_NONE), Dict{UInt64,Float64}(), 0.0)
 end
@@ -762,6 +765,7 @@ function reset_scenario!(ctx::ScenarioContext;
     ctx.scene            = new_ctx.scene
     ctx.config           = new_ctx.config
     ctx.sim_time         = 0.0
+    ctx._global_panic    = 0.0f0
     ctx.boundaries       = new_ctx.boundaries
     empty!(ctx._fired_events)
     empty!(ctx._mm1_fel)
@@ -831,6 +835,7 @@ Also bumps `sim_world.stats.total_events` so the stats panel shows the alarm.
 function _handle_evac_alarm!(ctx::ScenarioContext, ev::ScheduledEvent)
     F   = Float32
     v_p = F(get(ev.params, :v_panic, 1.8))
+    p_p = clamp(F(get(ev.params, :panic_level, 0.8)), 0f0, 1f0)
 
     # Patch MotionParams.v_pref on every agent in the Ark world.
     # MotionParams is an immutable struct — we replace each entry entirely.
@@ -843,9 +848,13 @@ function _handle_evac_alarm!(ctx::ScenarioContext, ev::ScheduledEvent)
         end
     end
 
+    # Broadcast panic overlay scalar for visualization (current implementation
+    # uses a global panic level; per-agent panic dynamics can be layered later).
+    ctx._global_panic = p_p
+
     # Record in SimStats so the stats panel shows the alarm
     ctx.sim_world.stats.total_events += 1
-    @info "[SimViz] 🚨 evac_alarm fired at t=$(round(ctx.sim_time,digits=1))s → v_pref=$(v_p) m/s"
+    @info "[SimViz] 🚨 evac_alarm fired at t=$(round(ctx.sim_time,digits=1))s → v_pref=$(v_p) m/s, panic=$(p_p)"
 end
 
 # ── :start_mm1_queue handler ──────────────────────────────────────────────────
@@ -1077,30 +1086,55 @@ function serialize_world_ctx(ctx::ScenarioContext) :: WorldSnapshot
     # Base serialization from Ark ECS
     snap = serialize_world(ctx.ark_world, ctx.sim_time)
 
+    # ── Panic bridge for OVERLAY_PANIC (global scalar, broadcast to agents) ─────
+    panic_vec = fill(ctx._global_panic, snap.n_agents)
+
     # ── Sprint 4I: pull stats from StatsPipeline (composable, warmup-aware) ─────
-    sc   = ctx.sim_world.stats          # legacy SimStats (raw counters)
-    psm  = sim_summary(ctx._mm1_pipeline)  # Sprint 4I: accurate queuing metrics
+    sc      = ctx.sim_world.stats             # legacy SimStats (non-MM1 scenarios)
+    psm     = sim_summary(ctx._mm1_pipeline)  # MM1 pipeline (queueing metrics)
+    mm1_on  = ctx._mm1_lambda > 0.0
+
+    # Keep non-MM1 DES events (e.g., :evac_alarm) visible in total_events even
+    # when MM1 uses StatsPipeline counters.
+    external_events = max(0, sc.total_events - sc.total_arrivals - sc.total_departures)
+
+    total_events = mm1_on ? (psm.total_events + external_events) : sc.total_events
+    total_arr    = mm1_on ? psm.total_arrivals : sc.total_arrivals
+    total_dep    = mm1_on ? psm.total_departures : sc.total_departures
+    busy_time    = if mm1_on
+        (!isnan(psm.utilization) && ctx.sim_time > 0.0) ? psm.utilization * ctx.sim_time : sc.busy_time
+    else
+        sc.busy_time
+    end
+
+    W_out   = mm1_on ? psm.W : NaN
+    Wq_out  = mm1_on ? psm.Wq : NaN
+    L_out   = mm1_on ? psm.L : NaN
+    Lq_out  = mm1_on ? psm.Lq : NaN
+    rho_out = mm1_on ? psm.utilization : NaN
+    thr_out = mm1_on ? psm.throughput : NaN
+
     stats_snap = (
         # ─ Legacy raw counters (backward compat with stats panel) ─────────────
-        total_events     = sc.total_events,
-        total_arrivals   = sc.total_arrivals,
-        total_departures = sc.total_departures,
-        busy_time        = sc.busy_time,
+        total_events     = total_events,
+        total_arrivals   = total_arr,
+        total_departures = total_dep,
+        busy_time        = busy_time,
         elapsed_sim_time = ctx.sim_time,
         # ─ Sprint 4I: accurate pipeline metrics ───────────────────────────────
-        W     = psm.W,           # mean sojourn time (s)
-        Wq    = psm.Wq,          # mean wait in queue (s)
-        L     = psm.L,           # mean system size (Little's Law)
-        Lq    = psm.Lq,          # mean queue size
-        rho   = psm.utilization, # server utilization (time-weighted)
-        throughput = psm.throughput,  # λ_eff (departures/s)
+        W     = W_out,           # mean sojourn time (s)
+        Wq    = Wq_out,          # mean wait in queue (s)
+        L     = L_out,           # mean system size (Little's Law)
+        Lq    = Lq_out,          # mean queue size
+        rho   = rho_out,         # server utilization (time-weighted)
+        throughput = thr_out,    # λ_eff (departures/s)
     )
 
     return (
         sim_time        = snap.sim_time,
         positions       = snap.positions,
         velocities      = snap.velocities,
-        panic_levels    = snap.panic_levels,   # TODO 4B-03: bridge CrowdAgent.panic_level
+        panic_levels    = panic_vec,
         fsm_modes       = snap.fsm_modes,
         local_densities = snap.local_densities,
         n_agents        = snap.n_agents,

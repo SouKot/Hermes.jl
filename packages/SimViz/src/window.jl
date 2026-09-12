@@ -94,6 +94,8 @@ function _build_stats_text(snap::WorldSnapshot, fps_str::String,
     s = snap.stats
     ρ_avg = snap.n_agents > 0 ?
         round(sum(snap.local_densities) / snap.n_agents, digits=2) : 0.00
+    panic_max = isempty(snap.panic_levels) ? 0.0f0 : maximum(snap.panic_levels)
+    alarm_str = panic_max > 1f-6 ? "ACTIVE" : "off"
 
     # ── Current system state from visualization (exact head count) ──────────
     L_now       = snap.n_des_agents           # agents currently in system
@@ -156,35 +158,13 @@ Lq (q avg):   $(Lq_str)
 ── FSM Density ──────
 ρ̄ local:  $(ρ_avg) ped/m²
 N ABM:    $(snap.n_agents)
+Alarm:    $(alarm_str)
 """
 end
 
 
 # ── create_window! ─────────────────────────────────────────────────────────────
 
-"""
-    create_window!(ctx::ScenarioContext; cell_size=0.5f0) -> (fig, viz)
-
-Create the GLMakie figure and wire all Observables. Returns the `Figure` and
-the `SimVizState` container.
-
-# Layout (3-row GridLayout)
-- **Row 1** (height=40px): controls bar (play/pause/step/reset, speed slider,
-  overlay menu, density toggle)
-- **Row 2** (flex): simulation canvas (left 70%) + stats panel (right 30%)
-- **Row 3** (height=120px): parameter sliders
-
-`ctx.config` is used to:
-- Set Axis limits from `config.room.width` / `config.room.height`
-- Set `cell_size` for the density grid
-- Initialize `markersize` for the scatter plot
-
-!!! warning "GLMakie Observables threading"
-    `update_viz!` runs in an `@async` task on the Julia main thread.
-    GLMakie requires all Observable updates that touch rendered objects to
-    happen on the thread that owns the OpenGL context (main thread).
-    Do NOT push Observable updates from a separate `@spawn` task.
-"""
 # ── Wall geometry helper ─────────────────────────────────────────────────────
 
 """
@@ -286,7 +266,7 @@ function create_window!(ctx::ScenarioContext; cell_size::Float32 = 0.5f0)
         sim_time         = Observable(0.0),
         agent_count      = Observable(0),
         fps_display      = Observable("FPS: —"),
-        overlay_mode     = Observable(OVERLAY_FSM),
+        overlay_mode     = Observable(config.default_overlay),
         show_density     = Observable(false),
         wall_segments    = Observable(_build_wall_segments(ctx.ark_world)),
     )
