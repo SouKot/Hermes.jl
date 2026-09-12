@@ -1167,6 +1167,51 @@ T7 ✅ liveness (Hybrid FSM 3K — see caveat below), T14 ✅ (3G lane formation
 
 ---
 
+## Phase 5.5 — Statistics API Convergence (SimStats → StatsPipeline)
+
+> **Goal**: Remove dual-stats maintenance by converging runtime/statistics consumers on `StatsPipeline`,
+> while preserving compatibility for existing scripts during a short deprecation window.
+> **Package refs**: `packages/SimCore`, `packages/SimDES`, `packages/SimViz`
+> **Depends on**: Phase 2 complete (DES stable), Phase 4 integration demos available
+> **Timeline**: 1 sprint (before Phase 6 PDES implementation)
+
+### Sprint 5.5A — Convergence and Deprecation
+
+- [ ] **5.5A-01** · Freeze public metrics contract for `sim_summary(::StatsPipeline)`
+  - Define mandatory parity keys (legacy): `L`, `Wq`, `W`, `utilization`, `blocking_prob`,
+    `total_arrivals`, `total_departures`, `blocked_count`, `total_events`
+  - Define required extended keys: `Lq`, `availability`, `throughput`, `W_quantile`,
+    `Wq_quantile`, `queue_min`, `queue_max`, `warmup_complete`
+
+- [ ] **5.5A-02** · Introduce compatibility adapter for legacy call sites
+  - Add one canonical adapter path (`SimStats` view from pipeline summary or explicit wrapper)
+  - Mark direct `SimStats` construction as legacy in docstrings (not immediate hard break)
+
+- [ ] **5.5A-03** · Migrate SimDES runtime paths to pipeline-first
+  - Replace direct `SimStats`-dependent flows in runners/dispatch hot paths
+  - Keep legacy compatibility only at API boundary, not core event loop logic
+
+- [ ] **5.5A-04** · Migrate SimViz stats reads to pipeline-only source of truth
+  - Ensure DES-only, crowd-only, and mixed DES+crowd scenarios all read unified totals
+  - Preserve external event visibility in mixed MM1 + non-MM1 event streams
+
+- [ ] **5.5A-05** · Add parity + regression tests
+  - `sim_summary(::StatsPipeline)` parity checks against legacy outputs on canonical M/M/1 runs
+  - Mixed-event accounting tests (arrivals/departures + external alarms)
+  - Warmup behavior tests (`AUTO`, `FIXED`, `NONE`) with explicit acceptance thresholds
+
+- [ ] **5.5A-06** · Add deprecation policy and removal trigger
+  - Deprecation window: keep `SimStats` for compatibility only
+  - Removal trigger: two releases with zero internal runtime usage + migration guide published
+
+**Acceptance criteria (Phase 5.5 done):**
+- All internal runtime paths (SimDES + SimViz) are pipeline-first.
+- No new features are added to `SimStats`.
+- Tests pass with parity/regression coverage for legacy summary keys.
+- PDES planning (Phase 6) references a single statistics contract.
+
+---
+
 ## Phase 6 — Conservative PDES: Tier 2 Engine
 
 > **Goal**: Refactor serial DES to per-LP parallel DES using Chandy-Misra protocol.  
@@ -1514,6 +1559,7 @@ T7 ✅ liveness (Hybrid FSM 3K — see caveat below), T14 ✅ (3G lane formation
 | **2D** | SimDES Architecture Hardening | ✅ Complete (2026-08-08) | 5/5 |
 | **3** | SimCrowd + GPU | `[/]` In progress | 3A+3B ✅ · 3C: 8/9 · 3D–3G (tier-3): ✅ · 3E (FD periodic ±15%): ✅ · 3F (lane formation): ✅ · **3G (GCF+λ): ✅** · **3H (speed dist T4): ✅** · **ORCA 3I-a/b/c: ✅** · **3J (GCFM-elliptical): ✅** · **3K (Hybrid FSM liveness): ✅** (commit `4d62202`, §14 caveat) · **3L (CSM T7 calibrated): ✅** · **3M (CSM gap fix): ✅** · **3N (NavField FMM): ✅** · **3O (AbstractNavField + HybridFSM nav): ✅** · **3P (wall penetration correction): ✅** · **3Q (GPU wall correction + BaseGPUContext): ✅** · **3R (CSM O(N×k) CPU+GPU): ✅** · **3S (GPU HybridFSM kernel): ✅** · **211 tests passing** · GPU kernels: ✅ CSM + HybridFSM |
 | **4** | SimViz GLMakie | `[ ]` Not started | 0/8 |
+| **5.5** | Stats API Convergence | `[ ]` Not started | 0/6 |
 | **5** | Conservative PDES | `[ ]` Not started | 0/17 |
 | **6** | DES + Crowd Integration | `[ ]` Not started | 0/7 |
 | **7** | Godot 4 Desktop App | `[ ]` Not started | 0/14 |
