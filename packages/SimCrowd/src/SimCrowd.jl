@@ -186,7 +186,6 @@ This helper exists to ease migration. When all call sites use explicit `AgentGeo
 
 See: §2.2 in `simcrowd_improvement_plan.md`.
 """
-# 4/5-arg: auto cr = sr×2/3, σ = 0.1 default; η=0.0 (Helbing, GCF disabled), τ_gap=0 (circular)
 function from_agent_params(sr::F, mass::F, v_pref::F, τ::F, μ::F=F(0.5);
                             σ::F=F(0.1), A::F=F(2000), B::F=F(0.08), λ::F=F(0.5),
                             η::F=zero(F), τ_gap::F=zero(F), b_min::F=F(0.25), b_max::F=F(0.25)) where {F<:AbstractFloat}
@@ -230,7 +229,6 @@ Constructors for `ORCAParams`. The 8-arg form defaults `responsibility = 0.5` (s
 reciprocal ORCA). Pass `responsibility = 1.0` for agents that cannot rely on neighbours
 to cooperate (e.g., robot in a pedestrian crowd, or agent approaching a wall boundary).
 """
-# 8-arg backward-compatible: defaults responsibility = 0.5 (reciprocal ORCA)
 ORCAParams(th::F, tho::F, mn::Int, nd::F, r::F, vp::F, τ::F, m::F) where {F<:AbstractFloat} =
     ORCAParams(th, tho, mn, nd, r, vp, τ, m, F(0.5))
 
@@ -704,6 +702,68 @@ SimScene(world::World, search::S, config::SimConfig{F}) where {F, S<:AbstractNei
 SimScene(world::World, search::S, nav_field::N, config::SimConfig{F}) where {F<:AbstractFloat, S<:AbstractNeighborSearch, N<:NavigationField{F}} =
     SimScene{F, S, N}(world, search, nav_field, config)
 
+@inline function _entity_sort_key(entity)
+    T = typeof(entity)
+    if hasfield(T, :_id)
+        eid = Int(getfield(entity, :_id))
+        egen = hasfield(T, :_gen) ? Int(getfield(entity, :_gen)) : 0
+        return (eid, egen)
+    end
+    return (Int(hash(entity)), 0)
+end
+
+function _refresh_agent_slot_map!(bufs::HybridSyncBuffers, world::World, ::Type{F}) where {F<:AbstractFloat}
+    entities = Any[]
+    try
+        for (ents, _) in Query(world, (Position{F},))
+            append!(entities, ents)
+        end
+    catch e
+        e isa ArgumentError || rethrow()
+    end
+    sort!(entities; by=_entity_sort_key)
+    empty!(bufs.agent_slot_cache)
+    for (slot, entity) in enumerate(entities)
+        bufs.agent_slot_cache[entity] = slot
+    end
+    bufs.cached_agent_count = length(entities)
+    return bufs.agent_slot_cache
+end
+
+function _build_agent_slot_map(bufs::HybridSyncBuffers, world::World, ::Type{F}) where {F<:AbstractFloat}
+    local n_agents::Int
+    try
+        n_agents = count_entities(Filter(world, (Position{F},)))
+    catch e
+        e isa ArgumentError || rethrow()
+        n_agents = 0
+    end
+
+    if n_agents == 0
+        empty!(bufs.agent_slot_cache)
+        bufs.cached_agent_count = 0
+        return bufs.agent_slot_cache
+    end
+
+    if bufs.cached_agent_count != n_agents || length(bufs.agent_slot_cache) != n_agents
+        return _refresh_agent_slot_map!(bufs, world, F)
+    end
+
+    return bufs.agent_slot_cache
+end
+
+@inline _point_in_service_zone(pos::SVector{2,F}, zone::ServiceZone) where {F<:AbstractFloat} =
+    zone.x_lo <= pos[1] <= zone.x_hi && zone.y_lo <= pos[2] <= zone.y_hi
+
+function _matched_service_zone_id(pos::SVector{2,F}, zones::AbstractVector{<:ServiceZone}) where {F<:AbstractFloat}
+    for zone in zones
+        if _point_in_service_zone(pos, zone)
+            return Int32(zone.zone_id)
+        end
+    end
+    return Int32(-1)
+end
+
 """
     step!(scene::SimScene)
 
@@ -735,9 +795,43 @@ for force-based models, or scatter-back for CSM). The `apply_agent_correction_cp
 on RadixSpatialHash runs post-scatter-back on the CPU-side ECS, using the Morton
 hash for O(N×k) neighbour lookup.
 """
-function step!(scene::SimScene{F}) where {F}
+function step!(scene::SimScene{F};
+               sync_bufs::Union{Nothing,HybridSyncBuffers}=nothing,
+               service_zones::AbstractVector{<:ServiceZone}=ServiceZone[],
+               strict_hybrid_indexing::Bool=true) where {F}
     dt      = scene.config.dt
     n_iters = scene.config.agent_correction_iters
+
+    slot_of = Dict{Any,Int}()
+    frozen_state = Dict{Any,Tuple{SVector{2,F},SVector{2,F}}}()
+
+    if sync_bufs !== nothing
+        slot_of = _build_agent_slot_map(sync_bufs, scene.world, F)
+        try
+            for (entities, pos_col, vel_col) in Query(scene.world, (Position{F}, Velocity{F}))
+                for i in eachindex(entities)
+                    entity = entities[i]
+                    slot = get(slot_of, entity, 0)
+                    if slot <= 0 || slot > length(sync_bufs.d_agent_in_service)
+                        if strict_hybrid_indexing
+                            throw(ArgumentError("hybrid slot index out of bounds for entity: slot=$slot, capacity=$(length(sync_bufs.d_agent_in_service))"))
+                        end
+                        continue
+                    end
+
+                    if sync_bufs.d_agent_free[slot]
+                        SimCore._consume_agent_free!(sync_bufs, slot)
+                    end
+
+                    if sync_bufs.d_agent_in_service[slot]
+                        frozen_state[entity] = (pos_col[i].p, vel_col[i].v)
+                    end
+                end
+            end
+        catch e
+            e isa ArgumentError || rethrow()
+        end
+    end
 
     # ── Count agent types ──────────────────────────────────────────
     # Guard: Ark.Query throws ArgumentError if a component type was never registered.
@@ -894,6 +988,50 @@ function step!(scene::SimScene{F}) where {F}
                                     tol                = vi.tol,
                                     restitution        = vi.restitution,
                                     use_mass_weighting = vi.use_mass_weighting)
+    end
+
+    if !isempty(frozen_state)
+        try
+            for (entities, pos_col, vel_col) in Query(scene.world, (Position{F}, Velocity{F}))
+                for i in eachindex(entities)
+                    entity = entities[i]
+                    haskey(frozen_state, entity) || continue
+                    pos_prev, vel_prev = frozen_state[entity]
+                    pos_col[i] = Position(pos_prev)
+                    vel_col[i] = Velocity(vel_prev)
+                end
+            end
+        catch e
+            e isa ArgumentError || rethrow()
+        end
+    end
+
+    if sync_bufs !== nothing && !isempty(service_zones)
+        try
+            for (entities, pos_col) in Query(scene.world, (Position{F},))
+                for i in eachindex(entities)
+                    entity = entities[i]
+                    slot = get(slot_of, entity, 0)
+                    if slot <= 0 || slot > length(sync_bufs.d_agent_in_service)
+                        if strict_hybrid_indexing
+                            throw(ArgumentError("hybrid slot index out of bounds for zone scan: slot=$slot, capacity=$(length(sync_bufs.d_agent_in_service))"))
+                        end
+                        continue
+                    end
+
+                    sync_bufs.d_agent_in_service[slot] && continue
+                    sync_bufs.d_zone_entry_flag[slot] && continue
+
+                    zid = _matched_service_zone_id(pos_col[i].p, service_zones)
+                    if zid >= 0
+                        sync_bufs.d_zone_entry_flag[slot] = true
+                        sync_bufs.d_agent_zone[slot] = zid
+                    end
+                end
+            end
+        catch e
+            e isa ArgumentError || rethrow()
+        end
     end
 
     return scene

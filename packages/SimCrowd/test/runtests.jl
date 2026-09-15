@@ -1,4 +1,5 @@
 using SimCrowd
+using SimCore
 using Test
 using StaticArrays
 using LinearAlgebra
@@ -1496,6 +1497,89 @@ end
 
     @printf("\nSprint 3Y apply_velocity_impulse_cpu! n_iters=8: v_closing=%.4f m/s (should be ≥ -0.001)\n",
             v_closing)
+end
+
+@testset "Task 24E — ABM hybrid hooks" begin
+    F = Float32
+
+    function _make_task24e_scene()
+        world = World(Position{F}, Velocity{F}, AgentGeometry{F}, MotionParams{F},
+                      SFMParams{F}, Goal{F}, Force{F}, WallSegment{F})
+
+        ap = from_agent_params(F(0.25), F(80), F(1.2), F(0.5), F(0.5), F(0.0))
+        new_entity!(world, (
+            Position(SVector(F(0.0), F(0.0))),
+            Velocity(SVector(F(0.0), F(0.0))),
+            ap...,
+            Goal(SVector(F(2.0), F(0.0))),
+            Force(zero(SVector{2,F})),
+        ))
+        new_entity!(world, (
+            Position(SVector(F(0.5), F(0.0))),
+            Velocity(SVector(F(0.0), F(0.0))),
+            ap...,
+            Goal(SVector(F(2.0), F(0.0))),
+            Force(zero(SVector{2,F})),
+        ))
+
+        gr = SVector(F(-2.0), F(-2.0))
+        gx = SVector(F(4.0), F(2.0))
+        search = CPUNeighborSearch(2, gr, gx, F(1.0))
+        cfg = SimConfig(F(0.05), F(5.0), 0)  # no post-step correction for deterministic parity
+        return SimScene(world, search, cfg)
+    end
+
+    function _snapshot_pos_vel(scene::SimScene{F}) where {F}
+        out = Vector{Tuple{SVector{2,F},SVector{2,F}}}()
+        for (_, pos_col, vel_col) in Query(scene.world, (Position{F}, Velocity{F}))
+            for i in eachindex(pos_col)
+                push!(out, (pos_col[i].p, vel_col[i].v))
+            end
+        end
+        return out
+    end
+
+    @testset "Parity when no agent is in service" begin
+        scene_a = _make_task24e_scene()
+        scene_b = _make_task24e_scene()
+
+        step!(scene_a)
+        bufs = SimCore.HybridSyncBuffers(2)
+        step!(scene_b; sync_bufs=bufs, service_zones=SimCore.ServiceZone[])
+
+        snap_a = _snapshot_pos_vel(scene_a)
+        snap_b = _snapshot_pos_vel(scene_b)
+        @test length(snap_a) == length(snap_b)
+        for i in eachindex(snap_a)
+            @test snap_a[i][1] ≈ snap_b[i][1] atol=1f-6
+            @test snap_a[i][2] ≈ snap_b[i][2] atol=1f-6
+        end
+    end
+
+    @testset "In-service freeze + free consume + zone entry" begin
+        scene = _make_task24e_scene()
+        bufs = SimCore.HybridSyncBuffers(2)
+        zones = [SimCore.ServiceZone(-0.2, 0.2, -0.2, 0.2, 9)]
+
+        # Agent slot 1 starts in service and has a one-shot free signal to consume
+        bufs.d_agent_in_service[1] = true
+        bufs.d_agent_free[1] = true
+
+        pos_before = _snapshot_pos_vel(scene)[1][1]
+        step!(scene; sync_bufs=bufs, service_zones=zones)
+        pos_after_frozen = _snapshot_pos_vel(scene)[1][1]
+
+        # free flag consumed, in-service agent did not move, and no zone-entry while frozen
+        @test bufs.d_agent_free[1] == false
+        @test pos_after_frozen ≈ pos_before atol=1f-8
+        @test bufs.d_zone_entry_flag[1] == false
+
+        # Unfreeze and run again: agent is in zone so entry should be flagged
+        bufs.d_agent_in_service[1] = false
+        step!(scene; sync_bufs=bufs, service_zones=zones)
+        @test bufs.d_zone_entry_flag[1] == true
+        @test bufs.d_agent_zone[1] == Int32(9)
+    end
 end
 
 end  # SimCrowd.jl

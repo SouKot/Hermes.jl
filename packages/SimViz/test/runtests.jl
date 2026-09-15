@@ -41,7 +41,10 @@ module HeadlessLayer
     include(joinpath(@__DIR__, "..", "src", "density.jl"))
 end
 
+using SimCore
+using SimDES
 using Test
+using Random: AbstractRNG, MersenneTwister
 
 # ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -53,6 +56,88 @@ const Pos2 = NTuple{2, Float32}
 function make_ctx(; n=20, model=HL.MODEL_SFM, seed=42)
     cfg = HL.ScenarioConfig(n_agents=n, crowd_model=model, rng_seed=seed)
     return HL.build_world!(cfg), cfg
+end
+
+function _entity_sort_key(entity)
+    T = typeof(entity)
+    if hasfield(T, :_id)
+        eid = Int(getfield(entity, :_id))
+        egen = hasfield(T, :_gen) ? Int(getfield(entity, :_gen)) : 0
+        return (eid, egen)
+    end
+    return (Int(hash(entity)), 0)
+end
+
+function _sorted_scene_entities(scene::HL.SimScene{F}) where {F}
+    entities = Any[]
+    for (ents, _) in HL.Query(scene.world, (HL.Position{F},))
+        append!(entities, ents)
+    end
+    sort!(entities; by=_entity_sort_key)
+    return entities
+end
+
+function _make_task24f_ctx(; dt=0.05, seed=24)
+    room = HL.RoomGeometry(
+        width=4.0,
+        height=3.0,
+        doors=[HL.DoorSpec(wall=:east, center=0.5, width=1.0)],
+    )
+    cfg = HL.ScenarioConfig(
+        n_agents=2,
+        crowd_model=HL.MODEL_ORCA,
+        flux_boundary=false,
+        room=room,
+        dt=dt,
+        rng_seed=seed,
+    )
+    ctx = HL.build_world!(cfg)
+
+    F = Float32
+    slot_targets = Dict(
+        _sorted_scene_entities(ctx.scene)[1] => (
+            pos = HL.SVector(F(0.0), F(-0.05)),
+            goal = HL.SVector(F(0.0), F(-0.05)),
+        ),
+        _sorted_scene_entities(ctx.scene)[2] => (
+            pos = HL.SVector(F(0.0), F(0.05)),
+            goal = HL.SVector(F(0.0), F(0.05)),
+        ),
+    )
+
+    for (entities, pos_col, vel_col, goal_col, motion_col) in HL.Query(
+        ctx.ark_world,
+        (HL.Position{F}, HL.Velocity{F}, HL.Goal{F}, HL.MotionParams{F}),
+    )
+        for i in eachindex(entities)
+            target = get(slot_targets, entities[i], nothing)
+            isnothing(target) && continue
+            pos_col[i] = HL.Position(target.pos)
+            vel_col[i] = HL.Velocity(zero(HL.SVector{2,F}))
+            goal_col[i] = HL.Goal(target.goal)
+            mp = motion_col[i]
+            motion_col[i] = HL.MotionParams(mp.mass, zero(F), mp.τ, zero(F))
+        end
+    end
+
+    return ctx
+end
+
+function _run_des_until!(world::SimWorld, fel::FutureEventList,
+                         configs::Dict{Int,ZoneConfig},
+                         clock::SimClock, rng::AbstractRNG,
+                         t_end::Float64;
+                         pipeline::Union{Nothing,StatsPipeline}=nothing,
+                         sync_bufs::Union{Nothing,HybridSyncBuffers}=nothing)
+    while peek_time(fel) <= t_end
+        result = safe_dequeue!(fel)
+        result === nothing && break
+        cev, t = result
+        throttle!(clock, t)
+        world.time = t
+        dispatch!(world, fel, configs, rng, cev.inner, t; pipeline=pipeline, sync_bufs=sync_bufs)
+    end
+    return world.stats
 end
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -768,5 +853,75 @@ end
     @test isapprox(s.L,    L_th;  atol=1.0)
     @test isapprox(s.Lq,   Lq_th; atol=1.0)
     @test isapprox(s.throughput, λ; atol=0.25)
+end
+
+@testset "Task 24F — end-to-end hybrid ORCA + DES" begin
+    hybrid_cfg = HybridSyncConfig(dt=0.05, Δt_sync=0.10, max_agents=2,
+                                  max_pending_departures=16, strict_invariants=true)
+    service_zones = [ServiceZone(-0.2, 0.2, -0.5, 0.5, 1)]
+
+    @testset "Closed-world mass conservation over repeated sync cycles" begin
+        ctx = _make_task24f_ctx(dt=hybrid_cfg.dt)
+        bufs = HybridSyncBuffers(hybrid_cfg)
+        st = HybridSyncState()
+
+        world = SimWorld()
+        fel = FutureEventList()
+        des_cfg = ZoneConfig(id=1, num_servers=1,
+                             service_dist=deterministic_service(0.15),
+                             arrival_rate=0.0, routing=ExitSystem())
+        configs = Dict(1 => des_cfg)
+        build_world!(world, des_cfg)
+
+        pipe = StatsPipeline(warmup=WARMUP_FIXED, warmup_n=20)
+        clock = SimClock(Inf)
+        rng = MersenneTwister(2026)
+        sim_time = 0.0
+        steps_per_sync = Int(round(hybrid_cfg.Δt_sync / hybrid_cfg.dt))
+
+        for _ in 1:120
+            for _ in 1:steps_per_sync
+                HL.step!(ctx.scene; sync_bufs=bufs, service_zones=service_zones)
+                ctx.sim_time += ctx.config.dt
+                sim_time = ctx.sim_time
+            end
+
+            sync_step!(bufs, st, sim_time;
+                       cfg=hybrid_cfg,
+                       on_arrival! = arrival_event -> schedule!(fel, arrival_event, arrival_event.time))
+
+            _run_des_until!(world, fel, configs, clock, rng, sim_time;
+                            pipeline=pipe, sync_bufs=bufs)
+
+            free_abm = count(!, bufs.d_agent_in_service)
+            des_active = length(world.des_agents)
+            pending_release = length(bufs.pending_departures)
+            @test free_abm + des_active + pending_release == 2
+        end
+
+        _run_des_until!(world, fel, configs, clock, rng, sim_time + 10.0;
+                pipeline=pipe, sync_bufs=bufs)
+        sync_step!(bufs, st, sim_time + 10.0;
+                   cfg=hybrid_cfg,
+                   on_arrival! = arrival_event -> schedule!(fel, arrival_event, arrival_event.time))
+
+        @test count(!, bufs.d_agent_in_service) == 2
+        @test isempty(bufs.pending_departures)
+        @test isempty(world.des_agents)
+        @test st.total_arrivals_injected == world.stats.total_arrivals
+        @test st.total_departures_applied == world.stats.total_departures
+        @test st.total_arrivals_injected == st.total_departures_applied
+
+        sm = sim_summary(pipe)
+        little_ok, little_err = check_littles_law(sm; tol=0.20)
+        @test sm.total_arrivals > 20
+        @test sm.total_departures > 20
+        @test sm.warmup_complete == true
+        @test sm.L > 0
+        @test sm.W > 0
+        @test little_ok
+        @test little_err <= 0.20
+        @test isapprox(sm.Lq, sm.throughput * sm.Wq; atol=max(0.2, 0.25 * sm.Lq + 0.1))
+    end
 end
 
