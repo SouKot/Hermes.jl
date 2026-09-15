@@ -25,6 +25,7 @@ using StaticArrays: SVector
 include("events.jl")
 include("clock.jl")
 include("components.jl")
+include("hybrid_sync.jl")
 include("warmup.jl")     # WelchDetector — must precede pipeline.jl
 include("collectors.jl") # AbstractCollector + 5 collectors — must precede pipeline.jl
 include("pipeline.jl")   # StatsPipeline, WarmupPolicy — uses warmup + collectors
@@ -47,6 +48,11 @@ export SimClock, throttle!, pause!, unpause!, set_speed!, step_once!, reset!,
 # Components
 export DESAgent, CrowdAgent, FluidParticle, CrowdObstacle,
        width, height, center
+
+# Hybrid sync (Task 24 scaffolding)
+export HybridSyncConfig, ServiceZone, HybridSyncBuffers, HybridSyncState,
+    AbstractSyncTransport, LocalSyncTransport,
+    validate_sync_config, reset_sync_buffers!, reset_sync_state!, sync_step!, mark_departure!
 
 # World
 export SimWorld, ZoneState, new_entity_id!,

@@ -880,6 +880,237 @@ end  # @testset "SimCore"
 end  # @testset "Sprint 4I — StatsPipeline"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Task 24 — Hybrid sync scaffolding + lifecycle (Task A/B)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@testset "Task 24A/B — Hybrid sync scaffolding + lifecycle" begin
+
+    @testset "HybridSyncConfig defaults + validation" begin
+        cfg = HybridSyncConfig()
+        @test cfg.dt == 0.05
+        @test cfg.Δt_sync == 0.5
+        @test cfg.max_agents == 50_000
+        @test cfg.max_pending_departures == 50_000
+        @test cfg.strict_invariants == true
+        @test cfg.drop_on_overflow == false
+        @test cfg.profiling == false
+
+        @test validate_sync_config(cfg) === cfg
+
+        @test_throws ArgumentError HybridSyncConfig(dt=0.0)
+        @test_throws ArgumentError HybridSyncConfig(Δt_sync=0.0)
+        @test_throws ArgumentError HybridSyncConfig(dt=0.2, Δt_sync=0.1)
+        @test_throws ArgumentError HybridSyncConfig(dt=0.2, Δt_sync=0.3)
+        @test_throws ArgumentError HybridSyncConfig(max_agents=0)
+        @test_throws ArgumentError HybridSyncConfig(max_pending_departures=0)
+    end
+
+    @testset "ServiceZone construction" begin
+        z = ServiceZone(0.0, 2.0, 1.0, 3.0, 7)
+        @test z.x_lo == 0.0
+        @test z.x_hi == 2.0
+        @test z.y_lo == 1.0
+        @test z.y_hi == 3.0
+        @test z.zone_id == Int32(7)
+
+        @test_throws ArgumentError ServiceZone(2.0, 2.0, 1.0, 3.0, 1)
+        @test_throws ArgumentError ServiceZone(0.0, 2.0, 3.0, 3.0, 1)
+        @test_throws ArgumentError ServiceZone(0.0, 2.0, 1.0, 3.0, -1)
+    end
+
+    @testset "HybridSyncBuffers construction + reset" begin
+        bufs = HybridSyncBuffers(8)
+        @test length(bufs.d_zone_entry_flag) == 8
+        @test length(bufs.d_agent_in_service) == 8
+        @test length(bufs.d_agent_free) == 8
+        @test length(bufs.d_agent_zone) == 8
+        @test isempty(bufs.pending_departures)
+
+        @test all(.!bufs.d_zone_entry_flag)
+        @test all(.!bufs.d_agent_in_service)
+        @test all(.!bufs.d_agent_free)
+        @test all(bufs.d_agent_zone .== Int32(-1))
+
+        bufs.d_zone_entry_flag[2] = true
+        bufs.d_agent_in_service[3] = true
+        bufs.d_agent_free[4] = true
+        bufs.d_agent_zone[5] = Int32(10)
+        push!(bufs.pending_departures, Int32(99))
+
+        reset_sync_buffers!(bufs)
+        @test all(.!bufs.d_zone_entry_flag)
+        @test all(.!bufs.d_agent_in_service)
+        @test all(.!bufs.d_agent_free)
+        @test all(bufs.d_agent_zone .== Int32(-1))
+        @test isempty(bufs.pending_departures)
+
+        # idempotent reset
+        reset_sync_buffers!(bufs)
+        @test all(.!bufs.d_zone_entry_flag)
+        @test all(.!bufs.d_agent_in_service)
+        @test all(.!bufs.d_agent_free)
+        @test all(bufs.d_agent_zone .== Int32(-1))
+        @test isempty(bufs.pending_departures)
+
+        # config-driven constructor
+        cfg = HybridSyncConfig(max_agents=11, max_pending_departures=13)
+        bufs_cfg = HybridSyncBuffers(cfg; id_type=Int64)
+        @test length(bufs_cfg.d_zone_entry_flag) == 11
+        @test length(bufs_cfg.d_agent_in_service) == 11
+        @test length(bufs_cfg.d_agent_free) == 11
+        @test length(bufs_cfg.d_agent_zone) == 11
+        @test eltype(bufs_cfg.pending_departures) == Int64
+        @test isempty(bufs_cfg.pending_departures)
+
+        @test_throws ArgumentError HybridSyncBuffers(0)
+    end
+
+    @testset "HybridSyncState lifecycle + diagnostics" begin
+        st = HybridSyncState()
+        @test st.n_sync_steps == 0
+        @test st.total_arrivals_injected == 0
+        @test st.total_departures_applied == 0
+        @test st.total_overflow_drops == 0
+        @test st.last_arrivals_injected == 0
+        @test st.last_departures_applied == 0
+        @test st.last_overflow_drops == 0
+
+        SimCore._record_sync_step!(st; arrivals_injected=3, departures_applied=2, overflow_drops=1)
+        @test st.n_sync_steps == 1
+        @test st.total_arrivals_injected == 3
+        @test st.total_departures_applied == 2
+        @test st.total_overflow_drops == 1
+        @test st.last_arrivals_injected == 3
+        @test st.last_departures_applied == 2
+        @test st.last_overflow_drops == 1
+
+        snap = SimCore._sync_state_snapshot(st)
+        @test snap.n_sync_steps == 1
+        @test snap.total_arrivals_injected == 3
+        @test snap.total_departures_applied == 2
+        @test snap.total_overflow_drops == 1
+
+        reset_sync_state!(st)
+        @test st.n_sync_steps == 0
+        @test st.total_arrivals_injected == 0
+        @test st.total_departures_applied == 0
+        @test st.total_overflow_drops == 0
+        @test st.last_arrivals_injected == 0
+        @test st.last_departures_applied == 0
+        @test st.last_overflow_drops == 0
+
+        # idempotent reset
+        reset_sync_state!(st)
+        @test st.n_sync_steps == 0
+
+        @test_throws ArgumentError SimCore._record_sync_step!(st; arrivals_injected=-1)
+        @test_throws ArgumentError SimCore._record_sync_step!(st; departures_applied=-1)
+        @test_throws ArgumentError SimCore._record_sync_step!(st; overflow_drops=-1)
+    end
+
+    @testset "sync_step! injects arrivals and applies departures" begin
+        bufs = HybridSyncBuffers(6)
+        st = HybridSyncState()
+        seen = EntityArrival[]
+
+        bufs.d_zone_entry_flag[2] = true
+        bufs.d_zone_entry_flag[4] = true
+        bufs.d_agent_zone[2] = Int32(5)
+        bufs.d_agent_zone[4] = Int32(7)
+        bufs.d_agent_in_service[5] = true
+        @test mark_departure!(bufs, 5)
+
+        result = sync_step!(bufs, st, 12.5; on_arrival! = event -> push!(seen, event))
+
+        @test result.sim_time == 12.5
+        @test result.arrival_ids == [2, 4]
+        @test result.departure_ids == [5]
+        @test length(result.arrivals) == 2
+        @test seen == result.arrivals
+        @test [event.entity_id for event in result.arrivals] == UInt64[2, 4]
+        @test [event.zone_id for event in result.arrivals] == [5, 7]
+        @test all(.!bufs.d_zone_entry_flag)
+        @test bufs.d_agent_in_service[2]
+        @test bufs.d_agent_in_service[4]
+        @test !bufs.d_agent_in_service[5]
+        @test bufs.d_agent_free[5]
+        @test isempty(bufs.pending_departures)
+        @test st.n_sync_steps == 1
+        @test st.total_arrivals_injected == 2
+        @test st.total_departures_applied == 1
+        @test SimCore._consume_agent_free!(bufs, 5) == true
+        @test SimCore._consume_agent_free!(bufs, 5) == false
+    end
+
+    @testset "Task H transport seam compatibility" begin
+        local_transport = LocalSyncTransport()
+        @test local_transport isa AbstractSyncTransport
+
+        bufs = HybridSyncBuffers(5)
+        st = HybridSyncState()
+        seen = EntityArrival[]
+
+        bufs.d_zone_entry_flag[3] = true
+        bufs.d_agent_zone[3] = Int32(11)
+        bufs.d_agent_in_service[2] = true
+        @test mark_departure!(local_transport, bufs, 2)
+
+        result = sync_step!(local_transport, bufs, st, 3.0;
+                            on_arrival! = event -> push!(seen, event))
+
+        @test result.arrival_ids == [3]
+        @test result.departure_ids == [2]
+        @test length(result.arrivals) == 1
+        @test seen == result.arrivals
+        @test bufs.d_agent_in_service[3]
+        @test !bufs.d_agent_in_service[2]
+        @test bufs.d_agent_free[2]
+
+        struct MockTransport <: AbstractSyncTransport end
+        mock_transport = MockTransport()
+        @test_throws ArgumentError mark_departure!(mock_transport, bufs, 1)
+        @test_throws ArgumentError sync_step!(mock_transport, bufs, st, 4.0)
+    end
+
+    @testset "mark_departure! guards duplicates and overflow policy" begin
+        bufs = HybridSyncBuffers(4)
+        cfg_strict = HybridSyncConfig(max_agents=4, max_pending_departures=1, drop_on_overflow=false)
+        cfg_drop = HybridSyncConfig(max_agents=4, max_pending_departures=1, drop_on_overflow=true)
+
+        @test mark_departure!(bufs, 1; cfg=cfg_strict)
+        @test_throws ArgumentError mark_departure!(bufs, 1; cfg=cfg_strict)
+        @test_throws ArgumentError mark_departure!(bufs, 2; cfg=cfg_strict)
+
+        reset_sync_buffers!(bufs)
+        @test mark_departure!(bufs, 1; cfg=cfg_drop)
+        @test mark_departure!(bufs, 2; cfg=cfg_drop) == false
+        @test bufs.pending_departures == [1]
+    end
+
+    @testset "sync_step! strict invariant failures" begin
+        st = HybridSyncState()
+
+        bufs_double_freeze = HybridSyncBuffers(3)
+        bufs_double_freeze.d_zone_entry_flag[2] = true
+        bufs_double_freeze.d_agent_zone[2] = Int32(1)
+        bufs_double_freeze.d_agent_in_service[2] = true
+        @test_throws ArgumentError sync_step!(bufs_double_freeze, st, 1.0)
+
+        bufs_bad_zone = HybridSyncBuffers(3)
+        bufs_bad_zone.d_zone_entry_flag[1] = true
+        @test_throws ArgumentError sync_step!(bufs_bad_zone, st, 1.0)
+
+        bufs_overlap = HybridSyncBuffers(3)
+        bufs_overlap.d_zone_entry_flag[3] = true
+        bufs_overlap.d_agent_zone[3] = Int32(9)
+        bufs_overlap.d_agent_in_service[3] = true
+        push!(bufs_overlap.pending_departures, Int32(3))
+        @test_throws ArgumentError sync_step!(bufs_overlap, st, 1.0)
+    end
+
+end  # @testset "Task 24A/B — Hybrid sync scaffolding + lifecycle"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Task 22 — Accelerated Post-Hoc Statistics (SimCoreGPUExt via AcceleratedKernels)
 #
 # Architecture: SimCoreGPUExt fires when AcceleratedKernels + KernelAbstractions
