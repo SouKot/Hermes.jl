@@ -272,7 +272,8 @@ function run_hybrid_hook_only_case(; n_agents::Int=80,
                                    dt::Float64=0.05,
                                    seed::Int=2026,
                                    sync_cadence_ratio::Int=10,
-                                   quiet::Bool=true)
+                                   quiet::Bool=true,
+                                   timing::Union{Nothing,AbstractDict{Symbol,Float64}}=nothing)
     runner = () -> begin
         sync_cfg = HybridSyncConfig(dt=dt, Δt_sync=dt * sync_cadence_ratio, max_agents=n_agents,
                                     max_pending_departures=max(64, n_agents), strict_invariants=true)
@@ -284,13 +285,19 @@ function run_hybrid_hook_only_case(; n_agents::Int=80,
 
         timed = @timed begin
             for step_idx in 1:n_steps
-                step!(ctx.scene; sync_bufs=bufs, service_zones=ServiceZone[])
+                step_started_ns = isnothing(timing) ? UInt64(0) : time_ns()
+                step!(ctx.scene; sync_bufs=bufs, service_zones=ServiceZone[], timing=timing)
+                _record_timing!(timing, :hook_step_wrapper_s, time_ns() - step_started_ns)
                 ctx.sim_time += ctx.config.dt
                 if step_idx % sync_every == 0
+                    sync_started_ns = isnothing(timing) ? UInt64(0) : time_ns()
                     sync_step!(bufs, st, ctx.sim_time; cfg=sync_cfg)
+                    _record_timing!(timing, :hook_sync_step_s, time_ns() - sync_started_ns)
                 end
             end
+            serialize_started_ns = isnothing(timing) ? UInt64(0) : time_ns()
             SimViz.serialize_world_ctx(ctx)
+            _record_timing!(timing, :hook_serialize_s, time_ns() - serialize_started_ns)
         end
 
         return Dict(
@@ -306,9 +313,16 @@ function run_hybrid_hook_only_case(; n_agents::Int=80,
             "sync_steps" => Float64(st.n_sync_steps),
             "total_arrivals_injected" => Float64(st.total_arrivals_injected),
             "total_departures_applied" => Float64(st.total_departures_applied),
+            "timing" => isnothing(timing) ? Dict{String,Float64}() : Dict(String(k) => v for (k, v) in timing),
         )
     end
     return quiet ? with_logger(NullLogger()) do; runner(); end : runner()
+end
+
+@inline _record_timing!(::Nothing, ::Symbol, ::UInt64) = nothing
+@inline function _record_timing!(timing::AbstractDict{Symbol,Float64}, key::Symbol, elapsed_ns::UInt64)
+    timing[key] = get(timing, key, 0.0) + Float64(elapsed_ns) * 1.0e-9
+    return timing
 end
 
 function run_hybrid_active_case(; n_agents::Int=80,
@@ -317,7 +331,8 @@ function run_hybrid_active_case(; n_agents::Int=80,
                                 seed::Int=2026,
                                 utilization::Float64=0.6,
                                 sync_cadence_ratio::Int=10,
-                                quiet::Bool=true)
+                                quiet::Bool=true,
+                                timing::Union{Nothing,AbstractDict{Symbol,Float64}}=nothing)
     runner = () -> begin
         staged_agents = min(max(2, n_agents ÷ 20), 64)
         sync_cfg = HybridSyncConfig(dt=dt, Δt_sync=dt * sync_cadence_ratio, max_agents=n_agents,
@@ -347,22 +362,36 @@ function run_hybrid_active_case(; n_agents::Int=80,
 
         timed = @timed begin
             for step_idx in 1:n_steps
-                step!(ctx.scene; sync_bufs=bufs, service_zones=service_zones)
+                step_started_ns = isnothing(timing) ? UInt64(0) : time_ns()
+                step!(ctx.scene; sync_bufs=bufs, service_zones=service_zones, timing=timing)
+                _record_timing!(timing, :active_step_wrapper_s, time_ns() - step_started_ns)
                 ctx.sim_time += ctx.config.dt
                 if step_idx % sync_every == 0
+                    sync_started_ns = isnothing(timing) ? UInt64(0) : time_ns()
                     sync_step!(bufs, st, ctx.sim_time;
                                cfg=sync_cfg,
                                on_arrival! = arrival_event -> SimDES.schedule!(fel, arrival_event, arrival_event.time))
+                    _record_timing!(timing, :active_sync_step_s, time_ns() - sync_started_ns)
+
+                    des_started_ns = isnothing(timing) ? UInt64(0) : time_ns()
                     _run_des_until!(world, fel, configs, clock, rng, ctx.sim_time; pipeline=pipe, sync_bufs=bufs)
+                    _record_timing!(timing, :active_des_until_s, time_ns() - des_started_ns)
                 end
             end
 
+            final_des_started_ns = isnothing(timing) ? UInt64(0) : time_ns()
             _run_des_until!(world, fel, configs, clock, rng, ctx.sim_time + 10.0; pipeline=pipe, sync_bufs=bufs)
+            _record_timing!(timing, :active_final_des_drain_s, time_ns() - final_des_started_ns)
+
+            final_sync_started_ns = isnothing(timing) ? UInt64(0) : time_ns()
             sync_step!(bufs, st, ctx.sim_time + 10.0;
                        cfg=sync_cfg,
                        on_arrival! = arrival_event -> SimDES.schedule!(fel, arrival_event, arrival_event.time))
+            _record_timing!(timing, :active_final_sync_s, time_ns() - final_sync_started_ns)
 
+            serialize_started_ns = isnothing(timing) ? UInt64(0) : time_ns()
             SimViz.serialize_world_ctx(ctx)
+            _record_timing!(timing, :active_serialize_s, time_ns() - serialize_started_ns)
         end
 
         sm = sim_summary(pipe)
@@ -397,6 +426,7 @@ function run_hybrid_active_case(; n_agents::Int=80,
             "littles_law_rel_err" => little_err,
             "little_ok" => little_ok ? 1.0 : 0.0,
             "mass_residual" => Float64(mass_residual),
+            "timing" => isnothing(timing) ? Dict{String,Float64}() : Dict(String(k) => v for (k, v) in timing),
         )
     end
     return quiet ? with_logger(NullLogger()) do; runner(); end : runner()

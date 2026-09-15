@@ -764,6 +764,12 @@ function _matched_service_zone_id(pos::SVector{2,F}, zones::AbstractVector{<:Ser
     return Int32(-1)
 end
 
+@inline _timing_add!(::Nothing, ::Symbol, ::UInt64) = nothing
+@inline function _timing_add!(timing::AbstractDict{Symbol,Float64}, key::Symbol, elapsed_ns::UInt64)
+    timing[key] = get(timing, key, 0.0) + Float64(elapsed_ns) * 1.0e-9
+    return timing
+end
+
 """
     step!(scene::SimScene)
 
@@ -798,7 +804,9 @@ hash for O(N×k) neighbour lookup.
 function step!(scene::SimScene{F};
                sync_bufs::Union{Nothing,HybridSyncBuffers}=nothing,
                service_zones::AbstractVector{<:ServiceZone}=ServiceZone[],
-               strict_hybrid_indexing::Bool=true) where {F}
+               strict_hybrid_indexing::Bool=true,
+               timing::Union{Nothing,AbstractDict{Symbol,Float64}}=nothing) where {F}
+    step_started_ns = isnothing(timing) ? UInt64(0) : time_ns()
     dt      = scene.config.dt
     n_iters = scene.config.agent_correction_iters
 
@@ -806,7 +814,11 @@ function step!(scene::SimScene{F};
     frozen_state = Dict{Any,Tuple{SVector{2,F},SVector{2,F}}}()
 
     if sync_bufs !== nothing
+        slot_map_started_ns = isnothing(timing) ? UInt64(0) : time_ns()
         slot_of = _build_agent_slot_map(sync_bufs, scene.world, F)
+        _timing_add!(timing, :hybrid_slot_map_s, time_ns() - slot_map_started_ns)
+
+        prescan_started_ns = isnothing(timing) ? UInt64(0) : time_ns()
         try
             for (entities, pos_col, vel_col) in Query(scene.world, (Position{F}, Velocity{F}))
                 for i in eachindex(entities)
@@ -831,6 +843,7 @@ function step!(scene::SimScene{F};
         catch e
             e isa ArgumentError || rethrow()
         end
+        _timing_add!(timing, :hybrid_prefreeze_scan_s, time_ns() - prescan_started_ns)
     end
 
     # ── Count agent types ──────────────────────────────────────────
@@ -991,6 +1004,7 @@ function step!(scene::SimScene{F};
     end
 
     if !isempty(frozen_state)
+        restore_started_ns = isnothing(timing) ? UInt64(0) : time_ns()
         try
             for (entities, pos_col, vel_col) in Query(scene.world, (Position{F}, Velocity{F}))
                 for i in eachindex(entities)
@@ -1004,9 +1018,11 @@ function step!(scene::SimScene{F};
         catch e
             e isa ArgumentError || rethrow()
         end
+        _timing_add!(timing, :hybrid_frozen_restore_s, time_ns() - restore_started_ns)
     end
 
     if sync_bufs !== nothing && !isempty(service_zones)
+        zone_scan_started_ns = isnothing(timing) ? UInt64(0) : time_ns()
         try
             for (entities, pos_col) in Query(scene.world, (Position{F},))
                 for i in eachindex(entities)
@@ -1032,7 +1048,10 @@ function step!(scene::SimScene{F};
         catch e
             e isa ArgumentError || rethrow()
         end
+        _timing_add!(timing, :hybrid_zone_scan_s, time_ns() - zone_scan_started_ns)
     end
+
+    _timing_add!(timing, :scene_step_total_s, time_ns() - step_started_ns)
 
     return scene
 end
