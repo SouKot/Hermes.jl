@@ -140,6 +140,8 @@ function _run_des_until!(world::SimWorld, fel::FutureEventList,
     return world.stats
 end
 
+include("backend_parity_regressions.jl")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 4A-02 · viz_state.jl
 # ══════════════════════════════════════════════════════════════════════════════

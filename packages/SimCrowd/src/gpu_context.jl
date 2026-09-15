@@ -168,16 +168,11 @@ function stage_and_sort_base!(
     N = length(positions)
     F = eltype(radii)
 
-    # 1. Copy per-agent data to device
-    copyto!(base.dev_positions,  positions)
-    copyto!(base.dev_velocities, velocities)
-    copyto!(base.dev_radii,      radii)
+    # 1. Copy per-agent data to device through the generic staging contract.
+    stage_agent_data!(base, positions, velocities, radii)
 
-    # 2. Copy wall segments (static, not sorted)
-    if n_walls > 0
-        copyto!(@view(base.dev_wall_p1s[1:n_walls]), @view(wall_p1s[1:n_walls]))
-        copyto!(@view(base.dev_wall_p2s[1:n_walls]), @view(wall_p2s[1:n_walls]))
-    end
+    # 2. Copy wall segments through the generic static-geometry staging contract.
+    stage_static_geometry!(base, wall_p1s, wall_p2s, n_walls)
 
     # 3. Lazy grid rebuild check — MUST happen before any kernel_reorder!
     #    so that search.agent_indices is valid when we reorder below.
@@ -308,10 +303,15 @@ struct HybridFSMGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector,
     cpu_rho_ema::SCPU              # per-agent EMA density
     cpu_modes::Vector{Int32}       # per-agent FSM mode (ORCA_MODE=0, SFM_MODE=1)
     cpu_v_prefs::SCPU              # per-agent preferred speed
+    cpu_orca_v_prefs::VCPU         # per-agent ORCA preferred velocity vector
+    cpu_orca_lp_radii::SCPU        # per-agent ORCA LP speed bound
     cpu_taus::SCPU                 # per-agent relaxation time τ
     cpu_masses::SCPU               # per-agent mass
     cpu_time_horizons::SCPU        # per-agent ORCA time horizon
+    cpu_time_horizons_obst::SCPU   # per-agent ORCA wall time horizon
     cpu_responsibilities::SCPU     # per-agent ORCA responsibility
+    cpu_neighbor_dists::SCPU       # per-agent ORCA search radius
+    cpu_max_neighbors::Vector{Int32}
     cpu_density_radii::SCPU        # per-agent density estimation radius
     cpu_rho_on::SCPU               # FSM threshold: ORCA→SFM
     cpu_rho_off::SCPU              # FSM threshold: SFM→ORCA
@@ -321,22 +321,33 @@ struct HybridFSMGPUContext{F, VCPU<:AbstractVector, SCPU<:AbstractVector,
     dev_rho_ema::SGPU
     dev_modes::IGPU                # Int32 mode per agent (device)
     dev_v_prefs::SGPU
+    dev_orca_v_prefs::VGPU
+    dev_orca_lp_radii::SGPU
     dev_taus::SGPU
     dev_masses::SGPU
     dev_time_horizons::SGPU
+    dev_time_horizons_obst::SGPU
     dev_responsibilities::SGPU
+    dev_neighbor_dists::SGPU
+    dev_max_neighbors::SGPU
     dev_density_radii::SGPU
     dev_rho_on::SGPU
     dev_rho_off::SGPU
     dev_forces::VGPU               # SFM forces (written by GPU kernel)
+    dev_orca_forces::VGPU          # ORCA forces (written by shared ORCA kernel)
     dev_combined_forces::VGPU      # Sprint 3T-GPU-fix: combined SFM+ORCA forces (uploaded from CPU)
     # ── Sorted ───────────────────────────────────────────────────────────────
     sorted_dev_goals::VGPU
     sorted_dev_v_prefs::SGPU
+    sorted_dev_orca_v_prefs::VGPU
+    sorted_dev_orca_lp_radii::SGPU
     sorted_dev_taus::SGPU
     sorted_dev_masses::SGPU
     sorted_dev_time_horizons::SGPU
+    sorted_dev_time_horizons_obst::SGPU
     sorted_dev_responsibilities::SGPU
+    sorted_dev_neighbor_dists::SGPU
+    sorted_dev_max_neighbors::SGPU
     sorted_dev_combined_forces::VGPU  # Sprint 3T-GPU-fix: sorted combined forces for GPU integration
     sorted_dev_masses_all::SGPU       # Sprint 3T-GPU-fix: sorted masses for GPU integration
     sorted_last_positions::VGPU
@@ -353,10 +364,15 @@ function HybridFSMGPUContext(backend, F, N::Int, max_wall_segs::Int = 64)
     cpu_rho_ema         = SCPU(undef, N)
     cpu_modes           = Vector{Int32}(undef, N)
     cpu_v_prefs         = SCPU(undef, N)
+    cpu_orca_v_prefs    = VCPU(undef, N)
+    cpu_orca_lp_radii   = SCPU(undef, N)
     cpu_taus            = SCPU(undef, N)
     cpu_masses          = SCPU(undef, N)
     cpu_time_horizons   = SCPU(undef, N)
+    cpu_time_horizons_obst = SCPU(undef, N)
     cpu_responsibilities = SCPU(undef, N)
+    cpu_neighbor_dists  = SCPU(undef, N)
+    cpu_max_neighbors   = Vector{Int32}(undef, N)
     cpu_density_radii   = SCPU(undef, N)
     cpu_rho_on          = SCPU(undef, N)
     cpu_rho_off         = SCPU(undef, N)
@@ -366,22 +382,33 @@ function HybridFSMGPUContext(backend, F, N::Int, max_wall_segs::Int = 64)
     dev_rho_ema         = KernelAbstractions.zeros(backend, F, N)
     dev_modes           = KernelAbstractions.zeros(backend, Int32, N)
     dev_v_prefs         = KernelAbstractions.zeros(backend, F, N)
+    dev_orca_v_prefs    = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    dev_orca_lp_radii   = KernelAbstractions.zeros(backend, F, N)
     dev_taus            = KernelAbstractions.zeros(backend, F, N)
     dev_masses          = KernelAbstractions.zeros(backend, F, N)
     dev_time_horizons   = KernelAbstractions.zeros(backend, F, N)
+    dev_time_horizons_obst = KernelAbstractions.zeros(backend, F, N)
     dev_responsibilities = KernelAbstractions.zeros(backend, F, N)
+    dev_neighbor_dists  = KernelAbstractions.zeros(backend, F, N)
+    dev_max_neighbors   = KernelAbstractions.zeros(backend, F, N)
     dev_density_radii   = KernelAbstractions.zeros(backend, F, N)
     dev_rho_on          = KernelAbstractions.zeros(backend, F, N)
     dev_rho_off         = KernelAbstractions.zeros(backend, F, N)
     dev_forces          = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    dev_orca_forces     = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     dev_combined_forces = KernelAbstractions.zeros(backend, SVector{2,F}, N)  # Sprint 3T-GPU-fix
 
     sorted_dev_goals              = KernelAbstractions.zeros(backend, SVector{2,F}, N)
     sorted_dev_v_prefs            = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_orca_v_prefs       = KernelAbstractions.zeros(backend, SVector{2,F}, N)
+    sorted_dev_orca_lp_radii      = KernelAbstractions.zeros(backend, F, N)
     sorted_dev_taus               = KernelAbstractions.zeros(backend, F, N)
     sorted_dev_masses             = KernelAbstractions.zeros(backend, F, N)
     sorted_dev_time_horizons      = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_time_horizons_obst = KernelAbstractions.zeros(backend, F, N)
     sorted_dev_responsibilities   = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_neighbor_dists     = KernelAbstractions.zeros(backend, F, N)
+    sorted_dev_max_neighbors      = KernelAbstractions.zeros(backend, F, N)
     sorted_dev_combined_forces    = KernelAbstractions.zeros(backend, SVector{2,F}, N)  # Sprint 3T-GPU-fix
     sorted_dev_masses_all         = KernelAbstractions.zeros(backend, F, N)             # Sprint 3T-GPU-fix
     sorted_last_positions         = KernelAbstractions.zeros(backend, SVector{2,F}, N)
@@ -394,14 +421,20 @@ function HybridFSMGPUContext(backend, F, N::Int, max_wall_segs::Int = 64)
     return HybridFSMGPUContext{F, VCPU, SCPU, VGPU, SGPU, BGPU, IGPU}(
         N, base,
         cpu_goals, cpu_rho_ema, cpu_modes,
-        cpu_v_prefs, cpu_taus, cpu_masses, cpu_time_horizons, cpu_responsibilities,
+        cpu_v_prefs, cpu_orca_v_prefs, cpu_orca_lp_radii,
+        cpu_taus, cpu_masses, cpu_time_horizons, cpu_time_horizons_obst, cpu_responsibilities,
+        cpu_neighbor_dists, cpu_max_neighbors,
         cpu_density_radii, cpu_rho_on, cpu_rho_off, cpu_sigma,
         dev_goals, dev_rho_ema, dev_modes,
-        dev_v_prefs, dev_taus, dev_masses, dev_time_horizons, dev_responsibilities,
+        dev_v_prefs, dev_orca_v_prefs, dev_orca_lp_radii,
+        dev_taus, dev_masses, dev_time_horizons, dev_time_horizons_obst, dev_responsibilities,
+        dev_neighbor_dists, dev_max_neighbors,
         dev_density_radii, dev_rho_on, dev_rho_off,
-        dev_forces, dev_combined_forces,
-        sorted_dev_goals, sorted_dev_v_prefs, sorted_dev_taus, sorted_dev_masses,
-        sorted_dev_time_horizons, sorted_dev_responsibilities,
+        dev_forces, dev_orca_forces, dev_combined_forces,
+        sorted_dev_goals, sorted_dev_v_prefs, sorted_dev_orca_v_prefs, sorted_dev_orca_lp_radii,
+        sorted_dev_taus, sorted_dev_masses,
+        sorted_dev_time_horizons, sorted_dev_time_horizons_obst, sorted_dev_responsibilities,
+        sorted_dev_neighbor_dists, sorted_dev_max_neighbors,
         sorted_dev_combined_forces, sorted_dev_masses_all,
         sorted_last_positions, max_wall_segs
     )
@@ -422,4 +455,37 @@ function get_hybrid_gpu_context(world::World, backend, F, N::Int, max_wall_segs:
     finally
         unlock(HYBRID_GPU_CONTEXTS_LOCK)
     end
+end
+
+"""
+    stage_agent_data!(base::BaseGPUContext, positions, velocities, radii)
+
+Copy the shared per-agent arrays into the backend buffers using the common
+bulk-transfer contract for all ABM models. This avoids scalar writes into GPU
+arrays and remains valid with `CUDA.allowscalar(false)`.
+"""
+function stage_agent_data!(base::BaseGPUContext, positions::AbstractVector,
+                          velocities::AbstractVector, radii::AbstractVector)
+    copyto!(base.dev_positions, positions)
+    copyto!(base.dev_velocities, velocities)
+    copyto!(base.dev_radii, radii)
+    return nothing
+end
+
+"""
+    stage_static_geometry!(base::BaseGPUContext, wall_p1s, wall_p2s, n_walls)
+
+Copy wall geometry into the shared backend wall buffers using a bulk transfer for
+both endpoints. The `n_walls` count still bounds the active segment list for the
+kernel, but the actual copy stays on the backend-safe full-buffer path.
+"""
+function stage_static_geometry!(base::BaseGPUContext,
+                               wall_p1s::AbstractVector,
+                               wall_p2s::AbstractVector,
+                               n_walls::Int)
+    if n_walls > 0
+        copyto!(base.dev_wall_p1s, wall_p1s)
+        copyto!(base.dev_wall_p2s, wall_p2s)
+    end
+    return n_walls
 end

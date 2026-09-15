@@ -488,13 +488,13 @@ end
 # and shared across the SimCrowd module — do not redefine them here.
 
 function _update_orca_impl!(
-    world::World, search::RadixSpatialHash{AT,F},
+    world::World, search::RadixSpatialHash{B,AT,F},
     positions, velocities, radii, v_prefs, lp_radii,
     taus, masses, time_horizons, time_horizons_obst,
     responsibilities, neighbor_dists, max_neighbors,
     n_walls::Int, dt::F, backend, ctx::ORCAGPUContext,
     ::Val{W}, ::Val{WE}
-) where {AT, F, W, WE}
+) where {B, AT, F, W, WE}
     N = length(positions)
 
     # Upload per-agent data to device
@@ -505,34 +505,37 @@ function _update_orca_impl!(
                          search, backend, ctx.sorted_last_positions)
 
     # 2. ORCA-specific fields
-    copyto!(ctx.dev_v_prefs,            v_prefs)
-    copyto!(ctx.dev_lp_radii,           lp_radii)
-    copyto!(ctx.dev_taus,               taus)
-    copyto!(ctx.dev_masses,             masses)
-    copyto!(ctx.dev_time_horizons,      time_horizons)
-    copyto!(ctx.dev_time_horizons_obst, time_horizons_obst)
-    copyto!(ctx.dev_responsibilities,   responsibilities)
-    copyto!(ctx.dev_neighbor_dists,     neighbor_dists)
+    copy_to_backend!(ctx.dev_v_prefs,            v_prefs)
+    copy_to_backend!(ctx.dev_lp_radii,           lp_radii)
+    copy_to_backend!(ctx.dev_taus,               taus)
+    copy_to_backend!(ctx.dev_masses,             masses)
+    copy_to_backend!(ctx.dev_time_horizons,      time_horizons)
+    copy_to_backend!(ctx.dev_time_horizons_obst, time_horizons_obst)
+    copy_to_backend!(ctx.dev_responsibilities,   responsibilities)
+    copy_to_backend!(ctx.dev_neighbor_dists,     neighbor_dists)
     # max_neighbors: Int32 → F for device (KA-generic; cast back to Int inside kernel)
+    # Use a host-side bulk conversion and a single copy, rather than scalar writes
+    # into the GPU array, which trigger CUDA scalar-indexing errors.
+    max_neighbors_f = Vector{F}(undef, N)
     for i in 1:N
-        ctx.dev_max_neighbors[i] = F(max_neighbors[i])
+        max_neighbors_f[i] = F(max_neighbors[i])
     end
+    copy_to_backend!(ctx.dev_max_neighbors, max_neighbors_f)
 
     # 3. Reorder ORCA-specific arrays (base arrays + rebuild handled by stage_and_sort_base!)
-    kernel_reorder! = reorder_array_kernel!(backend)
-    kernel_reorder!(ctx.sorted_dev_v_prefs,            ctx.dev_v_prefs,            search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_lp_radii,           ctx.dev_lp_radii,           search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_taus,               ctx.dev_taus,               search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_masses,             ctx.dev_masses,             search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_time_horizons,      ctx.dev_time_horizons,      search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_time_horizons_obst, ctx.dev_time_horizons_obst, search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_responsibilities,   ctx.dev_responsibilities,   search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_neighbor_dists,     ctx.dev_neighbor_dists,     search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_max_neighbors,      ctx.dev_max_neighbors,      search.agent_indices, ndrange=N)
+    reorder_backend_data!(ctx.sorted_dev_v_prefs,            ctx.dev_v_prefs,            search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_lp_radii,           ctx.dev_lp_radii,           search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_taus,               ctx.dev_taus,               search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_masses,             ctx.dev_masses,             search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_time_horizons,      ctx.dev_time_horizons,      search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_time_horizons_obst, ctx.dev_time_horizons_obst, search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_responsibilities,   ctx.dev_responsibilities,   search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_neighbor_dists,     ctx.dev_neighbor_dists,     search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_max_neighbors,      ctx.dev_max_neighbors,      search.agent_indices, backend)
 
     # K: compile-time agent-neighbor bound. 250 on CPU (handles large search radii),
     # 25 on GPU (register budget). Matches original orca.jl convention.
-    K = backend isa CPU ? 250 : 25
+    K = parallel_kernel_block_size(backend; cpu_block=250, gpu_block=25)
 
     kernel! = compute_orca_kernel!(backend)
     kernel!(

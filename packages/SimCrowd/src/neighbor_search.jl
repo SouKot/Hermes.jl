@@ -16,12 +16,14 @@ abstract type AbstractNeighborSearch{F<:AbstractFloat} end
 # ── 1. Radix Spatial Hash (GPU & KA Fallback) ─────────────────────────────────
 
 """
-    RadixSpatialHash{AT<:AbstractArray, F<:AbstractFloat}
+    RadixSpatialHash{B<:Backend, AT<:AbstractArray, F<:AbstractFloat}
 
 A grid-based spatial hash using a Compressed Sparse Row (CSR) structure, 
-designed to be generic over the array type `AT` (e.g., `Vector` for CPU, `CuArray` for GPU).
+designed to be generic over both the execution backend and the array type `AT`
+(e.g., `Vector` for CPU, `CuArray` for GPU).
 """
-struct RadixSpatialHash{AT<:AbstractArray, F<:AbstractFloat} <: AbstractNeighborSearch{F}
+struct RadixSpatialHash{B<:Backend, AT<:AbstractArray, F<:AbstractFloat} <: AbstractNeighborSearch{F}
+    backend::B
     cell_size::F
     grid_min::SVector{2, F}
     grid_dims::SVector{2, Int}
@@ -45,7 +47,7 @@ function RadixSpatialHash(backend::Backend, N::Int, grid_min::SVector{2,F}, grid
     cell_starts = KernelAbstractions.zeros(backend, Int, num_cells)
     cell_ends = KernelAbstractions.zeros(backend, Int, num_cells)
     
-    return RadixSpatialHash{typeof(cell_hashes), F}(cell_size, grid_min, dims, cell_hashes, agent_indices, cell_starts, cell_ends)
+    return RadixSpatialHash{typeof(backend), typeof(cell_hashes), F}(backend, cell_size, grid_min, dims, cell_hashes, agent_indices, cell_starts, cell_ends)
 end
 
 """
@@ -55,11 +57,10 @@ Derive the KernelAbstractions backend from the array type of the hash.
 - `Vector` (CPU arrays) → `CPU()`
 - `CuArray` (CUDA arrays) → `CUDABackend()` (requires CUDA.jl loaded)
 
-Used by `step!` to route GPU dispatches without requiring a separate
-`backend` field in `SimScene`.
+Used by `step!` to route GPU dispatches from the search object itself.
 """
-function get_ka_backend(sh::RadixSpatialHash{AT,F}) where {AT,F}
-    return get_ka_backend(AT)
+function get_ka_backend(sh::RadixSpatialHash)
+    return sh.backend
 end
 get_ka_backend(::Type{<:Vector}) = CPU()
 # CUDA dispatch: defined conditionally so SimCrowd doesn't hard-depend on CUDA.jl.
@@ -175,9 +176,14 @@ function build_grid!(sh::RadixSpatialHash, positions::AbstractArray, backend::Ba
     KernelAbstractions.synchronize(backend)
 end
 
-@inline function get_neighbors(sh::RadixSpatialHash{AT, F}, pos::SVector{2, F}) where {AT, F}
+@inline function get_neighbors(sh::RadixSpatialHash{B, AT, F}, pos::SVector{2, F}) where {B, AT, F}
     idx = floor.(Int, (pos - sh.grid_min) / sh.cell_size)
     return NeighborIterator(sh.grid_min, sh.grid_dims, sh.cell_size, sh.cell_starts, sh.cell_ends, sh.agent_indices, idx)
+end
+
+function cpu_mirror_search(sh::RadixSpatialHash{B, AT, F}, N::Int=max(1, length(sh.agent_indices))) where {B, AT, F}
+    grid_max = sh.grid_min + sh.cell_size .* SVector{2, F}(sh.grid_dims)
+    return RadixSpatialHash(CPU(), max(1, N), sh.grid_min, grid_max, sh.cell_size)
 end
 
 struct NeighborIterator{AT, F}

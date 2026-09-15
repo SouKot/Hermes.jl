@@ -1582,4 +1582,6 @@ end
     end
 end
 
+include("task6_backend_regressions.jl")
+
 end  # SimCrowd.jl

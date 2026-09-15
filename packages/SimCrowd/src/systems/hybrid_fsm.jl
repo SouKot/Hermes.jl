@@ -763,19 +763,17 @@ GPU Hybrid FSM dispatch (Sprint 3S). Steps:
 1. `stage_and_sort_base!` — upload positions/velocities/walls to device, build grid
 2. `compute_density_mode_kernel!` — density estimation + EMA + FSM mode transition (GPU)
 3. `compute_hybrid_sfm_kernel!` — SFM forces for SFM_MODE agents (GPU)
-4. ORCA force update for ORCA_MODE agents (CPU path via existing `update_orca_system!`)
+4. ORCA force update for ORCA_MODE agents via the shared ORCA kernel path
 5. Write combined forces + updated states back to ECS
 
-Architecture note: ORCA LP solver is inherently sequential per-agent (LP3 depends on LP2
-output). GPU-parallelised ORCA would require O(N × W²) shared memory. Sprint 3S routes
-ORCA_MODE agents through the existing CPU `update_orca_system!` with mode filtering.
-This is the correct architecture: SFM benefits most from GPU (embarrassingly parallel),
-while ORCA's bottleneck is the LP solver, not the neighbor search.
+Architecture note: HybridFSM now stages the same ORCA inputs that ORCA uses and reuses
+`compute_orca_kernel!` directly, so CPU-threaded and CUDA execution follow the same
+backend contract as ORCA itself.
 """
-function update_hybrid_fsm_system!(world::World, search::RadixSpatialHash{AT,F},
+function update_hybrid_fsm_system!(world::World, search::RadixSpatialHash{B,AT,F},
                                     backend::Backend, dt::F;
                                     skip_contact::Bool=false,
-                                    n_iters_corr::Int = 8) where {AT, F<:AbstractFloat}
+                                    n_iters_corr::Int = 8) where {B, AT, F<:AbstractFloat}
     n_hybrid = 0
     try
         n_hybrid = count_entities(Filter(world, (HybridFSMParams{F},)))
@@ -800,10 +798,17 @@ function update_hybrid_fsm_system!(world::World, search::RadixSpatialHash{AT,F},
             ctx.cpu_rho_ema[idx]              = state_col[i].ρ_ema
             ctx.cpu_modes[idx]                = state_col[i].mode
             ctx.cpu_v_prefs[idx]              = motion_col[i].v_pref
+            dir = goal_col[i].g - pos_col[i].p
+            dist = norm(dir)
+            ctx.cpu_orca_v_prefs[idx]         = dist > F(1e-6) ? (dir / dist) * motion_col[i].v_pref : zero(SVector{2,F})
+            ctx.cpu_orca_lp_radii[idx]        = motion_col[i].v_pref
             ctx.cpu_taus[idx]                 = motion_col[i].τ
             ctx.cpu_masses[idx]               = motion_col[i].mass
             ctx.cpu_time_horizons[idx]        = params_col[i].orca_params.time_horizon
+            ctx.cpu_time_horizons_obst[idx]   = params_col[i].orca_params.time_horizon_obst
             ctx.cpu_responsibilities[idx]     = params_col[i].orca_params.responsibility
+            ctx.cpu_neighbor_dists[idx]       = params_col[i].orca_params.neighbor_dist
+            ctx.cpu_max_neighbors[idx]        = Int32(params_col[i].orca_params.max_neighbors)
             ctx.cpu_density_radii[idx]        = params_col[i].density_radius
             ctx.cpu_rho_on[idx]               = params_col[i].ρ_on
             ctx.cpu_rho_off[idx]              = params_col[i].ρ_off
@@ -830,26 +835,34 @@ function update_hybrid_fsm_system!(world::World, search::RadixSpatialHash{AT,F},
                          n_walls, search, backend, ctx.sorted_last_positions)
 
     # ── Stage HybridFSM-specific fields ──────────────────────────────────────
-    copyto!(ctx.dev_rho_ema,         ctx.cpu_rho_ema)
-    copyto!(ctx.dev_modes,           ctx.cpu_modes)
-    copyto!(ctx.dev_v_prefs,         ctx.cpu_v_prefs)
-    copyto!(ctx.dev_taus,            ctx.cpu_taus)
-    copyto!(ctx.dev_masses,          ctx.cpu_masses)
-    copyto!(ctx.dev_time_horizons,   ctx.cpu_time_horizons)
-    copyto!(ctx.dev_responsibilities, ctx.cpu_responsibilities)
-    copyto!(ctx.dev_density_radii,   ctx.cpu_density_radii)
-    copyto!(ctx.dev_rho_on,          ctx.cpu_rho_on)
-    copyto!(ctx.dev_rho_off,         ctx.cpu_rho_off)
-    copyto!(ctx.dev_goals,           ctx.cpu_goals)
+    copy_to_backend!(ctx.dev_rho_ema,         ctx.cpu_rho_ema)
+    copy_to_backend!(ctx.dev_modes,           ctx.cpu_modes)
+    copy_to_backend!(ctx.dev_v_prefs,         ctx.cpu_v_prefs)
+    copy_to_backend!(ctx.dev_orca_v_prefs,    ctx.cpu_orca_v_prefs)
+    copy_to_backend!(ctx.dev_orca_lp_radii,   ctx.cpu_orca_lp_radii)
+    copy_to_backend!(ctx.dev_taus,            ctx.cpu_taus)
+    copy_to_backend!(ctx.dev_masses,          ctx.cpu_masses)
+    copy_to_backend!(ctx.dev_time_horizons,   ctx.cpu_time_horizons)
+    copy_to_backend!(ctx.dev_time_horizons_obst, ctx.cpu_time_horizons_obst)
+    copy_to_backend!(ctx.dev_responsibilities, ctx.cpu_responsibilities)
+    copy_to_backend!(ctx.dev_neighbor_dists,  ctx.cpu_neighbor_dists)
+    copy_to_backend!(ctx.dev_max_neighbors,   F.(ctx.cpu_max_neighbors))
+    copy_to_backend!(ctx.dev_density_radii,   ctx.cpu_density_radii)
+    copy_to_backend!(ctx.dev_rho_on,          ctx.cpu_rho_on)
+    copy_to_backend!(ctx.dev_rho_off,         ctx.cpu_rho_off)
+    copy_to_backend!(ctx.dev_goals,           ctx.cpu_goals)
 
-    kernel_reorder! = reorder_array_kernel!(backend)
-    # Sort goal, v_pref, tau, mass, time_horizon, responsibility by agent_indices
-    kernel_reorder!(ctx.sorted_dev_goals,           ctx.dev_goals,           search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_v_prefs,         ctx.dev_v_prefs,         search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_taus,            ctx.dev_taus,            search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_masses,          ctx.dev_masses,          search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_time_horizons,   ctx.dev_time_horizons,   search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_responsibilities, ctx.dev_responsibilities, search.agent_indices, ndrange=N)
+    reorder_backend_data!(ctx.sorted_dev_goals,           ctx.dev_goals,           search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_v_prefs,         ctx.dev_v_prefs,         search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_orca_v_prefs,    ctx.dev_orca_v_prefs,    search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_orca_lp_radii,   ctx.dev_orca_lp_radii,   search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_taus,            ctx.dev_taus,            search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_masses,          ctx.dev_masses,          search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_time_horizons,   ctx.dev_time_horizons,   search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_time_horizons_obst, ctx.dev_time_horizons_obst, search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_responsibilities, ctx.dev_responsibilities, search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_neighbor_dists,  ctx.dev_neighbor_dists,  search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_max_neighbors,   ctx.dev_max_neighbors,   search.agent_indices, backend)
 
     # Sorted rho_ema, modes, density_radii, rho_on, rho_off (used by density kernel)
     dev_sorted_rho_ema     = similar(ctx.dev_rho_ema)
@@ -857,11 +870,11 @@ function update_hybrid_fsm_system!(world::World, search::RadixSpatialHash{AT,F},
     dev_sorted_density_r   = similar(ctx.dev_density_radii)
     dev_sorted_rho_on      = similar(ctx.dev_rho_on)
     dev_sorted_rho_off     = similar(ctx.dev_rho_off)
-    kernel_reorder!(dev_sorted_rho_ema,   ctx.dev_rho_ema,       search.agent_indices, ndrange=N)
-    kernel_reorder!(dev_sorted_modes,     ctx.dev_modes,         search.agent_indices, ndrange=N)
-    kernel_reorder!(dev_sorted_density_r, ctx.dev_density_radii, search.agent_indices, ndrange=N)
-    kernel_reorder!(dev_sorted_rho_on,    ctx.dev_rho_on,        search.agent_indices, ndrange=N)
-    kernel_reorder!(dev_sorted_rho_off,   ctx.dev_rho_off,       search.agent_indices, ndrange=N)
+    reorder_backend_data!(dev_sorted_rho_ema,   ctx.dev_rho_ema,       search.agent_indices, backend)
+    reorder_backend_data!(dev_sorted_modes,     ctx.dev_modes,         search.agent_indices, backend)
+    reorder_backend_data!(dev_sorted_density_r, ctx.dev_density_radii, search.agent_indices, backend)
+    reorder_backend_data!(dev_sorted_rho_on,    ctx.dev_rho_on,        search.agent_indices, backend)
+    reorder_backend_data!(dev_sorted_rho_off,   ctx.dev_rho_off,       search.agent_indices, backend)
 
     # Sorted modes needed for SFM kernel input (after density update)
     dev_out_modes   = similar(ctx.dev_modes)
@@ -881,7 +894,7 @@ function update_hybrid_fsm_system!(world::World, search::RadixSpatialHash{AT,F},
 
     # Now sort the NEW modes (output of density kernel) for use by SFM kernel
     dev_sorted_new_modes = similar(ctx.dev_modes)
-    kernel_reorder!(dev_sorted_new_modes, dev_out_modes, search.agent_indices, ndrange=N)
+    reorder_backend_data!(dev_sorted_new_modes, dev_out_modes, search.agent_indices, backend)
 
     # ── GPU kernel 2: SFM forces for SFM_MODE agents ─────────────────────────
     # Read SFM params from the first Hybrid agent (uniform across scene; Sprint 3S-next: per-agent)
@@ -917,40 +930,36 @@ function update_hybrid_fsm_system!(world::World, search::RadixSpatialHash{AT,F},
                 ndrange=N)
     KernelAbstractions.synchronize(backend)
 
+    K = parallel_kernel_block_size(backend; cpu_block=250, gpu_block=25)
+    orca_kernel! = compute_orca_kernel!(backend)
+    orca_kernel!(ctx.dev_orca_forces,
+                 ctx.base.sorted_dev_positions, ctx.base.sorted_dev_velocities, ctx.base.sorted_dev_radii,
+                 ctx.sorted_dev_orca_v_prefs, ctx.sorted_dev_orca_lp_radii, ctx.sorted_dev_taus, ctx.sorted_dev_masses,
+                 ctx.sorted_dev_time_horizons,
+                 ctx.sorted_dev_time_horizons_obst,
+                 ctx.sorted_dev_responsibilities,
+                 ctx.sorted_dev_neighbor_dists,
+                 ctx.sorted_dev_max_neighbors,
+                 ctx.sorted_last_positions,
+                 ctx.base.dev_wall_p1s, ctx.base.dev_wall_p2s, n_walls,
+                 search.grid_min, search.grid_dims, search.cell_size,
+                 search.cell_starts, search.cell_ends, search.agent_indices,
+                 dt,
+                 Val(K),
+                 Val(16),
+                 Val(48),
+                 ndrange=N)
+    KernelAbstractions.synchronize(backend)
+
     # ── Read back GPU outputs ─────────────────────────────────────────────────
     cpu_new_rho_ema = Vector{F}(undef, N)
     cpu_new_modes   = Vector{Int32}(undef, N)
     cpu_sfm_forces  = Vector{SVector{2,F}}(undef, N)
+    cpu_orca_forces = Vector{SVector{2,F}}(undef, N)
     copyto!(cpu_new_rho_ema, dev_out_rho_ema)
     copyto!(cpu_new_modes,   dev_out_modes)
     copyto!(cpu_sfm_forces,  ctx.dev_forces)
-
-    # ── CPU ORCA pass for ORCA_MODE agents ───────────────────────────────────
-    # Delegate to the existing CPU ORCA system, which filters by ORCAParams.
-    # HybridFSM agents have HybridFSMParams (not ORCAParams), so we call
-    # _hybrid_orca_force directly for each ORCA_MODE agent.
-    cpu_orca_forces = zeros(SVector{2,F}, N)
-    cpu_positions   = ctx.base.cpu_positions
-    cpu_velocities  = ctx.base.cpu_velocities
-    cpu_goals_local = ctx.cpu_goals
-
-    # Collect walls for CPU ORCA
-    walls_cpu = [(ctx.base.cpu_wall_p1s[w], ctx.base.cpu_wall_p2s[w]) for w in 1:n_walls]
-
-    idx = 1
-    for (_, params_col) in Query(world, (HybridFSMParams{F},))
-        for i in eachindex(params_col)
-            if cpu_new_modes[idx] == Int32(0)  # ORCA_MODE
-                cpu_orca_forces[idx] = _hybrid_orca_force(
-                    cpu_positions[idx], cpu_velocities[idx],
-                    cpu_goals_local[idx],   # goal from ECS extraction buffer
-                    params_col[i].orca_params,
-                    cpu_positions, cpu_velocities,
-                    walls_cpu, dt, F)
-            end
-            idx += 1
-        end
-    end
+    copyto!(cpu_orca_forces, ctx.dev_orca_forces)
 
     # ── Write combined forces back to ECS Force components ────────────────────
     # CPU physics pipeline (integrate_physics_system! in step!) handles integration.
@@ -963,8 +972,8 @@ function update_hybrid_fsm_system!(world::World, search::RadixSpatialHash{AT,F},
             Query(world, (Position{F}, Velocity{F}, MotionParams{F},
                           Goal{F}, Force{F}, HybridFSMParams{F}, AgentFSMState{F}))
         for i in eachindex(force_col)
-            # Accumulate combined SFM (GPU) + ORCA (CPU) forces onto existing force
-            total_f = cpu_sfm_forces[idx] + cpu_orca_forces[idx]
+            orca_force = cpu_new_modes[idx] == ORCA_MODE ? cpu_orca_forces[idx] : zero(SVector{2,F})
+            total_f = cpu_sfm_forces[idx] + orca_force
             force_col[i] = Force(force_col[i].f + total_f)
             # Update FSM state (new mode + ρ_ema from GPU)
             state_col[i] = AgentFSMState{F}(cpu_new_modes[idx], cpu_new_rho_ema[idx], Int32(0))

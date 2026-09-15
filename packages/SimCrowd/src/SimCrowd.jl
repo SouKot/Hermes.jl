@@ -26,6 +26,7 @@ export ContactModel, NoContact, Coulomb, Viscous
 export ForceModel, SFMModel, ORCAModel, HybridModel, AgentModel
 # §2.3 Shared GPU infrastructure (Sprint 3Q-arch)
 export BaseGPUContext, stage_and_sort_base!
+export cpu_mirror_search
 # Sprint 3R: CSM GPU context
 export CSMGPUContext, compute_csm_kernel!
 # Sprint 3S: Hybrid FSM GPU context
@@ -850,11 +851,13 @@ function step!(scene::SimScene{F};
     # Guard: Ark.Query throws ArgumentError if a component type was never registered.
     local n_force::Int  = 0
     local n_csm::Int    = 0
+    local n_geom::Int   = 0
     # IMPORTANT: Use Filter (not Query) for entity counting — Query locks the world at
     # construction and only releases via close!(q). count_entities(Query(...)) leaks the
     # lock because it never calls close!. Filter is Ark's lock-free counting alternative.
     try; n_force = count_entities(Filter(scene.world, (Force{F},)));      catch e; e isa ArgumentError || rethrow(); end
     try; n_csm   = count_entities(Filter(scene.world, (CSMParams{F},)));  catch e; e isa ArgumentError || rethrow(); end
+    try; n_geom  = count_entities(Filter(scene.world, (AgentGeometry{F},))); catch e; e isa ArgumentError || rethrow(); end
 
     # Nothing to do if no force-based agents AND no CSM agents
     (n_force == 0 && n_csm == 0) && return scene
@@ -872,8 +875,13 @@ function step!(scene::SimScene{F};
     end
 
     # ── Detect backend from search type ──────────────────────────────────────
-    use_gpu_search = scene.search isa RadixSpatialHash
-    ka_backend = use_gpu_search ? get_ka_backend(scene.search) : CPU()
+    ka_backend = resolve_execution_backend(scene.search)
+    use_gpu_search = is_gpu_backend(ka_backend)
+    correction_search = if use_gpu_search && scene.search isa RadixSpatialHash
+        cpu_mirror_search(scene.search, max(1, n_force + n_csm))
+    else
+        scene.search
+    end
 
     # ── Force-based pipeline (SFM / ORCA / Hybrid) ────────────────────────
     if n_force > 0
@@ -957,7 +965,7 @@ function step!(scene::SimScene{F};
 
     # ── CSM pipeline (first-order; sets vel+pos directly; no Force needed) ────
     if n_csm > 0
-        if use_gpu_search
+        if scene.search isa RadixSpatialHash
             update_csm_system!(scene.world, scene.search, ka_backend, dt;
                                n_iters_corr = n_iters,
                                alg          = scene.config.correction_alg)
@@ -974,7 +982,9 @@ function step!(scene::SimScene{F};
     #    Deprecated overloads: wall_penetration_correction!(world, walls, F)
     #    and wall_penetration_correction!(world, walls, F, CSMParams{F}) remain
     #    as thin wrappers in hybrid_fsm.jl / csm.jl — to be removed in Sprint 3U.
-    apply_wall_correction_cpu!(scene.world, walls_buf, F)
+    if n_geom > 0
+        apply_wall_correction_cpu!(scene.world, walls_buf, F)
+    end
 
     # 8. Agent body non-penetration correction (adaptive Jacobi/XPBD; Sprint 3T/3V)
     #    Algorithm selected by scene.config.correction_alg:
@@ -982,8 +992,8 @@ function step!(scene::SimScene{F};
     #      XPBDCorrection(α)  — Sprint 3V, faster convergence in dense jams
     #    CPU path: adaptive — stops early when max_overlap ≤ tol.
     #    GPU path: handled inside update_csm_system! (fixed n_iters cap).
-    if n_iters > 0
-        apply_agent_correction_cpu!(scene.world, scene.search, F;
+    if n_geom > 0 && n_iters > 0
+        apply_agent_correction_cpu!(scene.world, correction_search, F;
                                     n_iters = n_iters,
                                     tol     = scene.config.agent_correction_tol,
                                     alg     = scene.config.correction_alg)
@@ -995,8 +1005,8 @@ function step!(scene::SimScene{F};
     #    Does NOT change positions — only velocities.
     #    Enabled when vel_impulse.n_iters > 0 (default: disabled).
     vi = scene.config.vel_impulse
-    if vi.n_iters > 0
-        apply_velocity_impulse_cpu!(scene.world, scene.search, F;
+    if n_geom > 0 && vi.n_iters > 0
+        apply_velocity_impulse_cpu!(scene.world, correction_search, F;
                                     n_iters            = vi.n_iters,
                                     tol                = vi.tol,
                                     restitution        = vi.restitution,
@@ -1071,6 +1081,71 @@ function run!(scene::SimScene{F}, T::Real) where {F}
         t += dt
     end
     return scene
+end
+
+# ── §2.2 Backend dispatch API (new) ───────────────────────────────────────────────
+
+export backend_kind, is_gpu_backend, is_multithreaded_backend, resolve_execution_backend,
+       backend_dispatch, parallel_kernel_block_size, copy_to_backend!, reorder_backend_data!,
+       execution_backend
+
+@inline function backend_kind(backend)
+    T = typeof(backend)
+    s = String(nameof(T))
+    if s == "CUDABackend"
+        return :cuda
+    elseif s == "ROCBackend"
+        return :rocm
+    elseif backend isa CPU
+        return :cpu
+    else
+        return :unknown
+    end
+end
+
+@inline is_gpu_backend(backend) = backend_kind(backend) == :cuda || backend_kind(backend) == :rocm
+@inline is_multithreaded_backend(backend) = backend_kind(backend) == :cpu
+
+@inline function resolve_execution_backend(search::AbstractNeighborSearch)
+    return get_ka_backend(search)
+end
+@inline resolve_execution_backend(::Nothing) = CPU()
+
+@inline function backend_dispatch(backend, cpu_case, gpu_case)
+    return is_gpu_backend(backend) ? gpu_case : cpu_case
+end
+
+@inline function parallel_kernel_block_size(backend; cpu_block::Int=250, gpu_block::Int=25)
+    return is_gpu_backend(backend) ? gpu_block : cpu_block
+end
+
+function execution_backend(kind::Symbol)
+    if kind === :cpu || kind === :threads
+        return CPU()
+    elseif kind === :cuda
+        if !isdefined(@__MODULE__, :CUDA)
+            Core.eval(@__MODULE__, :(using CUDA))
+        end
+        cuda_mod = getfield(@__MODULE__, :CUDA)
+        if !Base.invokelatest(getproperty(cuda_mod, :functional))
+            throw(ArgumentError("CUDA backend requested, but CUDA.functional() == false"))
+        end
+        return Base.invokelatest(getproperty(cuda_mod, :CUDABackend))
+    else
+        throw(ArgumentError("Unknown execution backend :$kind. Valid values: :threads, :cpu, :cuda"))
+    end
+end
+
+@inline function copy_to_backend!(dst, src)
+    copyto!(dst, src)
+    return dst
+end
+
+@inline function reorder_backend_data!(dst, src, agent_indices, backend)
+    kernel_reorder! = reorder_array_kernel!(backend)
+    n_active = min(length(dst), length(src), length(agent_indices))
+    kernel_reorder!(dst, src, agent_indices, ndrange=n_active)
+    return dst
 end
 
 end

@@ -48,14 +48,13 @@ using SimCore: SimWorld, SimStats, CrowdAgent, add_zone!, new_entity_id!,
                 StatsPipeline, WarmupMode, WARMUP_AUTO, WARMUP_FIXED, WARMUP_NONE,
                 record_arrival!, record_departure!, record_queue_length!,
                 record_utilization!, record_idle!, sim_summary
-using KernelAbstractions: CPU
 using SimCrowd:
     Position, Velocity, Force, Goal, WallSegment,
     AgentGeometry, MotionParams, SFMParams, ORCAParams,
     HybridFSMParams, AgentFSMState, CSMParams,
     AgentModel, SFMModel, ORCAModel, HybridModel,
     SimConfig, SimScene, JacobiCorrection, XPBDCorrection, VelocityImpulseParams,
-    CPUNeighborSearch, RadixSpatialHash, ORCA_MODE, SFM_MODE
+    CPUNeighborSearch, RadixSpatialHash, ORCA_MODE, SFM_MODE, execution_backend
 
 # ── Enum: crowd model ─────────────────────────────────────────────────────────
 
@@ -196,6 +195,8 @@ over the WebSocket when a user saves or loads a simulation configuration.
 - `csm_strength_geo`: geometry contact constraint strength. 0.0=disabled; JuPedSim: 5.0
 
 ## Solver / integration
+- `execution_backend`: parallel backend selector. `:threads` / `:cpu` use KA CPU execution;
+    `:cuda` uses CUDA when available.
 - `dt`:               simulation timestep (s). Typical: 0.05
 - `dt_sfm`:           reduced timestep for SFM_MODE agents (s). Typical: 0.01
 - `correction_iters`: position correction passes per step (0=disabled). Typical: 8
@@ -258,6 +259,7 @@ Base.@kwdef struct ScenarioConfig
     csm_strength_geo     :: Float64   = 5.0       # geometry constraint; 0=off
 
     # ── Solver / integration ──────────────────────────────────────────────────
+    execution_backend    :: Symbol    = :threads   # :threads/:cpu or :cuda
     dt                   :: Float64   = 0.05      # s; main timestep
     dt_sfm               :: Float64   = 0.01      # s; SFM_MODE sub-timestep
     correction_iters     :: Int       = 8         # 0 = disabled
@@ -343,33 +345,27 @@ function _make_simconfig(config::ScenarioConfig, ::Type{F}) where {F<:AbstractFl
     )
 end
 
-# ── Internal: CPUNeighborSearch builder ───────────────────────────────────────
+# ── Internal: backend-aware neighbor search builder ───────────────────────────
 
 function _make_neighbor_search(config::ScenarioConfig, ::Type{F}) where {F<:AbstractFloat}
-    # cell size = neighbor search radius; room bounds add 1 body radius margin
-    r_search  = F(config.orca_neighbor_dist)
+    backend = execution_backend(config.execution_backend)
+    r_search = config.crowd_model == MODEL_CSM ?
+        F(max(config.orca_neighbor_dist, config.csm_v0 * config.csm_T * 3.0)) :
+        F(config.orca_neighbor_dist)
     grid_min  = SVector{2,F}(zero(F), zero(F))
-    grid_max  = SVector{2,F}(F(config.room.width), F(config.room.height))
-    return CPUNeighborSearch(config.n_agents, grid_min, grid_max, r_search)
+    grid_max  = SVector{2,F}(F(config.room.width) + r_search,
+                             F(config.room.height) + r_search)
+    return RadixSpatialHash(backend, max(1, config.n_agents), grid_min, grid_max, r_search)
 end
 
 """
     _make_radix_search(config::ScenarioConfig, ::Type{F})
 
-Build a `RadixSpatialHash` (CPU backend) for ORCA and HybridFSM models.
-
-Must be used instead of `_make_neighbor_search` for these models because
-`_update_orca_impl!` and `update_hybrid_fsm_system!` in SimCrowd only have
-methods dispatching on `RadixSpatialHash`, not `CPUNeighborSearch`.
-(SFM and CSM do have `CPUNeighborSearch` overloads.)
+Compatibility wrapper returning the shared backend-aware `RadixSpatialHash`
+used by all crowd models.
 """
 function _make_radix_search(config::ScenarioConfig, ::Type{F}) where {F<:AbstractFloat}
-    cell_size = F(config.orca_neighbor_dist)
-    grid_min  = SVector{2,F}(zero(F), zero(F))
-    grid_max  = SVector{2,F}(F(config.room.width) + cell_size,
-                             F(config.room.height) + cell_size)
-    n = max(1, config.n_agents)  # RadixSpatialHash requires N ≥ 1
-    return RadixSpatialHash(CPU(), n, grid_min, grid_max, cell_size)
+    return _make_neighbor_search(config, F)
 end
 
 # ── Internal: geometry helpers ────────────────────────────────────────────────
@@ -694,11 +690,7 @@ function _build_csm_world(config::ScenarioConfig, ::Type{F},
     end
 
     sim_cfg = _make_simconfig(config, F)
-    # CSM uses a wider search radius (v0×T×safety factor) to catch approaching agents
-    r_search_csm = F(max(config.orca_neighbor_dist, config.csm_v0 * config.csm_T * 3.0))
-    grid_min = SVector{2,F}(zero(F), zero(F))
-    grid_max = SVector{2,F}(F(config.room.width), F(config.room.height))
-    search   = CPUNeighborSearch(config.n_agents, grid_min, grid_max, r_search_csm)
+    search   = _make_neighbor_search(config, F)
     scene    = SimScene(world, search, sim_cfg)
     bcs = config.flux_boundary ?
         BoundaryCondition{Float32}[AbsorbingBoundary(0.75f0)] :
@@ -719,7 +711,7 @@ Build a complete `ScenarioContext` from a `ScenarioConfig`:
 2. Inserts `WallSegment` entities from `RoomGeometry` (with door gaps)
 3. Spawns `n_agents` crowd agents at random non-overlapping positions
 4. Sets each agent's `Goal` to the nearest door center
-5. Wraps world + `CPUNeighborSearch` + `SimConfig` into a `SimScene`
+5. Wraps world + backend-aware `RadixSpatialHash` + `SimConfig` into a `SimScene`
 6. Creates an empty `SimCore.SimWorld` for DES stats and panic level bridge
 
 Returns a `ScenarioContext` ready to step with `step!(ctx.scene)`.

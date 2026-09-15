@@ -310,8 +310,8 @@ to completion first, then launch this kernel for Phase 3.
     @inbounds psych_forces[i] = f_i
 end
 
-function _update_social_forces_impl!(world::World, search::RadixSpatialHash{AT,F},
-    positions, social_radii, collision_radii, velocities, backend, ctx::SocialForcesGPUContext) where {AT,F}
+function _update_social_forces_impl!(world::World, search::RadixSpatialHash{B,AT,F},
+    positions, social_radii, collision_radii, velocities, backend, ctx::SocialForcesGPUContext) where {B,AT,F}
     N = length(positions)
 
     fill!(ctx.dev_forces, zero(SVector{2,F}))
@@ -326,24 +326,23 @@ function _update_social_forces_impl!(world::World, search::RadixSpatialHash{AT,F
                          search, backend, ctx.sorted_last_positions)
 
     # 2. Upload and sort SFM-specific radii and per-agent parameters
-    copyto!(ctx.dev_social_radii,    social_radii)
-    copyto!(ctx.dev_collision_radii, collision_radii)
-    copyto!(ctx.dev_mus, ctx.cpu_mus)
-    copyto!(ctx.dev_As,  ctx.cpu_As)
-    copyto!(ctx.dev_Bs,  ctx.cpu_Bs)
-    copyto!(ctx.dev_λs,  ctx.cpu_λs)
-    copyto!(ctx.dev_ηs,  ctx.cpu_ηs)   # §1.4 GCF factor
+    copy_to_backend!(ctx.dev_social_radii,    social_radii)
+    copy_to_backend!(ctx.dev_collision_radii, collision_radii)
+    copy_to_backend!(ctx.dev_mus, ctx.cpu_mus)
+    copy_to_backend!(ctx.dev_As,  ctx.cpu_As)
+    copy_to_backend!(ctx.dev_Bs,  ctx.cpu_Bs)
+    copy_to_backend!(ctx.dev_λs,  ctx.cpu_λs)
+    copy_to_backend!(ctx.dev_ηs,  ctx.cpu_ηs)   # §1.4 GCF factor
     # Upload velocities to device (base already holds cpu version; dev_velocities for SFM sorting)
-    copyto!(ctx.sorted_dev_velocities, ctx.base.sorted_dev_velocities)   # velocity already sorted by stage_and_sort_base!
+    copy_to_backend!(ctx.sorted_dev_velocities, ctx.base.sorted_dev_velocities)
 
-    kernel_reorder! = reorder_array_kernel!(backend)
-    kernel_reorder!(ctx.sorted_dev_social_radii,    ctx.dev_social_radii,    search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_collision_radii, ctx.dev_collision_radii, search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_mus,             ctx.dev_mus,             search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_As,              ctx.dev_As,              search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_Bs,              ctx.dev_Bs,              search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_λs,             ctx.dev_λs,             search.agent_indices, ndrange=N)
-    kernel_reorder!(ctx.sorted_dev_ηs,             ctx.dev_ηs,             search.agent_indices, ndrange=N)  # §1.4
+    reorder_backend_data!(ctx.sorted_dev_social_radii,    ctx.dev_social_radii,    search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_collision_radii, ctx.dev_collision_radii, search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_mus,             ctx.dev_mus,             search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_As,              ctx.dev_As,              search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_Bs,              ctx.dev_Bs,              search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_λs,             ctx.dev_λs,             search.agent_indices, backend)
+    reorder_backend_data!(ctx.sorted_dev_ηs,             ctx.dev_ηs,             search.agent_indices, backend)  # §1.4
 
     # 3. Launch forces kernel using sorted arrays
     kernel! = compute_social_forces_kernel!(backend)
