@@ -4,7 +4,7 @@
 
 **Julia Runtime Verified**: Julia 1.13.0 (September 17, 2026)
 
-**Validation Note**: The full package suite passes under Julia 1.13.0: 35 protocol tests, 13 extraction tests, 11 command-worker-pool tests, and 12 adaptive-update tests. Baseline performance measurements are recorded in the roadmap and repeatable with `test/benchmark_phase7b3.jl`.
+**Validation Note**: The full package suite passes under Julia 1.13.0: 35 protocol tests, 13 extraction tests, 11 command-worker-pool tests, 12 adaptive-update tests, and 4 dirty-tracking tests. Dirty tracking reduces the 100K/1% changed workload to approximately 284-311 ms mean update; allocation and serialization optimization remains. CPU parallel fetch and GPU synchronization hooks are now optional adapter capabilities.
 
 ---
 

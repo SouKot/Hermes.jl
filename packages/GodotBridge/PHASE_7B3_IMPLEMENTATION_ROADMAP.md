@@ -6,7 +6,7 @@
 
 **Status**: 🔄 In Progress through Phase 7B.3.4
 
-**Validation**: Julia 1.13.0, full package suite passing: 35 protocol tests, 13 extraction tests, 11 command-worker-pool tests, and 12 adaptive-update tests.
+**Validation**: Julia 1.13.0, full package suite passing: 35 protocol tests, 13 extraction tests, 11 command-worker-pool tests, 12 adaptive-update tests, and 4 dirty-tracking tests.
 
 **Baseline performance measurements**: `test/benchmark_phase7b3.jl` now measures
 10K/20K/50K/100K element scales and 1,000 commands. The warmed-up baseline on
@@ -14,6 +14,22 @@ September 17, 2026 produced full MessagePack payloads of approximately 0.91,
 1.83, 4.59, and 9.19 MB respectively; unchanged deltas were approximately
 350 bytes; command throughput was approximately 9,847 commands/sec. These are
 baseline observations, not final hardware-independent acceptance thresholds.
+
+**Incremental tracking measurement**: The dirty-state path reduces 1% changed
+updates to approximately 33 ms at 10K, 132 ms at 50K, and 284 ms at 100K,
+versus approximately 31 seconds at 100K for the full-scan path. Allocation and
+MessagePack/delta construction remain the next optimization targets.
+
+**Parallelization decisions**:
+- CPU threading is opt-in through `supports_parallel_state_fetch(adapter)`;
+    adapters must guarantee independent, thread-safe state reads before enabling it.
+- SIMD is not applied to the bridge's Dict/String-heavy protocol records. SIMD
+    belongs inside adapters for dense numeric arrays such as positions, velocities,
+    grids, and occupancy vectors, before dirty values cross the adapter boundary.
+- GPU execution remains adapter-owned. `supports_gpu_state_fetch` and
+    `synchronize_gpu_state!` define the explicit device-to-host boundary without
+    adding CUDA as a core dependency. GPU is appropriate for bulk numeric model
+    updates, not command dispatch or small dirty-record serialization.
 
 ---
 
@@ -924,9 +940,24 @@ end
 
 ## Phase 7B.3.5: Integration & Stress Testing
 
-**Current status**: 🔄 Baseline benchmark harness available; stress acceptance
-testing remains planned. Run `julia --project=. test/benchmark_phase7b3.jl` to
-repeat the current measurements before changing performance-sensitive code.
+**Current status**: 🔄 Dirty-state optimization implemented; performance
+optimization remains before acceptance. Run `julia --project=. test/stress_phase7b3.jl` for
+the bounded changed-state workload, or
+`julia --project=. test/benchmark_phase7b3.jl` for the baseline payload scale.
+
+**Measured baseline (Julia 1.13, September 17, 2026)**:
+- 10K elements, 1% changed: 245 ms mean update, 84% estimated savings.
+- 20K elements, 1% changed: 707 ms mean update, 84% estimated savings.
+- 50K elements, 1% changed: 4.71 s mean update, 84% estimated savings.
+- 100K elements, 1% changed, 3-update probe: 31.1 s mean update, 66% estimated savings.
+- 10,000 commands: 66,550 commands/sec in the stress run.
+- 100-update long run at 10K: 5.97 updates/sec, with 10.1 MB transmitted.
+- Dirty-state path at 100K/1% changed: 284 ms mean update, 377 ms p99,
+  and approximately 110 KB mean delta payload.
+
+**Conclusion**: Dirty tracking removes the full-scan bottleneck and makes the
+100K workload bounded, but 30 FPS is not yet met at 50K/100K. Reduce allocation
+and serialization overhead before accepting Phase 7B.3.5.
 
 **Objective**: Integrate all components, verify end-to-end behavior, stress test with realistic scenarios.
 

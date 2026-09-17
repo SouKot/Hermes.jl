@@ -32,6 +32,7 @@ include("snapshot/delta_builder.jl")
 # Adapter module (Phase 7B.3)
 include("adapters/traits.jl")
 include("adapters/interface.jl")
+include("adapters/dirty_state.jl")
 include("adapters/registry.jl")
 include("adapters/examples.jl")
 
@@ -47,6 +48,7 @@ include("commands/thread_pool.jl")
 
 # Adaptive update module (Phase 7B.3.4)
 include("updates/efficiency_tracker.jl")
+include("updates/incremental_cache.jl")
 include("updates/adaptive_builder.jl")
 
 # Server module
@@ -65,6 +67,10 @@ export SimulationAdapter
 export abm_capability, get_simulation_time
 export get_elements_snapshot, get_entities_snapshot, get_abm_snapshot
 export dispatch_command
+export DirtyState, supports_dirty_tracking, dirty_state
+export get_element_state, get_entity_state, clear_dirty_state!
+export supports_parallel_state_fetch, get_element_states, get_entity_states
+export supports_gpu_state_fetch, synchronize_gpu_state!
 export ABMCapability, NoABM, SupportsABM
 export FeatureCapability, SupportsGPU, SupportsReplay, SupportsParallelism
 export register_adapter, create_adapter, get_active_adapter, get_adapter
@@ -82,6 +88,8 @@ export get_latency_stats
 export SnapshotEfficiencyTracker, should_send_delta, record_snapshot!, efficiency_report
 export AdaptiveSnapshotBuilder, build_snapshot_from_adapter, build_next_snapshot
 export adaptive_statistics
+export IncrementalStateCache, seed_cache!, apply_dirty_state!
+export cached_elements, cached_entities, dirty_delta_payload
 
 # Re-export server items
 export GodotBridgeServer
