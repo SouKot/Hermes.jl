@@ -19,8 +19,7 @@ Strategy:
 module DeltaBuilder
 
 using UUIDs
-
-include("../protocol/envelope.jl")
+using ..GodotBridge: Message, MessageEnvelope, SnapshotPayload, DeltaPayload
 
 export ElementChange, EntityChange, DeltaState, 
        build_delta,
@@ -98,15 +97,11 @@ println("Entities arrived: ", length(delta.entities_added))
 """
 function build_delta(previous::SnapshotPayload, current::SnapshotPayload)::DeltaState
     # Validate snapshots
-    if isnothing(previous.snapshot_id) || isnothing(current.snapshot_id)
-        error("Both snapshots must have valid snapshot_id")
-    end
-    
     # Index previous snapshot
     prev_elements = Dict{String, Any}()
     if !isnothing(previous.elements_state)
         for elem in previous.elements_state
-            prev_elements[elem["id"]] = elem
+            prev_elements[get(elem, "element_id", get(elem, "id", ""))] = elem
         end
     end
     
@@ -121,7 +116,7 @@ function build_delta(previous::SnapshotPayload, current::SnapshotPayload)::Delta
     curr_elements = Dict{String, Any}()
     if !isnothing(current.elements_state)
         for elem in current.elements_state
-            curr_elements[elem["id"]] = elem
+            curr_elements[get(elem, "element_id", get(elem, "id", ""))] = elem
         end
     end
     
@@ -292,7 +287,7 @@ function build_delta(previous::SnapshotPayload, current::SnapshotPayload)::Delta
     end
     
     DeltaState(
-        previous.snapshot_id,
+        "$(previous.scene_id):$(previous.step_count)",
         elements_changed,
         entities_added,
         entities_removed,
@@ -332,7 +327,11 @@ msg = create_delta_message(delta)
 function create_delta_message(
     delta::DeltaState;
     sender::String="bridge",
-    receiver::String="godot"
+    receiver::String="godot",
+    snapshot_version::String="1.0.0",
+    scene_id::String="",
+    simulation_time::Float64=0.0,
+    step_count::UInt64=0
 )::Message
     
     # Convert changes to dict format for payload
@@ -388,24 +387,24 @@ function create_delta_message(
     
     # Create payload
     payload = DeltaPayload(
-        parent_snapshot_id = delta.parent_snapshot_id,
-        elements_changed = elements_changed_dict,
-        entities_added = entities_added_dict,
-        entities_removed = entities_removed_dict,
-        entities_moved = entities_moved_dict,
-        entities_updated = entities_updated_dict,
-        abm_changes = delta.abm_changes_summary
+        snapshot_version,
+        scene_id,
+        simulation_time,
+        step_count,
+        delta.parent_snapshot_id,
+        vcat(elements_changed_dict, entities_moved_dict),
+        entities_added_dict,
+        [entry["entity_id"] for entry in entities_removed_dict],
+        vcat(entities_updated_dict, entities_moved_dict),
+        isempty(delta.abm_changes_summary) ? nothing : delta.abm_changes_summary,
+        Dict{String, Any}[]
     )
     
     # Wrap in message
     Message(
-        protocol_version = "1.0",
-        message_id = string(uuid4()),
-        timestamp = Dates.now(),
-        sender = sender,
-        receiver = receiver,
-        kind = "delta",
-        payload = payload
+        MessageEnvelope("1.0", string(uuid4()), UInt64(floor(time() * 1000)),
+                        sender, receiver, "delta"),
+        payload
     )
 end
 

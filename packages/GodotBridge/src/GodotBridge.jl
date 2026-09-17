@@ -27,6 +27,7 @@ include("protocol/envelope.jl")
 include("protocol/serialization.jl")
 include("protocol/debug.jl")
 include("snapshot/snapshot_builder.jl")
+include("snapshot/delta_builder.jl")
 
 # Adapter module (Phase 7B.3)
 include("adapters/traits.jl")
@@ -43,6 +44,10 @@ include("extraction/entity_batch.jl")
 # Command execution module (Phase 7B.3.3)
 include("commands/futures.jl")
 include("commands/thread_pool.jl")
+
+# Adaptive update module (Phase 7B.3.4)
+include("updates/efficiency_tracker.jl")
+include("updates/adaptive_builder.jl")
 
 # Server module
 include("server/websocket_server.jl")
@@ -74,6 +79,9 @@ export memory_usage, extract_entities_vectorized, batch_get_trajectories
 export CommandWorkerPool, start_pool!, stop_pool!, submit_command
 export CommandFuture, is_command_ready, wait_result, command_latency
 export get_latency_stats
+export SnapshotEfficiencyTracker, should_send_delta, record_snapshot!, efficiency_report
+export AdaptiveSnapshotBuilder, build_snapshot_from_adapter, build_next_snapshot
+export adaptive_statistics
 
 # Re-export server items
 export GodotBridgeServer
