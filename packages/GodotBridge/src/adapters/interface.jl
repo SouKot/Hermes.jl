@@ -215,7 +215,7 @@ function get_abm_snapshot(adapter::SimulationAdapter)
 end
 
 """
-    dispatch_command(adapter::SimulationAdapter, cmd::SimulationCommand)::CommandResult
+    dispatch_command(adapter::SimulationAdapter, command)::Any
 
 Execute a command from the Godot GUI on the simulation.
 
@@ -224,7 +224,7 @@ adapter translates them to engine-specific actions.
 
 Args:
     adapter: The simulation adapter
-    cmd: SimulationCommand with type and parameters
+    command: Command-like value with type and parameters
     
 Returns:
     CommandResult with success status and any error messages
@@ -241,24 +241,24 @@ Supported commands:
     :set_trace_element → Focus on specific element
 
 Example:
-    function dispatch_command(adapter::MyAdapter, cmd::SimulationCommand)
+    function dispatch_command(adapter::MyAdapter, command)
         try
-            if cmd.command_type == :play
+            if command.command_type == :play
                 adapter.engine.running = true
                 return CommandResult(success=true)
-            elseif cmd.command_type == :pause
+            elseif command.command_type == :pause
                 adapter.engine.running = false
                 return CommandResult(success=true)
             else
                 return CommandResult(success=false, 
-                                   error="Unknown command: $(cmd.command_type)")
+                                   error="Unknown command: \$(command.command_type)")
             end
         catch e
             return CommandResult(success=false, error=string(e))
         end
     end
 """
-function dispatch_command(adapter::SimulationAdapter, cmd::SimulationCommand)
+function dispatch_command(adapter::SimulationAdapter, cmd)
     error("dispatch_command not implemented for $(typeof(adapter)). " *
           "Must handle SimulationCommand and return CommandResult.")
 end

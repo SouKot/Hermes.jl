@@ -5,7 +5,8 @@ WebSocket server for Protocol v1 communication with Godot.
 Manages connections, message dispatch, and snapshot streaming.
 """
 
-using WebSockets, HTTP
+import WebSockets
+import HTTP
 using ..GodotBridge  # Import parent module
 
 # ============================================================================
@@ -32,7 +33,7 @@ mutable struct GodotBridgeServer
     snapshot_rate_hz::Int
     debug::Bool
     is_running::Bool
-    clients::Dict{String, WebSocket.WebSocket}
+    clients::Dict{String, WebSockets.WebSocket}
     message_handlers::Dict{String, Function}
     server_task::Union{Task, Nothing}
 end
@@ -70,7 +71,7 @@ function GodotBridgeServer(;
         snapshot_rate_hz,
         debug,
         false,  # is_running
-        Dict{String, WebSocket.WebSocket}(),  # clients
+        Dict{String, WebSockets.WebSocket}(),  # clients
         Dict{String, Function}(),  # message_handlers
         nothing,  # server_task
     )
@@ -208,7 +209,7 @@ Handle a single WebSocket connection from a client.
 2. Receive and process incoming messages
 3. Handle disconnection
 """
-function handle_connection(server::GodotBridgeServer, ws::WebSocket.WebSocket)
+function handle_connection(server::GodotBridgeServer, ws::WebSockets.WebSocket)
     client_id = string(gensym("client_"))
     server.clients[client_id] = ws
     

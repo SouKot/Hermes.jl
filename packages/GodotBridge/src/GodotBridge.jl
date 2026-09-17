@@ -26,12 +26,19 @@ module GodotBridge
 include("protocol/envelope.jl")
 include("protocol/serialization.jl")
 include("protocol/debug.jl")
+include("snapshot/snapshot_builder.jl")
 
 # Adapter module (Phase 7B.3)
 include("adapters/traits.jl")
 include("adapters/interface.jl")
 include("adapters/registry.jl")
 include("adapters/examples.jl")
+
+# Extraction module (Phase 7B.3.2)
+include("extraction/element_cache.jl")
+include("extraction/parallel_elements.jl")
+include("extraction/ring_buffer.jl")
+include("extraction/entity_batch.jl")
 
 # Server module
 include("server/websocket_server.jl")
@@ -55,6 +62,11 @@ export register_adapter, create_adapter, get_active_adapter, get_adapter
 export list_registered_adapters, list_active_instances, set_active_adapter
 export clear_adapter_registry
 export ManufacturingAdapter, ShoppingMallAdapter, EpidemicAdapter
+export ElementState, EntitySnapshot, ABMStateSnapshot
+export ElementStateCache, get_cached_element, clear_expired, clear_expired!
+export clear!, cache_stats, extract_elements_parallel, extract_elements_cached
+export TrajectoryRingBuffer, add_point!, add_point, trajectory, get_trajectory
+export memory_usage, extract_entities_vectorized, batch_get_trajectories
 
 # Re-export server items
 export GodotBridgeServer

@@ -5,10 +5,8 @@ MessagePack serialization for all Protocol v1 message types.
 Primary production serialization format (JSON is debug-only).
 """
 
-using MessagePack
+using MsgPack
 using Dates
-
-include("envelope.jl")
 
 # ============================================================================
 # MessagePack Encoding Functions
@@ -42,12 +40,25 @@ Deserialize a MessagePack binary to a Message struct.
 """
 function decode_messagepack(data::Vector{UInt8})::Message
     try
-        msg_dict = unpack(data)
+        msg_dict = normalize_decoded_value(unpack(data))
         return dict_to_message(msg_dict)
     catch e
         error("Failed to deserialize MessagePack: $(e)")
     end
 end
+
+function normalize_decoded_value(value::AbstractDict)
+    return Dict{String, Any}(
+        string(key) => normalize_decoded_value(item)
+        for (key, item) in value
+    )
+end
+
+function normalize_decoded_value(value::AbstractVector)
+    return [normalize_decoded_value(item) for item in value]
+end
+
+normalize_decoded_value(value) = value
 
 # ============================================================================
 # Helper: Message to Dict (for encoding)
@@ -298,7 +309,11 @@ Currently supports 1.0 and 1.x.
 function check_protocol_version(version::String)::Bool
     # Support semantic versioning
     parts = split(version, ".")
-    major = try parse(Int, parts[1]) catch 0 end
+    major = try
+        parse(Int, parts[1])
+    catch
+        0
+    end
     major == 1  # Only accept version 1.x
 end
 

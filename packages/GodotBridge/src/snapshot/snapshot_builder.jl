@@ -6,7 +6,6 @@ Converts DES elements, entities, and ABM state into SnapshotPayload.
 """
 
 using Dates
-include("../protocol/envelope.jl")
 
 # ============================================================================
 # Snapshot Builder Interface

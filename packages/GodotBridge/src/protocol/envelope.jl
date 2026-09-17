@@ -91,6 +91,42 @@ struct SnapshotPayload <: MessagePayload
     truncated::Bool
 end
 
+function _string_dict(value::AbstractDict)
+    return Dict{String, Any}(string(key) => item for (key, item) in value)
+end
+
+function _dict_vector(value::AbstractVector)
+    return [_string_dict(item) for item in value]
+end
+
+function _dict_vector(value::AbstractDict)
+    return [Dict{String, Any}("id" => string(key), "value" => item)
+            for (key, item) in value]
+end
+
+function SnapshotPayload(;
+    snapshot_version,
+    scene_id,
+    simulation_time,
+    step_count,
+    clock_speed,
+    simulation_state,
+    elements_state,
+    entities,
+    abm_state,
+    overlays,
+    warnings,
+    truncated
+)
+    return SnapshotPayload(
+        String(snapshot_version), String(scene_id), Float64(simulation_time),
+        UInt64(step_count), Float32(clock_speed), String(simulation_state),
+        _dict_vector(elements_state), _dict_vector(entities),
+        isnothing(abm_state) ? nothing : _string_dict(abm_state),
+        _dict_vector(overlays), String.(warnings), Bool(truncated)
+    )
+end
+
 # ============================================================================
 # 3. DeltaPayload - Incremental update
 # ============================================================================
@@ -131,6 +167,13 @@ struct CommandPayload <: MessagePayload
     command::Dict{String, Any}
     scene_id::String
     apply_at_time::Union{Float64, Nothing}
+end
+
+function CommandPayload(; command_version, command_type, command, scene_id, apply_at_time)
+    return CommandPayload(
+        String(command_version), String(command_type), _string_dict(command),
+        String(scene_id), isnothing(apply_at_time) ? nothing : Float64(apply_at_time)
+    )
 end
 
 # ============================================================================

@@ -6,8 +6,6 @@ This is strictly for logging and inspection, never for production wire protocol.
 """
 
 using JSON
-include("envelope.jl")
-
 # ============================================================================
 # JSON Debug Output (Development/Diagnostic Only)
 # ============================================================================

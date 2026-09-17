@@ -2,6 +2,10 @@
 
 **Session Status**: Phase 7B.3.1 Implementation Complete
 
+**Julia Runtime Verified**: Julia 1.13.0 (September 17, 2026)
+
+**Validation Note**: The focused Phase 7B.3.2 extraction suite passes under Julia 1.13.0. The full package suite is currently blocked by the existing `MessagePack` dependency resolution error in `Project.toml`.
+
 ---
 
 ## CONVERSATION SUMMARY
