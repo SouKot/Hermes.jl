@@ -1,10 +1,10 @@
 # RESTORATION POINT: September 16, 2026
 
-**Session Status**: Phase 7B.3.4 Implementation Complete
+**Session Status**: Phase 7B.3 bridge implementation and acceptance complete; Godot E2E pending
 
 **Julia Runtime Verified**: Julia 1.13.0 (September 17, 2026)
 
-**Validation Note**: The full package suite passes under Julia 1.13.0 with 98 tests. P0 cache fallback and adaptive threshold work are complete. Entity-heavy BenchmarkTools validation measured 500K/10% typed updates at 30.67 ms median and 31.43 ms p99.
+**Validation Note**: The full package suite passes under Julia 1.13.0 with 98 tests. Bridge acceptance measured typed transport at 1.901 ms median, 1,000 updates at 0.124 ms mean, and 10,000 commands at approximately 97,533/sec. Live WebSocket/Godot decode/rendering/backpressure remain external gates.
 
 ---
 

@@ -74,7 +74,7 @@ Phase 7B.3 consists of 5 interconnected implementation phases that build the run
 | 7B.3.2 | Element & Entity Extraction | 3-4 | ✅ Complete | 7B.3.1 |
 | 7B.3.3 | Command Queue & Threading | 2-3 | ✅ Complete | 7B.3.1 |
 | 7B.3.4 | Adaptive Update Strategy | 2-3 | ✅ Complete | 7B.3.2 |
-| 7B.3.5 | Integration & Stress Testing | 2-3 | ⏳ Planned | All |
+| 7B.3.5 | Integration & Stress Testing | 2-3 | ✅ Bridge-only complete; Godot E2E pending | All |
 
 **Total Estimated Effort**: 12-16 hours
 
@@ -971,8 +971,8 @@ end
 
 ## Phase 7B.3.5: Integration & Stress Testing
 
-**Current status**: 🔄 Dirty-state optimization implemented; realistic stress
-coverage remains before acceptance. Run `julia --project=. test/stress_phase7b3.jl` for
+**Current status**: ✅ Bridge-only acceptance complete; realistic stress
+coverage is available. Run `julia --project=. test/stress_phase7b3.jl` for
 the bounded changed-state workload, or
 `julia --project=. test/benchmark_phase7b3.jl` for the baseline payload scale.
 
@@ -990,8 +990,21 @@ the bounded changed-state workload, or
 
 **Conclusion**: Dirty tracking removes the full-scan bottleneck and meets the
 30 FPS transport budget by a wide margin for 1% changed state. Remaining stress
-work should cover larger changed fractions, entity-heavy workloads, memory
-stability, and end-to-end WebSocket/rendering cost.
+work is now covered by the bridge acceptance harness; live WebSocket transfer,
+Godot decode/rendering, and slow-client backpressure remain external gates.
+
+**Bridge acceptance harness**: `test/acceptance_phase7b3.jl` checks adapter
+profiling, typed/generic transport schema integrity, 1,000-update stability,
+live bytes after GC, and 10,000-command throughput. The latest run measured:
+
+- Typed full transport: 1.901 ms median versus 2.486 ms generic (1.31x).
+- Typed payload schema: valid; payload size 909,217 bytes.
+- 1,000 updates at 10K elements: 0.124 ms mean, approximately 8,054 updates/sec.
+- 10,000 commands: approximately 97,533 commands/sec.
+- Live bytes after the stability run: approximately 42.3 MB.
+
+Bridge-only Phase 7B.3.5 checks are complete. Live WebSocket transfer, Godot
+decode, rendering, and slow-client backpressure remain external end-to-end gates.
 
 **Objective**: Integrate all components, verify end-to-end behavior, stress test with realistic scenarios.
 
