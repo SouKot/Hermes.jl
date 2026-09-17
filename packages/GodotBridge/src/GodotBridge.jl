@@ -25,8 +25,10 @@ module GodotBridge
 # Protocol module
 include("protocol/envelope.jl")
 include("protocol/serialization.jl")
+include("protocol/direct_delta.jl")
 include("protocol/debug.jl")
 include("snapshot/snapshot_builder.jl")
+include("protocol/direct_snapshot.jl")
 include("snapshot/delta_builder.jl")
 
 # Adapter module (Phase 7B.3)
@@ -41,6 +43,7 @@ include("extraction/element_cache.jl")
 include("extraction/parallel_elements.jl")
 include("extraction/ring_buffer.jl")
 include("extraction/entity_batch.jl")
+include("extraction/dense_numeric.jl")
 
 # Command execution module (Phase 7B.3.3)
 include("commands/futures.jl")
@@ -51,6 +54,9 @@ include("updates/efficiency_tracker.jl")
 include("updates/incremental_cache.jl")
 include("updates/adaptive_builder.jl")
 
+# Profiling module (adapter-specific measurement)
+include("profiling/adapter_profiler.jl")
+
 # Server module
 include("server/websocket_server.jl")
 
@@ -60,6 +66,12 @@ export HelloPayload, SnapshotPayload, DeltaPayload, CommandPayload
 export SceneSpecPayload, AckPayload, ErrorPayload
 export create_hello, create_ack, create_error
 export encode_messagepack, decode_messagepack
+export MessagePackWorkspace, encode_messagepack!
+export DirectElementDelta, DirectAddedEntity, DirectUpdatedEntity
+export DirectDeltaPayload, DirectDeltaMessage, encode_direct_delta
+export DirectSnapshotElement, DirectSnapshotEntity, DirectSnapshotPayload
+export DirectSnapshotMessage, direct_snapshot_element, direct_snapshot_entity
+export direct_snapshot_payload, encode_direct_snapshot
 export to_debug_json, log_message_debug
 
 # Re-export adapter items
@@ -82,14 +94,20 @@ export ElementStateCache, get_cached_element, clear_expired, clear_expired!
 export clear!, cache_stats, extract_elements_parallel, extract_elements_cached
 export TrajectoryRingBuffer, add_point!, add_point, trajectory, get_trajectory
 export memory_usage, extract_entities_vectorized, batch_get_trajectories
-export CommandWorkerPool, start_pool!, stop_pool!, submit_command
-export CommandFuture, is_command_ready, wait_result, command_latency
+export DenseNumericState, advance_positions_scalar!, advance_positions_simd!
+export supports_simd, dense_numeric_state, advance_dense_numeric!
+export CommandWorkItem, CommandWorkerPool, start_pool!, stop_pool!, submit_command
+export CommandResponse, CommandFuture, is_command_ready, wait_result, command_latency
 export get_latency_stats
 export SnapshotEfficiencyTracker, should_send_delta, record_snapshot!, efficiency_report
 export AdaptiveSnapshotBuilder, build_snapshot_from_adapter, build_next_snapshot
+export build_next_snapshot_message, build_next_snapshot_bytes
+export DEFAULT_TYPED_DELTA_THRESHOLD
+export AdapterProfile, profile_adapter, profile_summary
 export adaptive_statistics
 export IncrementalStateCache, seed_cache!, apply_dirty_state!
 export cached_elements, cached_entities, dirty_delta_payload
+export direct_dirty_delta_payload, encode_direct_dirty_delta
 
 # Re-export server items
 export GodotBridgeServer

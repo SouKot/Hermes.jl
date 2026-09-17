@@ -8,6 +8,13 @@ Primary production serialization format (JSON is debug-only).
 using MsgPack
 using Dates
 
+mutable struct MessagePackWorkspace
+    io::IOBuffer
+end
+
+MessagePackWorkspace(sizehint::Int=64 * 1024) =
+    MessagePackWorkspace(IOBuffer(UInt8[]; sizehint=sizehint, append=true))
+
 # ============================================================================
 # MessagePack Encoding Functions
 # ============================================================================
@@ -24,6 +31,14 @@ function encode_messagepack(msg::Message)::Vector{UInt8}
     # Convert message to dict for MessagePack encoding
     msg_dict = message_to_dict(msg)
     return pack(msg_dict)
+end
+
+"""Encode using a reusable IO buffer for high-frequency updates."""
+function encode_messagepack!(workspace::MessagePackWorkspace, msg::Message)::Vector{UInt8}
+    seekstart(workspace.io)
+    truncate(workspace.io, 0)
+    MsgPack.pack(workspace.io, message_to_dict(msg))
+    return take!(workspace.io)
 end
 
 """

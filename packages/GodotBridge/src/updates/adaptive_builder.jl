@@ -10,11 +10,14 @@ mutable struct AdaptiveSnapshotBuilder
     incremental_cache::IncrementalStateCache
 end
 
+"""Measured starting point for sparse-delta selection at high change density."""
+const DEFAULT_TYPED_DELTA_THRESHOLD = 0.8
+
 function AdaptiveSnapshotBuilder(
     adapter::SimulationAdapter;
     scene_id::String="default",
     full_interval::Int=10,
-    delta_threshold::Float64=0.8
+    delta_threshold::Float64=DEFAULT_TYPED_DELTA_THRESHOLD
 )
     full_interval > 0 || throw(ArgumentError("full_interval must be positive"))
     return AdaptiveSnapshotBuilder(
@@ -65,7 +68,7 @@ function _message_size(message::Message)
     return length(encode_messagepack(message))
 end
 
-function build_next_snapshot(builder::AdaptiveSnapshotBuilder)::Message
+function _build_next_snapshot(builder::AdaptiveSnapshotBuilder; direct_encoding::Bool=false)
     builder.update_count += 1
 
     if supports_dirty_tracking(builder.adapter)
@@ -89,6 +92,13 @@ function build_next_snapshot(builder::AdaptiveSnapshotBuilder)::Message
             force_full = builder.update_count % builder.full_interval == 0
             if !force_full && _dirty_fraction(builder, dirty) <= builder.tracker.threshold
                 metadata = _dirty_snapshot_metadata(builder)
+                if direct_encoding
+                    bytes = encode_direct_dirty_delta(
+                        builder.incremental_cache, dirty, metadata
+                    )
+                    record_snapshot!(builder.tracker, true, length(bytes))
+                    return bytes
+                end
                 payload = dirty_delta_payload(builder.incremental_cache, builder.adapter, dirty, metadata)
                 message = Message(
                     MessageEnvelope("1.0", "msg_delta_$(time())",
@@ -101,6 +111,12 @@ function build_next_snapshot(builder::AdaptiveSnapshotBuilder)::Message
 
             current = build_snapshot_from_adapter(builder)
             message = wrap_snapshot_in_message(current)
+            if direct_encoding
+                bytes = encode_direct_snapshot(current)
+                record_snapshot!(builder.tracker, false, length(bytes))
+                builder.last_snapshot = current
+                return bytes
+            end
             record_snapshot!(builder.tracker, false, _message_size(message))
             builder.last_snapshot = current
             return message
@@ -108,6 +124,12 @@ function build_next_snapshot(builder::AdaptiveSnapshotBuilder)::Message
     end
 
     current = build_snapshot_from_adapter(builder)
+    if direct_encoding
+        bytes = encode_direct_snapshot(current)
+        record_snapshot!(builder.tracker, false, length(bytes))
+        builder.last_snapshot = current
+        return bytes
+    end
     full_message = wrap_snapshot_in_message(current)
     full_size = _message_size(full_message)
     force_full = isnothing(builder.last_snapshot) ||
@@ -139,6 +161,27 @@ function build_next_snapshot(builder::AdaptiveSnapshotBuilder)::Message
     return full_message
 end
 
+"""Build the next update as production MessagePack bytes using typed records."""
+function build_next_snapshot_bytes(builder::AdaptiveSnapshotBuilder)
+    return _build_next_snapshot(builder; direct_encoding=true)
+end
+
+"""Build the next update using typed MessagePack bytes by default.
+
+Pass `encoding=:generic` for the legacy `Message` object path.
+"""
+function build_next_snapshot(builder::AdaptiveSnapshotBuilder; encoding::Symbol=:typed)
+    encoding === :typed && return build_next_snapshot_bytes(builder)
+    encoding === :generic && return build_next_snapshot_message(builder)
+    throw(ArgumentError("encoding must be :typed or :generic"))
+end
+
+"""Build the next update as the legacy generic `Message` object."""
+function build_next_snapshot_message(builder::AdaptiveSnapshotBuilder)::Message
+    result = _build_next_snapshot(builder; direct_encoding=false)
+    return result
+end
+
 function adaptive_statistics(builder::AdaptiveSnapshotBuilder)
     report = efficiency_report(builder.tracker)
     report[:updates] = builder.update_count
@@ -146,4 +189,5 @@ function adaptive_statistics(builder::AdaptiveSnapshotBuilder)
     return report
 end
 
-export AdaptiveSnapshotBuilder, build_snapshot_from_adapter, build_next_snapshot, adaptive_statistics
+export AdaptiveSnapshotBuilder, build_snapshot_from_adapter, build_next_snapshot
+export build_next_snapshot_message, build_next_snapshot_bytes, adaptive_statistics

@@ -37,12 +37,15 @@ function extract_elements_cached(
     end
 
     if isnothing(fetcher)
-        fetcher = element_id -> begin
-            for element in source
-                element.id == element_id && return element
-            end
-            throw(KeyError(element_id))
-        end
+        # Index once per extraction. The previous fallback scanned `source`
+        # once for every element, making a cold/expired cache O(n^2).
+        source_by_id = Dict{String, ElementState}(element.id => element for element in source)
+        return [get_cached_element(cache, element.id, timestamp,
+            element_id -> begin
+                haskey(source_by_id, element_id) || throw(KeyError(element_id))
+                source_by_id[element_id]
+            end)
+            for element in source]
     end
 
     return [get_cached_element(cache, element.id, timestamp, fetcher) for element in source]

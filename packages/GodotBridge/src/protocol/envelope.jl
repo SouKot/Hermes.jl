@@ -26,22 +26,24 @@ mutable struct MessageEnvelope
     kind::String
 end
 
-"""
-    Message
+"""Abstract base type for all message payloads."""
+abstract type MessagePayload end
 
-A complete message consisting of an envelope and a payload.
 """
-mutable struct Message
+    Message{P<:MessagePayload}
+
+A complete message consisting of an envelope and a typed payload. The type
+parameter preserves extensibility for future payload types while allowing the
+compiler to specialize protocol operations for known payloads.
+"""
+mutable struct Message{P<:MessagePayload}
     envelope::MessageEnvelope
-    payload::Any  # Will be one of the payload types
+    payload::P
 end
 
 # ============================================================================
 # Payload Type Definitions
 # ============================================================================
-
-"""Abstract base type for all message payloads"""
-abstract type MessagePayload end
 
 # ============================================================================
 # 1. HelloPayload - Handshake on connect

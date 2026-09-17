@@ -1,15 +1,22 @@
+"""Typed response envelope for command workers."""
+struct CommandResponse
+    result::Any
+    elapsed::Float64
+    error::Union{Nothing, Exception}
+end
+
 """Result handle returned by `submit_command`."""
 mutable struct CommandFuture
-    channel::Channel{Any}
+    channel::Channel{CommandResponse}
     submitted_at::Float64
     status::Symbol
     result::Any
     elapsed::Float64
-    error::Any
+    error::Union{Nothing, Exception}
 end
 
 function CommandFuture()
-    return CommandFuture(Channel{Any}(1), time(), :pending, nothing, 0.0, nothing)
+    return CommandFuture(Channel{CommandResponse}(1), time(), :pending, nothing, 0.0, nothing)
 end
 
 """Return true when the command has completed or failed."""
@@ -52,4 +59,5 @@ function get_latency_stats(futures::AbstractVector{<:CommandFuture})
     )
 end
 
-export CommandFuture, is_command_ready, wait_result, command_latency, get_latency_stats
+export CommandResponse, CommandFuture, is_command_ready, wait_result
+export command_latency, get_latency_stats

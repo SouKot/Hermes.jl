@@ -41,19 +41,19 @@ end
     end
 
     @testset "Full then delta" begin
-        first = build_next_snapshot(builder)
+        first = build_next_snapshot(builder; encoding=:generic)
         @test first.payload isa SnapshotPayload
         @test adaptive_statistics(builder)[:full_snapshots] == 1
 
         adapter.current_time = 1.0
-        second = build_next_snapshot(builder)
+        second = build_next_snapshot(builder; encoding=:generic)
         @test second.payload isa DeltaPayload
         @test adaptive_statistics(builder)[:deltas] == 1
     end
 
     @testset "Periodic full snapshot" begin
         adapter.current_time = 2.0
-        periodic = build_next_snapshot(builder)
+        periodic = build_next_snapshot(builder; encoding=:generic)
         @test periodic.payload isa SnapshotPayload
         @test adaptive_statistics(builder)[:full_snapshots] == 2
     end

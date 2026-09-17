@@ -106,5 +106,58 @@ function dirty_delta_payload(
     )
 end
 
+function direct_dirty_delta_payload(
+    cache::IncrementalStateCache,
+    dirty::DirtyState,
+    current::SnapshotPayload
+)::DirectDeltaPayload
+    added_elements = Set(dirty.elements_added)
+    changed_elements = DirectElementDelta[]
+    for id in [dirty.elements_added; dirty.elements_updated]
+        element = cache.elements[id]
+        push!(changed_elements, DirectElementDelta(
+            element.id, id in added_elements ? "added" : "updated",
+            element.occupancy, element.custom_metrics
+        ))
+    end
+    for id in dirty.elements_removed
+        push!(changed_elements, DirectElementDelta(id, "removed", nothing, nothing))
+    end
+
+    added_entities = DirectAddedEntity[]
+    updated_entities = DirectUpdatedEntity[]
+    added_ids = Set(dirty.entities_added)
+    for id in [dirty.entities_added; dirty.entities_updated]
+        entity = cache.entities[id]
+        if id in added_ids
+            push!(added_entities, DirectAddedEntity(
+                entity.id, "arrived", entity.current_location, entity.trajectory_2d
+            ))
+        else
+            push!(updated_entities, DirectUpdatedEntity(
+                entity.id, "updated", entity.properties
+            ))
+        end
+    end
+
+    return DirectDeltaPayload(
+        current.snapshot_version, current.scene_id, current.simulation_time,
+        current.step_count, "revision-$(dirty.revision)", changed_elements,
+        added_entities, dirty.entities_removed, updated_entities, nothing,
+        Dict{String, Any}[]
+    )
+end
+
+function encode_direct_dirty_delta(
+    cache::IncrementalStateCache,
+    dirty::DirtyState,
+    current::SnapshotPayload;
+    kwargs...
+)::Vector{UInt8}
+    return encode_direct_delta(direct_dirty_delta_payload(cache, dirty, current); kwargs...)
+end
+
 export IncrementalStateCache, seed_cache!, apply_dirty_state!
 export cached_elements, cached_entities, dirty_delta_payload
+export direct_dirty_delta_payload
+export encode_direct_dirty_delta

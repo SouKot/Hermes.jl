@@ -37,7 +37,7 @@ function stress_changed_state(element_count::Int; updates::Int=20, changed_fract
 
     for update in 1:updates
         start = time_ns()
-        message = GodotBridge.build_next_snapshot(builder)
+        message = GodotBridge.build_next_snapshot(builder; encoding=:generic)
         elapsed = (time_ns() - start) / 1.0e9
         push!(elapsed_times, elapsed)
         encoded = GodotBridge.encode_messagepack(message)
@@ -97,7 +97,7 @@ function stress_long_run(element_count::Int=10_000; updates::Int=100)
     start = time_ns()
     total_bytes = 0
     for update in 1:updates
-        message = GodotBridge.build_next_snapshot(builder)
+        message = GodotBridge.build_next_snapshot(builder; encoding=:generic)
         total_bytes += length(GodotBridge.encode_messagepack(message))
         adapter.current_time += 0.1
         if !isempty(adapter.elements)

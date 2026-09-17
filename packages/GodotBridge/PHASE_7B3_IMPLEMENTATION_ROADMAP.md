@@ -6,7 +6,26 @@
 
 **Status**: 🔄 In Progress through Phase 7B.3.4
 
-**Validation**: Julia 1.13.0, full package suite passing: 35 protocol tests, 13 extraction tests, 11 command-worker-pool tests, 12 adaptive-update tests, and 4 dirty-tracking tests.
+**Validation**: Julia 1.13.0, full package suite passing: 35 protocol tests, 13 extraction tests, 11 command-worker-pool tests, 12 adaptive-update tests, 5 dirty-tracking tests, and 8 typed-snapshot tests (84 total).
+
+**Current validation total**: 98 tests, including adaptive-threshold, entity,
+profiling, and SIMD coverage.
+
+**BenchmarkTools change-density matrix**: At 500K elements, typed adaptive
+updates measured 2.74x faster at 1% changed, 2.01x at 10%, and 1.71x at 50%.
+At 100% changed, typed sparse-delta encoding was 0.51x the generic path, so the
+adaptive policy must select a full snapshot when the changed fraction is high.
+The measured crossover is between 75% and 90%; `DEFAULT_TYPED_DELTA_THRESHOLD`
+is now explicitly set to 0.8. Above it, the builder selects a full snapshot
+rather than constructing a sparse delta.
+
+Entity-heavy BenchmarkTools validation measured typed speedups of 5.24x at
+100K/1%, 5.24x at 500K/1%, 5.54x at 100K/10%, and 3.45x at 500K/10%. The
+500K/10% typed case measured 30.67 ms median and 31.43 ms p99.
+
+**P0 performance fix**: ✅ The O(n²) cold/expired cache fallback was replaced by
+an O(n) ID index. Measured speedups are 14.5x at 1K, 56.1x at 5K, and 144.0x at
+10K elements. The remaining abstract-field P0 item is separate and remains open.
 
 **Baseline performance measurements**: `test/benchmark_phase7b3.jl` now measures
 10K/20K/50K/100K element scales and 1,000 commands. The warmed-up baseline on
@@ -15,10 +34,22 @@ September 17, 2026 produced full MessagePack payloads of approximately 0.91,
 350 bytes; command throughput was approximately 9,847 commands/sec. These are
 baseline observations, not final hardware-independent acceptance thresholds.
 
-**Incremental tracking measurement**: The dirty-state path reduces 1% changed
-updates to approximately 33 ms at 10K, 132 ms at 50K, and 284 ms at 100K,
-versus approximately 31 seconds at 100K for the full-scan path. Allocation and
-MessagePack/delta construction remain the next optimization targets.
+**Incremental tracking measurement**: The warmed-up dirty-capable benchmark
+reduces 1% changed updates to approximately 0.049 ms at 10K, 0.252 ms at 50K,
+and 0.570 ms at 100K, with 0.647 ms p99 at 100K. Mean delta size at 100K is
+approximately 97 KB. The earlier 262-311 ms measurements used a fixture that
+declared dirty tracking but returned the full-scan fallback; they are retained
+only as fallback-path measurements, not incremental-path results.
+
+**Higher-scale and typed-encoding measurements**:
+- 500K elements, 1% changed: 10.921 ms mean update, approximately 489 KB delta.
+- 500K elements, 10% changed: generic encoding averaged 11.36 ms; typed direct
+    MessagePack encoding averaged 9.78 ms, a measured 13.9% encoding improvement.
+- Integrated adaptive path at 500K/10% changed: generic 42.0 ms mean / 46.8 ms
+    p99; typed direct 19.7 ms mean / 23.7 ms p99, approximately 2.1x faster and
+    below the 33.3 ms 30 FPS budget.
+- Reusable IOBuffer encoding was tested but regressed the 500K/10% end-to-end
+    workload, so it remains an optional API rather than the adaptive default.
 
 **Parallelization decisions**:
 - CPU threading is opt-in through `supports_parallel_state_fetch(adapter)`;
@@ -940,8 +971,8 @@ end
 
 ## Phase 7B.3.5: Integration & Stress Testing
 
-**Current status**: 🔄 Dirty-state optimization implemented; performance
-optimization remains before acceptance. Run `julia --project=. test/stress_phase7b3.jl` for
+**Current status**: 🔄 Dirty-state optimization implemented; realistic stress
+coverage remains before acceptance. Run `julia --project=. test/stress_phase7b3.jl` for
 the bounded changed-state workload, or
 `julia --project=. test/benchmark_phase7b3.jl` for the baseline payload scale.
 
@@ -952,12 +983,15 @@ the bounded changed-state workload, or
 - 100K elements, 1% changed, 3-update probe: 31.1 s mean update, 66% estimated savings.
 - 10,000 commands: 66,550 commands/sec in the stress run.
 - 100-update long run at 10K: 5.97 updates/sec, with 10.1 MB transmitted.
-- Dirty-state path at 100K/1% changed: 284 ms mean update, 377 ms p99,
-  and approximately 110 KB mean delta payload.
+- Dirty-state path at 100K/1% changed: 0.570 ms mean update, 0.647 ms p99,
+  and approximately 97 KB mean delta payload after warmup.
+- Dirty-state path at 500K/1% changed: 10.921 ms mean update; p99 requires
+    further tail-latency investigation because the short sample included GC noise.
 
-**Conclusion**: Dirty tracking removes the full-scan bottleneck and makes the
-100K workload bounded, but 30 FPS is not yet met at 50K/100K. Reduce allocation
-and serialization overhead before accepting Phase 7B.3.5.
+**Conclusion**: Dirty tracking removes the full-scan bottleneck and meets the
+30 FPS transport budget by a wide margin for 1% changed state. Remaining stress
+work should cover larger changed fractions, entity-heavy workloads, memory
+stability, and end-to-end WebSocket/rendering cost.
 
 **Objective**: Integrate all components, verify end-to-end behavior, stress test with realistic scenarios.
 
@@ -1320,6 +1354,211 @@ Once Phase 7B.3 is complete:
 ---
 
 ## Notes & Dependencies
+
+## Performance Optimization Plan
+
+This section records the next whole-system optimization opportunities. Each
+step must be benchmarked before and after implementation; projected gains are
+targets, not guarantees.
+
+### Current Measurements
+
+The warmed-up dirty-state path currently measures:
+
+| Workload | Mean update | Delta size |
+|----------|------------:|-----------:|
+| 10K elements, 1% changed | 0.052 ms | 9.9 KB |
+| 50K elements, 1% changed | 0.270 ms | 48.8 KB |
+| 100K elements, 1% changed | 0.584 ms | 97.3 KB |
+| 500K elements, 1% changed | 10.921 ms | 489.3 KB |
+| 500K elements, 10% changed | 42.0 ms generic / 19.7 ms typed adaptive | ~4.94 MB |
+
+Typed direct delta encoding reduced the encoding segment at 500K/10% changed
+from 11.36 ms to 9.78 ms, approximately 13.9%. A reusable `IOBuffer` was
+tested but regressed the end-to-end 500K/10% workload and is therefore not the
+adaptive default.
+
+### Priority 1: Typed Full Snapshots
+
+Replace the repeated `Dict{String, Any}` conversion in full snapshots with
+typed wire records. Retain the dictionary representation for compatibility and
+debugging.
+
+**Status**: ✅ Implemented as additive `encode_direct_snapshot` and integrated
+`build_next_snapshot_bytes` paths in
+`src/protocol/direct_snapshot.jl`. Existing `SnapshotPayload` and generic
+`encode_messagepack` behavior remain unchanged.
+
+The adaptive builder now defaults to typed bytes via `build_next_snapshot`.
+Callers that require the legacy object API must explicitly use
+`build_next_snapshot_message` or `encoding=:generic`.
+
+Measured gain on Julia 1.13 with equivalent wire sizes:
+
+| Scale | Generic | Typed direct | Improvement |
+|------:|--------:|-------------:|------------:|
+| 10K | 8.58 ms | 1.62 ms | 5.3x |
+| 100K | 107.16 ms | 22.63 ms | 4.7x |
+| 500K | 605.29 ms | 169.15 ms | 3.6x |
+
+The typed path accepts `ElementState` and `EntitySnapshot` directly, avoiding
+the intermediate nested dictionary tree. Generic encoding remains available for
+compatibility and debugging.
+
+**End-to-end adaptive result**: After integrating the typed path through
+`build_next_snapshot_bytes`, the 500K/10% changed workload measured approximately
+42.0 ms mean and 46.8 ms p99 through the generic adaptive path, versus 19.7 ms
+mean and 23.7 ms p99 through the typed direct path. This is approximately 2.1x
+end-to-end improvement and brings that workload below the 33.3 ms 30 FPS budget.
+
+Benchmark gate: compare full snapshot construction, MessagePack size, mean
+latency, p99 latency, and allocations at 100K and 500K elements.
+
+### Priority 2: Integrate Typed Direct Deltas
+
+Use the existing typed direct-delta representation as an optional production
+transport path while preserving the generic Protocol v1 path.
+
+**Status**: ✅ Integrated through `build_next_snapshot_bytes`; the generic
+`build_next_snapshot` API remains unchanged.
+
+Target gain: approximately 10-20% for dirty delta encoding. The current
+measured gain is 13.9% for the encoding segment at 500K/10% changed.
+
+Benchmark gate: compare generic and direct encoding for 1%, 10%, 50%, and 100%
+changed state. Confirm byte compatibility at the field/protocol level.
+
+### Priority 3: Entity-Specific Dirty Tracking
+
+Track entity arrivals, departures, movements, property changes, and trajectory
+segments independently. Do not rebuild unchanged entity properties or history.
+
+Target gain: approximately 2-10x for entity-heavy models, depending on
+trajectory and property payload size.
+
+Benchmark gate: 100K and 500K entities with 1%, 10%, and 50% movement/change
+rates.
+
+### Priority 4: ABM Numeric Buffers
+
+Avoid base64 copies for positions, velocities, and density grids where the
+client supports binary fields. Use typed binary buffers, reusable staging
+buffers, or compressed numeric blocks.
+
+Target gain: approximately 1.2-3x for ABM transport and about 33% less payload
+expansion than base64 for binary data.
+
+SIMD and GPU computation belong inside the model adapter for dense numeric
+operations such as movement, neighborhood search, density fields, and grids.
+
+### Priority 5: Adapter-Owned Parallel Extraction
+
+The bridge must not parallelize a vector after the adapter has already done all
+expensive extraction. Adapters that guarantee thread-safe independent reads can
+implement batch state fetching and opt into Julia threading.
+
+Target gain: approximately 2-4x for the state-fetch portion, only when the
+adapter and workload are thread-safe and sufficiently large.
+
+### Adapter Profiling and SIMD Measurement
+
+Implemented `profile_adapter(adapter; iterations=...)` in
+`src/profiling/adapter_profiler.jl`. It measures extraction, dirty-state,
+full-snapshot construction/encoding, p99 latency, output size, and whether the
+adapter supports dirty tracking. This is the first step for profiling real DES,
+ABM, and hybrid adapters before selecting optimization backends.
+
+Implemented optional dense numeric hooks in `src/extraction/dense_numeric.jl`:
+
+- `DenseNumericState`
+- `advance_positions_scalar!`
+- `advance_positions_simd!`
+- `supports_simd(adapter)`
+- `dense_numeric_state(adapter)`
+- `advance_dense_numeric!`
+
+The initial 5-million-element benchmark on Julia 1.13 measured 3.32 ms for the
+scalar kernel and 3.44 ms for the baseline `@simd` kernel (`0.97x`, slightly
+slower). Therefore SIMD is available as an opt-in adapter capability, but this
+benchmark does not justify enabling it by default. Real adapters must benchmark
+their own dense kernels and data layouts; a stronger SIMD package or GPU backend
+should be added only when that measurement shows a gain.
+
+### Priority 6: Delta Fallback Policy
+
+Use dirty deltas when the changed fraction is small. Send a full snapshot when
+the delta becomes larger than the configured threshold or when revision recovery
+is required. Avoid performing an O(n) comparison when the result will be a full
+snapshot anyway.
+
+Target gain: prevents pathological high-change workloads from spending more time
+building deltas than sending full snapshots.
+
+### Priority 7: WebSocket Backpressure
+
+Add bounded per-client send queues and sender tasks. A slow Godot client must not
+block simulation updates. Drop stale deltas and request a full resynchronization
+when a client falls behind.
+
+Target gain: improved simulation latency and multi-client scalability rather than
+raw serialization speed.
+
+### Priority 8: Command-Lane Separation
+
+Keep simulation mutations serialized, but separate them from read-only queries
+and GPU submissions:
+
+```text
+simulation mutations -> serialized engine lane
+read-only queries     -> parallel query lane
+GPU work              -> adapter-owned GPU stream lane
+```
+
+Target gain: no gain for inherently sequential mutations; approximately 2-4x for
+safe read-only query workloads.
+
+### Priority 9: Allocation and GC Control
+
+Reuse dirty-ID vectors, delta vectors, typed records, trajectory storage, and
+numeric staging buffers. Avoid `collect(values(dict))`, temporary `Set` objects,
+and repeated nested dictionary creation in high-frequency paths.
+
+Benchmark gate: record allocations, GC time, mean latency, p99 latency, and live
+memory across 100-update and 1,000-update runs.
+
+### Priority 10: Optional Compression
+
+Support an adaptive policy for raw MessagePack versus compressed MessagePack.
+Use compression only when compression cost is lower than the bandwidth saved.
+Sparse deltas generally should remain uncompressed; large ABM grids and high
+change-rate updates may benefit from compression.
+
+### GPU Boundary
+
+The bridge core will not depend directly on CUDA. GPU-enabled adapters own:
+
+- GPU kernels and device memory
+- CPU/GPU synchronization
+- Device-to-host staging buffers
+- Dirty ID and field production
+
+The bridge consumes synchronized dirty records and handles caching, delta
+construction, serialization, and transport. This keeps CPU-only, GPU, DES, ABM,
+and hybrid adapters modular.
+
+### Benchmark Matrix
+
+Every optimization must be measured against this matrix:
+
+| Scale | Changed state | Required measurements |
+|-------:|--------------:|-----------------------|
+| 10K | 1%, 10%, 50%, 100% | mean, p99, bytes, allocations |
+| 100K | 1%, 10%, 50%, 100% | mean, p99, bytes, allocations |
+| 500K | 1%, 10%, 50%, 100% | mean, p99, bytes, allocations |
+
+Also measure entity-heavy workloads, ABM numeric fields, 10,000 commands, and
+long-running stability. No optimization is accepted based only on a mean
+latency improvement if p99 latency or memory growth regresses.
 
 **Dependencies from Prior Phases**:
 - Phase 7B.1: Protocol envelope and MessagePack serialization

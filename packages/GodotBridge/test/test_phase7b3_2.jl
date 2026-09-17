@@ -68,6 +68,10 @@ const H = ExtractionTestHarness
         cached = H.extract_elements_cached(adapter, cache; current_time=1.0,
             fetcher=id -> H.get_element(adapter, id))
         @test [value.id for value in cached] == ["queue-1", "queue-2"]
+
+        fallback_cache = H.ElementStateCache(0.0)
+        fallback = H.extract_elements_cached(adapter, fallback_cache; current_time=1.0)
+        @test [value.id for value in fallback] == ["queue-1", "queue-2"]
     end
 
     @testset "Trajectory ring buffer" begin

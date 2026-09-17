@@ -5,8 +5,13 @@ Bounded, non-blocking command queue backed by Julia CPU tasks scheduled on the
 thread pool. Commands are dequeued FIFO; adapter execution is serialized by
 default because most simulation engines are not safe for concurrent mutation.
 """
+struct CommandWorkItem
+    command::Any
+    future::CommandFuture
+end
+
 mutable struct CommandWorkerPool
-    queue::Channel{Any}
+    queue::Channel{CommandWorkItem}
     workers::Vector{Task}
     adapter::SimulationAdapter
     num_workers::Int
@@ -22,7 +27,7 @@ function CommandWorkerPool(
     num_workers > 0 || throw(ArgumentError("num_workers must be positive"))
     capacity > 0 || throw(ArgumentError("capacity must be positive"))
     return CommandWorkerPool(
-        Channel{Any}(capacity), Task[], adapter, num_workers, false, ReentrantLock()
+        Channel{CommandWorkItem}(capacity), Task[], adapter, num_workers, false, ReentrantLock()
     )
 end
 
@@ -44,10 +49,10 @@ function _command_worker_loop(pool::CommandWorkerPool)
                 dispatch_command(pool.adapter, item.command)
             end
             elapsed = (time_ns() - started_at) / 1.0e9
-            put!(future.channel, (result=result, elapsed=elapsed, error=nothing))
+            put!(future.channel, CommandResponse(result, elapsed, nothing))
         catch exception
             elapsed = (time_ns() - started_at) / 1.0e9
-            put!(future.channel, (result=nothing, elapsed=elapsed, error=exception))
+            put!(future.channel, CommandResponse(nothing, elapsed, exception))
         end
     end
 end
@@ -81,8 +86,8 @@ end
 function submit_command(pool::CommandWorkerPool, command)
     pool.running || throw(InvalidStateException("command pool is not running", :submit))
     future = CommandFuture()
-    put!(pool.queue, (command=command, future=future))
+    put!(pool.queue, CommandWorkItem(command, future))
     return future
 end
 
-export CommandWorkerPool, start_pool!, stop_pool!, submit_command
+export CommandWorkItem, CommandWorkerPool, start_pool!, stop_pool!, submit_command

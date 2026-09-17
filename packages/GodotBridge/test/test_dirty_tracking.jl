@@ -31,7 +31,7 @@ end
 @testset "Dirty tracking incremental path" begin
     adapter = make_dirty_adapter()
     builder = GodotBridge.AdaptiveSnapshotBuilder(adapter; full_interval=10)
-    first = GodotBridge.build_next_snapshot(builder)
+    first = GodotBridge.build_next_snapshot(builder; encoding=:generic)
     @test first.payload isa GodotBridge.SnapshotPayload
 
     adapter.elements["queue-1"].occupancy = UInt32(7)
@@ -39,8 +39,18 @@ end
     adapter.pending = GodotBridge.DirtyState(
         elements_updated=["queue-1"], revision=2
     )
-    second = GodotBridge.build_next_snapshot(builder)
+    second = GodotBridge.build_next_snapshot(builder; encoding=:generic)
     @test second.payload isa GodotBridge.DeltaPayload
     @test adapter.acknowledged == 2
     @test second.payload.elements_changed[1]["element_id"] == "queue-1"
+
+    typed_default = GodotBridge.build_next_snapshot(builder)
+    @test typed_default isa Vector{UInt8}
+
+    direct_bytes = GodotBridge.encode_direct_dirty_delta(
+        builder.incremental_cache,
+        GodotBridge.DirtyState(elements_updated=["queue-1"], revision=3),
+        GodotBridge.build_snapshot("dirty", 0.2, UInt64(3))
+    )
+    @test !isempty(direct_bytes)
 end
