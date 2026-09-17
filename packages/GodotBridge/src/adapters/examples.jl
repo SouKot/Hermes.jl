@@ -1,7 +1,9 @@
 # Phase 7B.3.1: Example Adapter Implementations
 # Three concrete implementations demonstrating all model types
 
-include("registry.jl")
+if !isdefined(@__MODULE__, :AdapterRegistry)
+    include("registry.jl")
+end
 
 """
     TestEngine (mock type for examples)

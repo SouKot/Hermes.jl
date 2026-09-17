@@ -1,7 +1,9 @@
 # Phase 7B.3.1: Adapter Registry & Factory
 # Global registry for managing multiple simulation adapters
 
-include("interface.jl")
+if !isdefined(@__MODULE__, :SimulationAdapter)
+    include("interface.jl")
+end
 
 """
     AdapterRegistry

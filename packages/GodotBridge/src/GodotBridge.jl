@@ -40,6 +40,10 @@ include("extraction/parallel_elements.jl")
 include("extraction/ring_buffer.jl")
 include("extraction/entity_batch.jl")
 
+# Command execution module (Phase 7B.3.3)
+include("commands/futures.jl")
+include("commands/thread_pool.jl")
+
 # Server module
 include("server/websocket_server.jl")
 
@@ -67,6 +71,9 @@ export ElementStateCache, get_cached_element, clear_expired, clear_expired!
 export clear!, cache_stats, extract_elements_parallel, extract_elements_cached
 export TrajectoryRingBuffer, add_point!, add_point, trajectory, get_trajectory
 export memory_usage, extract_entities_vectorized, batch_get_trajectories
+export CommandWorkerPool, start_pool!, stop_pool!, submit_command
+export CommandFuture, is_command_ready, wait_result, command_latency
+export get_latency_stats
 
 # Re-export server items
 export GodotBridgeServer

@@ -1,7 +1,9 @@
 # Phase 7B.3.1: SimulationAdapter Abstract Interface
 # Contract that all simulation engines must implement
 
-include("traits.jl")
+if !isdefined(@__MODULE__, :ABMCapability)
+    include("traits.jl")
+end
 
 """
     SimulationAdapter

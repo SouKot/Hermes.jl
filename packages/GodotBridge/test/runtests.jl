@@ -194,3 +194,4 @@ end  # End of testset
 println("\n✓ All GodotBridge protocol tests passed!")
 
 include("test_phase7b3_2.jl")
+include("test_phase7b3_3.jl")
