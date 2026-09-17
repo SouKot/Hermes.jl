@@ -1,0 +1,26 @@
+; Engine configuration file.
+; Phase 7C-00 Godot shell
+config_version=5
+
+[application]
+config/name="Antigravity SimViz"
+run/main_scene="res://scenes/main.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+
+[display]
+window/size/viewport_width=1440
+window/size/viewport_height=900
+window/size/window_width_override=1440
+window/size/window_height_override=900
+window/stretch/mode="canvas_items"
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+environment/defaults/default_clear_color=Color(0.035, 0.047, 0.063, 1)
+
+[gui]
+theme/default_font_multichannel_signed_distance_field=true
+
+[editor]
+run/main_run_args=""

@@ -1,10 +1,10 @@
 # RESTORATION POINT: September 16, 2026
 
-**Session Status**: Phase 7B.3 bridge implementation and acceptance complete; Godot E2E pending
+**Session Status**: Phase 7B.3 bridge implementation complete; Phase 7C-00/01 Godot client and live HTTP.WebSockets interoperability validated
 
 **Julia Runtime Verified**: Julia 1.13.0 (September 17, 2026)
 
-**Validation Note**: The full package suite passes under Julia 1.13.0 with 98 tests. Bridge acceptance measured typed transport at 1.901 ms median, 1,000 updates at 0.124 ms mean, and 10,000 commands at approximately 97,533/sec. Live WebSocket/Godot decode/rendering/backpressure remain external gates.
+**Validation Note**: The full package suite passes under Julia 1.13.0 with 98 tests. Godot 4.7.2 imports and runs the Phase 7C shell headlessly; the codec smoke test and live Julia/Godot Hello-Snapshot-Command/Ack exchange pass through HTTP.WebSockets. Rendering and slow-client backpressure remain external gates.
 
 ---
 

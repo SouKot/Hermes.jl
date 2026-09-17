@@ -5,8 +5,8 @@ WebSocket server for Protocol v1 communication with Godot.
 Manages connections, message dispatch, and snapshot streaming.
 """
 
-import WebSockets
 import HTTP
+const WS = HTTP.WebSockets
 using ..GodotBridge  # Import parent module
 
 # ============================================================================
@@ -33,7 +33,7 @@ mutable struct GodotBridgeServer
     snapshot_rate_hz::Int
     debug::Bool
     is_running::Bool
-    clients::Dict{String, WebSockets.WebSocket}
+    clients::Dict{String, WS.WebSocket}
     message_handlers::Dict{String, Function}
     server_task::Union{Task, Nothing}
 end
@@ -71,7 +71,7 @@ function GodotBridgeServer(;
         snapshot_rate_hz,
         debug,
         false,  # is_running
-        Dict{String, WebSockets.WebSocket}(),  # clients
+        Dict{String, WS.WebSocket}(),  # clients
         Dict{String, Function}(),  # message_handlers
         nothing,  # server_task
     )
@@ -107,28 +107,28 @@ Register default message handlers for standard message types.
 """
 function register_default_handlers!(server::GodotBridgeServer)
     # Default command handler - just echo an Ack
-    register_handler!(server, "command") do msg
+    register_handler!(server, "command", function(msg)
         if server.debug
             log_message_debug(msg, label="CMD")
         end
         create_ack(msg.envelope.message_id, status="accepted", details="Command received")
-    end
+    end)
     
     # Default ack handler - log it
-    register_handler!(server, "ack") do msg
+    register_handler!(server, "ack", function(msg)
         if server.debug
             log_message_debug(msg, label="ACK")
         end
         nothing  # No response to ack
-    end
+    end)
     
     # Default error handler - log it
-    register_handler!(server, "error") do msg
+    register_handler!(server, "error", function(msg)
         if server.debug
             log_message_debug(msg, label="ERR")
         end
         nothing  # No response to error
-    end
+    end)
 end
 
 # ============================================================================
@@ -158,12 +158,8 @@ function start(server::GodotBridgeServer)
     println("Starting GodotBridge WebSocket server on ws://$(server.host):$(server.port)")
     
     try
-        WebSockets.serve(server.host, server.port) do req::HTTP.Request
-            if WebSockets.is_upgrade(req)
-                WebSockets.upgrade(req) do ws
-                    handle_connection(server, ws)
-                end
-            end
+        WS.listen!(server.host, server.port; check_origin=(_request -> true)) do ws
+            handle_connection(server, ws)
         end
     catch e
         @error "Server error: $e"
@@ -209,7 +205,7 @@ Handle a single WebSocket connection from a client.
 2. Receive and process incoming messages
 3. Handle disconnection
 """
-function handle_connection(server::GodotBridgeServer, ws::WebSockets.WebSocket)
+function handle_connection(server::GodotBridgeServer, ws::WS.WebSocket)
     client_id = string(gensym("client_"))
     server.clients[client_id] = ws
     
@@ -221,17 +217,18 @@ function handle_connection(server::GodotBridgeServer, ws::WebSockets.WebSocket)
         # Send hello on connect
         hello = create_hello()
         binary = encode_messagepack(hello)
-        send(ws, binary)
+        WS.send(ws, binary)
         
         if server.debug
             log_message_debug(hello, label="SEND")
         end
         
         # Main message loop
-        while !isclosed(ws)
+        while !WS.isclosed(ws)
             try
-                data = receive(ws)
-                if data isa Vector{UInt8}
+                data = WS.receive(ws)
+                success = true
+            if success && data isa Vector{UInt8}
                     # Decode incoming message
                     msg = decode_messagepack(data)
                     
@@ -245,7 +242,7 @@ function handle_connection(server::GodotBridgeServer, ws::WebSockets.WebSocket)
                     # Send response if handler produced one
                     if !isnothing(response)
                         resp_binary = encode_messagepack(response)
-                        send(ws, resp_binary)
+                        WS.send(ws, resp_binary)
                         
                         if server.debug
                             log_message_debug(response, label="SEND")
@@ -341,8 +338,8 @@ function broadcast_snapshot(server::GodotBridgeServer, snapshot::SnapshotPayload
     disconnected = String[]
     for (client_id, ws) in server.clients
         try
-            if !isclosed(ws)
-                send(ws, binary)
+            if !WS.isclosed(ws)
+                WS.send(ws, binary)
             else
                 push!(disconnected, client_id)
             end
