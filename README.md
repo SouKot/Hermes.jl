@@ -50,12 +50,18 @@ DES↔ABM synchronization semantics.
 
 - **Serial baseline (available):** DES runs serially; crowd and viz integration
   operate in the current package pipeline.
-- **CPU parallelism (partial):** crowd-side compute paths include threaded and
-  kernel-based acceleration where applicable.
-- **GPU (partial):** crowd kernels support GPU backends via
-  KernelAbstractions.jl.
+- **CPU parallelism (available):** crowd-side compute paths use threaded and
+  KernelAbstractions-based backends through the shared `ScenarioConfig`
+  `execution_backend` selector.
+- **GPU (available for crowd kernels):** SimCrowd routes SFM, ORCA, HybridFSM,
+  and CSM through backend-aware `RadixSpatialHash` / KernelAbstractions paths,
+  with `:cuda` selectable from `ScenarioConfig`.
 - **PDES / MPI (planned):** conservative PDES and multi-node execution are
   design targets, not complete features yet.
+
+`SimViz` now builds all crowd models through the same backend-aware world
+construction path, so user-facing backend choice is part of the public
+scenario contract rather than a model-specific detail.
 
 ---
 
@@ -93,7 +99,7 @@ Hermes currently exposes two statistics interfaces:
   once internal runtime usage is zero and migration guidance is complete.
 
 See [docs/2026-08-07_implementation_phases.md](docs/2026-08-07_implementation_phases.md)
-Phase 5.5 (“Statistics API Convergence”) for the tracked criteria.
+for the tracked criteria around statistics API convergence.
 
 ---
 

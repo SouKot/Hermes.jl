@@ -1,0 +1,24 @@
+name = "GodotBridge"
+uuid = "7a8b9e3c-2d4f-5e6a-9b1c-3d4e5f6a7b8c"
+authors = ["Sourabh <sourabh@example.com>"]
+version = "0.1.0"
+
+[deps]
+MessagePack = "99f44e22-a591-53d4-9b7c-e4566f8ec338"
+HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
+WebSockets = "104b5d7c-a370-577a-8038-80a2059c5097"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
+
+[compat]
+MessagePack = "1.2"
+HTTP = "1.10"
+WebSockets = "1.6"
+JSON = "0.21"
+julia = "1.8"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f2afa"
+
+[targets]
+test = ["Test"]

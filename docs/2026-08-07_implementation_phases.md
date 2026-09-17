@@ -1262,72 +1262,120 @@ Wire validation scripts in `experiments/scripts/pdes/` to use real `SimDES`:
 
 ---
 
-## Phase 7 — Godot 4 Desktop Application (Phase 2 Visualization)
+## Phase 7 — Godot 4 Desktop Application + Extension Ecosystem
 
-> **Goal**: Replace hardcoded GLMakie layout with a full Godot 4 scene editor + real-time rendering.  
+> **Goal**: Replace the fixed GLMakie layout with a Godot 4 desktop GUI that is
+> driven by a stable Julia ↔ Godot protocol, supports selectable ABM models for
+> hybrid scenarios, and can load user-authored element libraries (DES/ABM) as
+> first-class extensions.  
 > **Design refs**: §4.4 (Godot 4 architecture), §4.5 (Julia ↔ Godot communication), §4.11 (WebSocket protocol)  
 > **Depends on**: Phase 6 complete (engine stable, validated)  
 > **Timeline**: Weeks 8–14
 
-### Sprint 7A — Julia WebSocket Server
+### Phase 7A — Contracts and protocol
 
-- [ ] **7A-01** · Add `HTTP.jl` or `Oxygen.jl` to workspace deps
-- [ ] **7A-02** · Implement `WebSocketServer` in SimViz
-  ```julia
-  function start_viz_server!(world::SimWorld, clock::SimClock; port=8765)
-      server = WebSocket.listen(port) do ws
-          # Send sim state at 60fps
-          @async while isopen(ws)
-              state = serialize_world(world)
-              send(ws, MsgPack.pack(state))
-              sleep(1/60)
-          end
-          # Receive layout and control messages
-          for msg in ws
-              handle_client_message!(world, clock, MsgPack.unpack(msg))
-          end
-      end
-  end
-  ```
+> **Outcome**: Freeze the wire protocol and the editable scene model before any
+> large Godot UI work starts.
 
-- [ ] **7A-03** · Implement `serialize_world` — MessagePack binary frame
-  - Crowd positions + panic levels (Float32 per agent for bandwidth)
-  - DES statistics (queue depths, utilization)
-  - Simulated time
-  - Delta encoding: only send changed positions
+- [ ] **7A-01** · Define the canonical scene schema
+  - Entities, connections, layout metadata, simulation parameters, overlays
+  - Explicit ABM model field for every crowd-backed scene (`MODEL_SFM`, `MODEL_ORCA`,
+    `MODEL_HYBRID_FSM`, `MODEL_CSM`)
+  - Support “template defaults” without hardcoding the model in the GUI
+- [ ] **7A-02** · Define the transport protocol
+  - `snapshot` messages: positions, velocities, agent state, DES stats, clock
+  - `command` messages: play/pause/step/reset/speed, selection, edits, import/export
+  - `layout` messages: scene graph diffs, not only full rebuilds
+- [ ] **7A-03** · Define extension manifests
+  - Extension name, version, author, entrypoints, icons, asset list, dependencies
+  - Separate categories for DES elements, ABM elements, and hybrid scene widgets
 
-- [ ] **7A-04** · Implement `handle_client_message!` — receive layout + clock commands
-  - `clock` commands: `{speed: 1.0, command: "play"}` → `set_speed!(clock, 1.0)`
-  - `layout` updates: parse new zone topology → rebuild world
+### Phase 7B — Julia runtime bridge
 
-### Sprint 7B — Godot 4 Application
+> **Outcome**: Keep the engine-side work minimal, deterministic, and protocol-driven.
 
-- [ ] **7B-01** · Install Godot 4 (desktop) — https://godotengine.org/download
-- [ ] **7B-02** · Create Godot 4 project: `ABM/godot/HermesViz/`
-- [ ] **7B-03** · Implement WebSocket client in GDScript
-  - Connect to `ws://localhost:8765`
-  - Parse MessagePack frames (use `msgpack-gd` plugin or pure GDScript)
-  - Update `MultiMeshInstance2D` agent positions each frame
+- [ ] **7B-01** · Add the Julia WebSocket service in SimViz
+  - Start/stop server from CLI and from future GUI launcher
+  - Stream snapshots at a stable cadence and accept control/layout messages
+- [ ] **7B-02** · Emit compact binary snapshots
+  - MessagePack or equivalent binary frames
+  - Float32/UInt8 payloads for agent state
+  - Delta mode for moving entities where possible
+- [ ] **7B-03** · Accept scene/control updates
+  - Apply speed, play/pause, reset, overlay and selection commands
+  - Rebuild or patch the scene when the user edits topology
+- [ ] **7B-04** · Expose model switching through the runtime
+  - For hybrid / ABM-backed scenes, allow the incoming scene spec to choose the
+    ABM model instead of fixing it in the canned demo helper
+  - Preserve sensible defaults for starter templates, but do not hardcode them
 
-- [ ] **7B-04** · Configure `MultiMeshInstance2D` for 500k+ agent rendering
-  - One `MultiMesh` per agent type (crowd, fluid particles)
-  - Instance color = panic level (green → red via HSV)
-  - Instance transform = agent position
+### Phase 7C — Godot shell and layout
 
-- [ ] **7B-05** · Build physical layout editor using Godot Scene Editor
-  - Create custom `SimElement` nodes: `QueueNode`, `ServerNode`, `CrowdSource`, `Exit`, `Gate`
-  - Each node: icon + property inspector fields (capacity, service rate, etc.)
-  - Export scene to JSON → send to Julia via WebSocket
+> **Outcome**: Deliver a minimal but complete GUI shell before building advanced editors.
 
-- [ ] **7B-06** · Implement process logic graph via Godot's `GraphEdit`
-  - Built-in `GraphEdit` + `GraphNode` for node connections
-  - Custom node types matching SimDES element library
+- [ ] **7C-01** · Create the Godot 4 desktop project
+  - Base project, connection bootstrap, local settings, launcher UI
+- [ ] **7C-02** · Implement the live simulation viewport
+  - Render agent fields, DES indicators, overlays, and status panels
+  - Use a rendering path that scales to large crowds without per-agent scene nodes
+- [ ] **7C-03** · Build the core panel layout
+  - Suggested starting layout: left library/tree, center viewport, right inspector,
+    bottom timeline/control strip
+  - Keep the exact pixel layout revisable until the first usability pass
+- [ ] **7C-04** · Add the runtime control strip
+  - Play / Pause / Step / Reset / speed / sim time / FPS / agent count
 
-- [ ] **7B-07** · Implement simulation control panel in Godot UI
-  - Play / Pause / Step / Reset buttons
-  - Speed slider (0.1× to 10×, plus "fastest" mode)
-  - Clock display: sim time + wall time
-  - FPS counter and agent count
+### Phase 7D — Scene editor for DES + ABM
+
+> **Outcome**: Let users author and modify models in the GUI, including the ABM
+> model choice for hybrid scenes.
+
+- [ ] **7D-01** · Build the layout editor
+  - Rooms, doors, exits, gates, machines, conveyors, buffers, queues
+  - Edit geometry and parameters in the inspector
+- [ ] **7D-02** · Build the process graph editor
+  - Visual node graph for DES logic and hybrid triggers
+  - Node templates for reusable library elements
+- [ ] **7D-03** · Expose ABM model selection in the editor
+  - Allow per-scene choice of SFM / ORCA / HybridFSM / CSM where supported
+  - Make it obvious when a scenario is intentionally fixed vs. configurable
+- [ ] **7D-04** · Support import/export of scenes
+  - Export the GUI scene to a Julia-readable project file
+  - Reopen and continue editing without losing metadata
+
+### Phase 7E — Extension SDK and libraries
+
+> **Outcome**: Provide user-facing libraries of reusable elements for DES and ABM.
+
+- [ ] **7E-01** · Define a Julia extension SDK
+  - Base traits/interfaces for custom DES elements, ABM components, and widgets
+  - Register element metadata, serialization hooks, and GUI properties
+- [ ] **7E-02** · Support packaged extension libraries
+  - Conveyors, machines, buffers, service stations, doors, gates, crowd sources,
+    behaviors, overlays, etc.
+  - Extensions should be installable, loadable, and showable inside the GUI
+- [ ] **7E-03** · Add extension discovery / registry UI
+  - Browse installed extensions, enable/disable them, and load project templates
+  - Keep the registry local-first before considering a remote catalog
+- [ ] **7E-04** · Decide the script editing strategy
+  - Primary authoring language: Julia
+  - Prefer external editor integration first; only add an embedded code editor if
+    the workflow clearly needs it after the SDK stabilizes
+
+### Phase 7F — Polish, validation, and layout lock-in
+
+> **Outcome**: Finalize the layout and harden the end-to-end workflow once the
+> first prototype has been exercised.
+
+- [ ] **7F-01** · Usability pass on the layout
+  - Validate whether the initial panel arrangement works in practice
+  - Lock only the information architecture early; keep exact panel sizing flexible
+- [ ] **7F-02** · End-to-end scenario regression tests
+  - Connect Julia scene specs → Godot render → user edits → Julia updates
+- [ ] **7F-03** · Performance and scaling validation
+  - Snapshot throughput, editor responsiveness, large-crowd rendering, diff updates
+- [ ] **7F-04** · Packaging and onboarding
+  - Starter project, example extensions, and a “Hello extension” tutorial
 
 ---
 
