@@ -1,6 +1,7 @@
 extends Control
 
 const ConnectionManager := preload("res://scripts/connection_manager.gd")
+const StateStore := preload("res://scripts/state_store.gd")
 
 const BG := Color("#0b1018")
 const PANEL := Color("#121b27")
@@ -18,13 +19,18 @@ var entity_count := 128
 var simulation_time := 0.0
 var running := false
 var connection_manager: SimVizConnectionManager
+var state_store: RefCounted
 
 func _ready() -> void:
     connection_manager = ConnectionManager.new()
     add_child(connection_manager)
+    state_store = StateStore.new()
     connection_manager.connection_state_changed.connect(_on_connection_state_changed)
     connection_manager.message_received.connect(_on_protocol_message)
     connection_manager.protocol_error.connect(_on_protocol_error)
+    state_store.state_replaced.connect(_on_state_published)
+    state_store.delta_applied.connect(_on_state_published)
+    state_store.resync_required.connect(_on_resync_required)
     _build_shell()
     _build_placeholder_scene()
 
@@ -215,13 +221,22 @@ func _on_connection_state_changed(state: String, detail: String) -> void:
     )
 
 func _on_protocol_message(message: Dictionary) -> void:
-    status_label.text = "●  MESSAGE: %s" % str(message.get("kind", "unknown")).to_upper()
-    status_label.add_theme_color_override("font_color", ACCENT)
+    if state_store.apply_message(message):
+        status_label.text = "●  MESSAGE: %s" % str(message.get("kind", "unknown")).to_upper()
+        status_label.add_theme_color_override("font_color", ACCENT)
 
 func _on_protocol_error(detail: String) -> void:
     status_label.text = "●  PROTOCOL ERROR"
     status_label.add_theme_color_override("font_color", WARNING)
     push_warning(detail)
+
+func _on_state_published(state: Dictionary) -> void:
+    entity_count = state.entities_by_id.size()
+
+func _on_resync_required(reason: String) -> void:
+    status_label.text = "●  RESYNC REQUIRED"
+    status_label.add_theme_color_override("font_color", WARNING)
+    push_warning(reason)
 
 func _on_play() -> void:
     running = true

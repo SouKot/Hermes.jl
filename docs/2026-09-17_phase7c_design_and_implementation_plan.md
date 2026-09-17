@@ -337,11 +337,11 @@ Every major panel needs:
 
 **Tasks**:
 
-- [ ] Create `project.godot`.
-- [ ] Create main scene and root application controller.
-- [ ] Add reusable panel layout.
-- [ ] Add local host/port settings.
-- [ ] Add a deterministic placeholder scene for offline UI development.
+- [x] Create `project.godot`.
+- [x] Create main scene and root application controller.
+- [x] Add reusable panel layout.
+- [x] Add local host/port settings.
+- [x] Add a deterministic placeholder scene for offline UI development.
 
 **Exit criteria**: Project opens and displays the shell without a Julia runtime.
 
@@ -356,13 +356,13 @@ Every major panel needs:
 
 **Tasks**:
 
-- [ ] Implement connection lifecycle signals.
-- [ ] Implement binary receive queue.
-- [ ] Implement MessagePack envelope decoding.
-- [ ] Validate protocol version and message kind.
-- [ ] Add reconnect backoff.
-- [ ] Add malformed-message handling.
-- [ ] Add a fake transport for deterministic tests.
+- [x] Implement connection lifecycle signals.
+- [x] Implement binary receive queue.
+- [x] Implement MessagePack envelope decoding.
+- [x] Validate protocol version and message kind.
+- [x] Add reconnect backoff.
+- [x] Add malformed-message handling.
+- [x] Add a fake transport for deterministic tests.
 
 **Exit criteria**: Godot connects to the Julia fixture, receives Hello, and recovers from disconnect.
 
@@ -377,14 +377,14 @@ Every major panel needs:
 
 **Tasks**:
 
-- [ ] Define typed Godot-side records for envelope and payloads.
-- [ ] Index elements and entities by stable ID.
-- [ ] Apply full snapshots atomically.
-- [ ] Apply added/updated/removed elements.
-- [ ] Apply entity lifecycle and movement updates.
-- [ ] Reject stale deltas.
-- [ ] Request or wait for resynchronization after mismatch.
-- [ ] Add fixture-based snapshot/delta tests.
+- [x] Define typed Godot-side records for envelope and payloads.
+- [x] Index elements and entities by stable ID.
+- [x] Apply full snapshots atomically.
+- [x] Apply added/updated/removed elements.
+- [x] Apply entity lifecycle and movement updates.
+- [x] Reject stale deltas.
+- [x] Request or wait for resynchronization after mismatch.
+- [x] Add fixture-based snapshot/delta tests.
 
 **Exit criteria**: A deterministic message sequence produces the expected state store contents.
 
@@ -620,3 +620,13 @@ Godot 4.7.2 headless validation passes. The live interoperability smoke test
 also passes against the Julia bridge through `HTTP.WebSockets`: Godot receives
 Hello, Snapshot, and Ack messages, and Julia receives the Godot command. The
 next 7C task is the state store and delta application layer.
+
+## 15. 7C-02 Implementation Status
+
+The client state store is implemented in `godot/scripts/state_store.gd`.
+It atomically applies full snapshots, indexes elements and entities by stable
+ID, applies lifecycle/update deltas, tracks revisions and parent message IDs,
+publishes render-state dictionaries, and emits a resync signal for stale or
+out-of-order deltas. The main shell is wired to consume published state.
+
+Headless validation passes through `tests/state_store_smoke.gd`.
