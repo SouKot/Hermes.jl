@@ -399,13 +399,13 @@ Every major panel needs:
 
 **Tasks**:
 
-- [ ] Implement world-to-viewport transform.
-- [ ] Render queues/resources with stable visual identity.
-- [ ] Render entities using instancing.
-- [ ] Update transforms from published render state.
-- [ ] Add camera pan/zoom/fit.
-- [ ] Add selection by stable ID.
-- [ ] Add a render cap and degraded mode.
+- [x] Implement world-to-viewport transform.
+- [x] Render queues/resources with stable visual identity.
+- [x] Render entities through one batched draw path without one node per entity.
+- [x] Update transforms from published render state.
+- [x] Add camera pan/zoom/fit.
+- [x] Add selection by stable ID.
+- [x] Add a render cap and degraded mode.
 
 **Exit criteria**: 100K synthetic entities render without one-node-per-entity architecture.
 

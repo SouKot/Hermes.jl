@@ -2,6 +2,7 @@ extends Control
 
 const ConnectionManager := preload("res://scripts/connection_manager.gd")
 const StateStore := preload("res://scripts/state_store.gd")
+const ViewportController := preload("res://scripts/viewport_controller.gd")
 
 const BG := Color("#0b1018")
 const PANEL := Color("#121b27")
@@ -15,6 +16,7 @@ const WARNING := Color("#e6b85c")
 var status_label: Label
 var simulation_label: Label
 var viewport_panel: Control
+var viewport_controller
 var entity_count := 128
 var simulation_time := 0.0
 var running := false
@@ -124,12 +126,18 @@ func _build_left_panel() -> Control:
     return panel
 
 func _build_viewport() -> Control:
-    var panel := PanelContainer.new()
+    viewport_controller = ViewportController.new()
+    var panel: Control = viewport_controller
     panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
-    panel.add_theme_stylebox_override("panel", _box(Color("#0e1722"), BORDER, 0, 1))
-    panel.draw.connect(_draw_viewport.bind(panel))
+    viewport_controller.selection_changed.connect(_on_viewport_selection)
     return panel
+
+func _on_viewport_selection(kind: String, id: String) -> void:
+    if kind == "":
+        return
+    status_label.text = "●  SELECTED %s" % id
+    status_label.add_theme_color_override("font_color", ACCENT)
 
 func _draw_viewport(panel: Control) -> void:
     var rect := panel.get_rect()
@@ -232,6 +240,8 @@ func _on_protocol_error(detail: String) -> void:
 
 func _on_state_published(state: Dictionary) -> void:
     entity_count = state.entities_by_id.size()
+    if viewport_controller:
+        viewport_controller.set_render_state(state)
 
 func _on_resync_required(reason: String) -> void:
     status_label.text = "●  RESYNC REQUIRED"
