@@ -54,8 +54,23 @@ func render_state() -> Dictionary:
 
 func _apply_snapshot(message: Dictionary) -> bool:
     var payload: Dictionary = message.get("payload", {})
-    var next_elements := _index_records(payload.get("elements_state", []), "element_id")
-    var next_entities := _index_records(payload.get("entities", []), "id")
+    var elements_raw = payload.get("elements_state", [])
+    var entities_raw = payload.get("entities", [])
+    if not elements_raw is Array:
+        push_warning("Snapshot elements_state was not an Array: %s" % typeof(elements_raw))
+        elements_raw = []
+    if not entities_raw is Array:
+        push_warning("Snapshot entities was not an Array: %s" % typeof(entities_raw))
+        entities_raw = []
+
+    var next_elements := _index_records(elements_raw, "element_id")
+    var next_entities := _index_records(entities_raw, "id")
+    print("STATE STORE: snapshot scene=%s elements=%d entities=%d" % [
+        str(payload.get("scene_id", "")),
+        next_elements.size(),
+        next_entities.size()
+    ])
+
     scene_id = str(payload.get("scene_id", ""))
     snapshot_version = str(payload.get("snapshot_version", ""))
     simulation_time = float(payload.get("simulation_time", 0.0))
@@ -76,6 +91,12 @@ func _apply_snapshot(message: Dictionary) -> bool:
 
 func _apply_delta(message: Dictionary) -> bool:
     var payload: Dictionary = message.get("payload", {})
+    print("STATE STORE: delta parent=%s elements_changed=%d entities_added=%d entities_updated=%d" % [
+        str(payload.get("parent_message_id", "")),
+        payload.get("elements_changed", []).size(),
+        payload.get("entities_added", []).size(),
+        payload.get("entities_updated", []).size()
+    ])
     var parent := str(payload.get("parent_message_id", ""))
     if last_message_id != "" and parent != "" and parent != last_message_id and not parent.begins_with("revision-"):
         resync_required.emit("delta parent mismatch: expected %s, got %s" % [last_message_id, parent])

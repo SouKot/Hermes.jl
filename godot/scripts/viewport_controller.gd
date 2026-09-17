@@ -61,6 +61,8 @@ func _gui_input(event: InputEvent) -> void:
 
 func _draw() -> void:
     var rect := size
+    var background := Color("#0d1a24")
+    draw_rect(Rect2(Vector2.ZERO, rect), background)
     for x in range(0, int(rect.x), 40):
         draw_line(Vector2(x, 0), Vector2(x, rect.y), GRID, 1.0)
     for y in range(0, int(rect.y), 40):
@@ -72,10 +74,10 @@ func _draw() -> void:
         var element: Dictionary = elements[element_id]
         var position := _element_position(str(element_id), center)
         var occupancy: float = float(element.get("occupancy", element.get("occupancy_after", 0)))
-        var radius: float = 8.0 + min(occupancy, 32.0) * 0.35
+        var radius: float = 10.0 + min(occupancy, 32.0) * 0.35
         draw_circle(position, radius, ELEMENT_COLOR)
         draw_string(ThemeDB.fallback_font, position + Vector2(12, 4), str(element_id),
-            HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("#cbd5df"))
+            HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("#dfeaf6"))
 
     var entities: Dictionary = render_state.get("entities_by_id", {})
     var rendered := 0
@@ -95,8 +97,8 @@ func _draw() -> void:
     draw_string(ThemeDB.fallback_font, Vector2(16, size.y - 18), label,
         HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("#8da2b5"))
     draw_string(ThemeDB.fallback_font, Vector2(16, 24),
-        "LIVE VIEWPORT  /  %.0f%%" % (camera_zoom * 100.0),
-        HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("#8da2b5"))
+        "SIM VIEWPORT  /  ZOOM %.0f%%" % (camera_zoom * 100.0),
+        HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("#c9d6e3"))
 
 func _element_position(element_id: String, center: Vector2) -> Vector2:
     var hash_value: int = abs(element_id.hash())

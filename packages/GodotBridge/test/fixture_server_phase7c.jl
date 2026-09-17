@@ -39,10 +39,16 @@ for _ in 1:80
     !isempty(server.clients) && break
     sleep(0.1)
 end
-if server.is_running
+if server.is_running && !isempty(server.clients)
     broadcast_snapshot(server, snapshot)
 end
-sleep(10.0)
-stop(server)
-wait(server_task)
+println("Fixture running. Press Ctrl-C to stop.")
+last_snapshot_time = time()
+while server.is_running
+    if !isempty(server.clients) && time() - last_snapshot_time >= 1.0
+        broadcast_snapshot(server, snapshot)
+        global last_snapshot_time = time()
+    end
+    sleep(0.1)
+end
 println("Phase 7C fixture server stopped")

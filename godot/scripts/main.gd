@@ -17,11 +17,21 @@ var status_label: Label
 var simulation_label: Label
 var viewport_panel: Control
 var viewport_controller
-var entity_count := 128
+var runtime_adapter_label: Label
+var runtime_scene_label: Label
+var inspector_element_label: Label
+var inspector_entity_label: Label
+var connection_endpoint_label: Label
+var entity_count := 0
+var element_count := 0
+var adapter_name := "Booting"
+var scene_name := "waiting"
+var endpoint_text := "127.0.0.1:9107"
 var simulation_time := 0.0
 var running := false
 var connection_manager: SimVizConnectionManager
 var state_store: RefCounted
+var _status_tint := WARNING
 
 func _ready() -> void:
     connection_manager = ConnectionManager.new()
@@ -35,6 +45,11 @@ func _ready() -> void:
     state_store.resync_required.connect(_on_resync_required)
     _build_shell()
     _build_placeholder_scene()
+    call_deferred("_auto_connect")
+
+func _auto_connect() -> void:
+    if connection_manager != null and connection_manager.state != ConnectionManager.ConnectionState.CONNECTED:
+        connection_manager.connect_to("127.0.0.1", 9107, "/")
 
 func _process(delta: float) -> void:
     if running:
@@ -69,6 +84,7 @@ func _build_shell() -> void:
     content.add_child(_build_right_panel())
 
     root.add_child(_build_transport())
+    _update_status("booting", "booting live monitor")
 
 func _build_header() -> Control:
     var panel := PanelContainer.new()
@@ -112,9 +128,13 @@ func _build_left_panel() -> Control:
     column.add_theme_constant_override("margin_bottom", 14)
     panel.add_child(column)
     column.add_child(_heading("RUNTIME"))
-    column.add_child(_metric("Adapter", "OfflineFixture"))
+    var adapter_row := _metric("Adapter", adapter_name)
+    column.add_child(adapter_row)
+    runtime_adapter_label = adapter_row.get_child(1)
     column.add_child(_metric("Protocol", "v1 / MessagePack"))
-    column.add_child(_metric("Scene", "acceptance_fixture"))
+    var scene_row := _metric("Scene", scene_name)
+    column.add_child(scene_row)
+    runtime_scene_label = scene_row.get_child(1)
     column.add_spacer(false)
     column.add_child(_heading("SCENE TREE"))
     for item in ["Simulation", "  ├─ Queues", "  ├─ Entities", "  └─ Overlays"]:
@@ -169,12 +189,18 @@ func _build_right_panel() -> Control:
     panel.add_child(column)
     column.add_child(_heading("INSPECTOR"))
     column.add_child(_metric("Selection", "None"))
-    column.add_child(_metric("Elements", "0 queues"))
-    column.add_child(_metric("Entities", str(entity_count)))
+    var element_row := _metric("Elements", "%d queues" % element_count)
+    column.add_child(element_row)
+    inspector_element_label = element_row.get_child(1)
+    var entity_row := _metric("Entities", str(entity_count))
+    column.add_child(entity_row)
+    inspector_entity_label = entity_row.get_child(1)
     column.add_child(_metric("Update mode", "Typed delta"))
     column.add_spacer(false)
     column.add_child(_heading("CONNECTION"))
-    column.add_child(_metric("Endpoint", "127.0.0.1:9000"))
+    var endpoint_row := _metric("Endpoint", endpoint_text)
+    column.add_child(endpoint_row)
+    connection_endpoint_label = endpoint_row.get_child(1)
     column.add_child(_metric("Transport", "MessagePack"))
     return panel
 
@@ -223,23 +249,60 @@ func _on_connect() -> void:
     connection_manager.connect_to()
 
 func _on_connection_state_changed(state: String, detail: String) -> void:
-    status_label.text = "●  %s" % state.to_upper()
-    status_label.add_theme_color_override(
-        "font_color", ACCENT if state == "connected" else WARNING
-    )
+    _update_status(state, detail)
 
 func _on_protocol_message(message: Dictionary) -> void:
     if state_store.apply_message(message):
-        status_label.text = "●  MESSAGE: %s" % str(message.get("kind", "unknown")).to_upper()
-        status_label.add_theme_color_override("font_color", ACCENT)
+        var kind := str(message.get("kind", "unknown")).to_upper()
+        _update_status("message", kind)
 
 func _on_protocol_error(detail: String) -> void:
-    status_label.text = "●  PROTOCOL ERROR"
-    status_label.add_theme_color_override("font_color", WARNING)
+    _update_status("protocol error", detail)
     push_warning(detail)
 
+func _update_status(state: String, detail: String) -> void:
+    var normalized := str(state).to_lower()
+    var label := "●  %s" % normalized.to_upper()
+    if detail != "" and detail != "booting live monitor":
+        label = "●  %s  ·  %s" % [normalized.to_upper(), detail]
+    match normalized:
+        "connected":
+            _status_tint = ACCENT
+        "connecting":
+            _status_tint = WARNING
+        "reconnecting":
+            _status_tint = WARNING
+        "protocol error":
+            _status_tint = WARNING
+        "booting":
+            _status_tint = WARNING
+        "message":
+            _status_tint = ACCENT
+        _:
+            _status_tint = WARNING
+    if status_label != null:
+        status_label.text = label
+        status_label.add_theme_color_override("font_color", _status_tint)
+
 func _on_state_published(state: Dictionary) -> void:
+    element_count = state.get("elements_by_id", {}).size()
     entity_count = state.entities_by_id.size()
+    if state.has("scene_id") and str(state.scene_id) != "":
+        scene_name = str(state.scene_id)
+    if state.has("simulation_time"):
+        simulation_time = float(state.simulation_time)
+    adapter_name = "LiveFixture" if state.has("scene_id") else "OfflineFixture"
+    endpoint_text = "127.0.0.1:9107"
+    if runtime_adapter_label != null:
+        runtime_adapter_label.text = adapter_name
+    if runtime_scene_label != null:
+        runtime_scene_label.text = scene_name
+    if inspector_element_label != null:
+        inspector_element_label.text = "%d queues" % element_count
+    if inspector_entity_label != null:
+        inspector_entity_label.text = str(entity_count)
+    if connection_endpoint_label != null:
+        connection_endpoint_label.text = endpoint_text
     if viewport_controller:
         viewport_controller.set_render_state(state)
 

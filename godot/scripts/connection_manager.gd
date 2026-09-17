@@ -10,7 +10,7 @@ const SimVizCodec = preload("res://scripts/protocol_codec.gd")
 enum ConnectionState { DISCONNECTED, CONNECTING, CONNECTED, RECONNECTING, DEGRADED }
 
 @export var host := "127.0.0.1"
-@export var port := 9000
+@export var port := 9107
 @export var reconnect_enabled := true
 @export var max_reconnect_delay := 5.0
 
