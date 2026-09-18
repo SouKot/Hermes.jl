@@ -1,6 +1,8 @@
 class_name SimVizStateStore
 extends RefCounted
 
+const PACKED_ENTITY_THRESHOLD := 10000
+
 signal state_replaced(state: Dictionary)
 signal delta_applied(state: Dictionary)
 signal resync_required(reason: String)
@@ -14,6 +16,9 @@ var clock_speed := 1.0
 var simulation_state := "stopped"
 var elements_by_id: Dictionary = {}
 var entities_by_id: Dictionary = {}
+var packed_entity_positions := PackedVector2Array()
+var packed_entity_ids := PackedStringArray()
+var use_packed_entities := true
 var abm_state: Variant = null
 var overlays: Array = []
 var warnings: Array = []
@@ -44,6 +49,8 @@ func render_state() -> Dictionary:
         "simulation_state": simulation_state,
         "elements_by_id": elements_by_id.duplicate(true),
         "entities_by_id": entities_by_id.duplicate(true),
+        "entity_positions": packed_entity_positions,
+        "entity_ids": packed_entity_ids,
         "abm_state": abm_state,
         "overlays": overlays.duplicate(true),
         "warnings": warnings.duplicate(true),
@@ -56,15 +63,25 @@ func _apply_snapshot(message: Dictionary) -> bool:
     var payload: Dictionary = message.get("payload", {})
     var elements_raw = payload.get("elements_state", [])
     var entities_raw = payload.get("entities", [])
+    var compact_positions: PackedByteArray = payload.get("entity_positions", PackedByteArray())
+    var compact_entity_count: int = int(payload.get("entity_count", 0))
     if not elements_raw is Array:
         push_warning("Snapshot elements_state was not an Array: %s" % typeof(elements_raw))
         elements_raw = []
-    if not entities_raw is Array:
+    if not entities_raw is Array and compact_positions.is_empty():
         push_warning("Snapshot entities was not an Array: %s" % typeof(entities_raw))
         entities_raw = []
 
     var next_elements := _index_records(elements_raw, "element_id")
-    var next_entities := _index_records(entities_raw, "id")
+    var next_entities: Dictionary = {}
+    packed_entity_positions = PackedVector2Array()
+    packed_entity_ids = PackedStringArray()
+    if use_packed_entities and not compact_positions.is_empty():
+        _pack_binary_entity_positions(compact_positions, compact_entity_count)
+    elif use_packed_entities and entities_raw.size() >= PACKED_ENTITY_THRESHOLD:
+        _pack_entity_positions(entities_raw)
+    else:
+        next_entities = _index_records(entities_raw, "id")
     print("STATE STORE: snapshot scene=%s elements=%d entities=%d" % [
         str(payload.get("scene_id", "")),
         next_elements.size(),
@@ -152,3 +169,26 @@ func _index_records(records: Array, id_key: String) -> Dictionary:
             if id != "":
                 indexed[id] = record.duplicate(true)
     return indexed
+
+func _pack_entity_positions(records: Array) -> void:
+    packed_entity_positions.resize(records.size())
+    packed_entity_ids.resize(records.size())
+    for index in range(records.size()):
+        var record = records[index]
+        if not record is Dictionary:
+            continue
+        packed_entity_ids[index] = str(record.get("id", "entity-%d" % index))
+        var trajectory = record.get("trajectory_2d", [])
+        if trajectory is Array and not trajectory.is_empty():
+            var point = trajectory.back()
+            if point is Array and point.size() >= 2:
+                packed_entity_positions[index] = Vector2(float(point[0]), float(point[1]))
+
+func _pack_binary_entity_positions(data: PackedByteArray, entity_count: int) -> void:
+    var count: int = mini(entity_count, data.size() / 8)
+    packed_entity_positions.resize(count)
+    packed_entity_ids.resize(count)
+    for index in range(count):
+        var offset: int = index * 8
+        packed_entity_positions[index] = Vector2(data.decode_float(offset), data.decode_float(offset + 4))
+        packed_entity_ids[index] = "entity-%d" % index

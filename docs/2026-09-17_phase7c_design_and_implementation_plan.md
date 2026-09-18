@@ -1,7 +1,7 @@
 # Phase 7C: Godot GUI Shell and Live Visualization
 
 **Date**: 2026-09-17
-**Status**: 7C-00 and 7C-01 implemented; live Julia interoperability validated
+**Status**: 7C-00 through 7C-06 implemented and validated; 7C-06A compact large-scale StateStore/MultiMesh path implemented and synthetically validated; connected 500K GUI acceptance and 7C-07 remain
 **Prerequisite**: Phase 7B bridge implementation and bridge-only acceptance complete
 **External gate**: Live WebSocket, Godot decoding, rendering, and backpressure measurements
 
@@ -420,15 +420,17 @@ Every major panel needs:
 
 **Tasks**:
 
-- [ ] Add play/pause/step/reset controls.
-- [ ] Add speed control.
-- [ ] Track pending command IDs.
-- [ ] Render Ack/Error results.
-- [ ] Add element/entity inspector.
-- [ ] Add simulation time and step display.
-- [ ] Add FPS, update rate, entity count, and warning counters.
+- [x] Add play/pause/step/reset controls.
+- [x] Add speed control.
+- [x] Track pending command IDs.
+- [x] Render Ack/Error results.
+- [x] Add element/entity inspector.
+- [x] Add simulation time and step display.
+- [x] Add FPS, update rate, entity count, and warning counters.
 
-**Exit criteria**: Every control produces a protocol command and displays its acknowledged/rejected state.
+**Exit criteria**: Implemented. Every control produces a protocol command and the shell displays pending, acknowledged, or rejected states. A dedicated automated end-to-end command-result check remains for 7C-07 validation.
+
+**Implementation note**: `main.gd` tracks pending command IDs, handles Protocol v1 Ack/Error messages, updates the inspector for selected entities/elements, and reports live FPS, snapshot update rate, entity count, and warning count. The Phase 7C fixture now applies PLAY, PAUSE, STEP, RESET, and SPEED commands to its published snapshots; dedicated automated command-result validation remains part of 7C-07.
 
 ### 7C-05: Trajectories, ABM Fields, and Overlays
 
@@ -440,14 +442,16 @@ Every major panel needs:
 
 **Tasks**:
 
-- [ ] Add trajectory sampling and display cap.
-- [ ] Add density-grid visualization.
-- [ ] Add heatmap color mapping.
-- [ ] Add warning/overlay rendering.
-- [ ] Add toggles for expensive visual layers.
-- [ ] Benchmark each layer independently.
+- [x] Add trajectory sampling and display cap.
+- [x] Add density-grid visualization.
+- [x] Add heatmap color mapping.
+- [x] Add warning/overlay rendering.
+- [x] Add toggles for expensive visual layers.
+- [x] Benchmark each layer independently.
 
-**Exit criteria**: ABM and DES states can be displayed together without coupling their renderers.
+**Exit criteria**: Implemented. ABM density/heatmap rendering is separate from DES and entity rendering, with independent trajectory, density, and heatmap toggles and CPU submission timing readouts.
+
+**Implementation note**: `viewport_controller.gd` accepts nested or flat density grids, maps declared density ranges to heatmap hues, aligns cell centers with the Julia grid origin, caps density rendering at 10,000 cells, and records per-layer submission timings. The viewport uses one simulation grid only: `GRID` shows its cell boundaries and `HEAT` shows the values. The default fixture demonstrates six moving entities with trajectory histories and derives its changing heatmap from their positions using Gaussian spatial smoothing, with explanatory viewport legend text and visible density/cap metrics.
 
 ### 7C-06: Performance and Resilience
 
@@ -459,16 +463,47 @@ Every major panel needs:
 
 **Tasks**:
 
-- [ ] Add synthetic 10K/100K/500K message fixtures.
-- [ ] Measure decode time.
-- [ ] Measure state-store application time.
-- [ ] Measure render submission time.
-- [ ] Measure frame time and p99 frame time.
-- [ ] Test slow transport and dropped deltas.
-- [ ] Test reconnect and full snapshot recovery.
-- [ ] Add memory-growth checks.
+- [x] Add synthetic 10K/100K/500K message fixtures.
+- [x] Measure decode time.
+- [x] Measure state-store application time.
+- [x] Measure render submission time.
+- [x] Measure frame time and p99 frame time.
+- [x] Test slow transport and dropped deltas.
+- [x] Test reconnect and full snapshot recovery.
+- [x] Add memory-growth checks.
 
-**Exit criteria**: A slow client cannot block the simulation, and a reconnect recovers to a valid full state.
+**Exit criteria**: Implemented and validated. Benchmark, frame-time, slow-transport, dropped-snapshot, client reconnect/full-snapshot recovery, and process-level memory checks pass.
+
+**Implementation note**: `performance_resilience_smoke.gd` generates and measures 10K, 100K, and 500K entity snapshots, reports p99 decode/state/render timings, checks stale-delta resync signaling, and repeats bounded state replacement. Large snapshots now use compact binary entity positions, packed StateStore arrays, and a `MultiMeshInstance2D` viewport path. The compact 500K run measured 1.621 ms decode p99, 182.435 ms state-apply p99, 0.003 ms render-state p99, 0.005 ms viewport submission p99, and 239,056 KB peak RSS, versus 6,369,472 KB for the old generic path. The remaining connected GUI acceptance is tracked in 7C-06A.
+
+### 7C-06A: Large-Scale Compact Rendering
+
+**Deliverables**:
+
+- Compact binary entity-position payload.
+- Packed-array StateStore representation.
+- MultiMeshInstance2D bulk renderer.
+- Detail-on-demand inspection and editing for selected entities.
+- Compact delta/keyframe update policy.
+- Interest-region and level-of-detail metadata.
+- Generic-versus-compact memory and timing report.
+
+**Tasks**:
+
+- [x] Add compact binary position decoding.
+- [x] Switch large snapshots to packed positions and stable IDs.
+- [x] Render packed entities through MultiMeshInstance2D.
+- [x] Preserve generic dictionaries below the large-scene threshold.
+- [x] Measure generic and compact RSS and frame behavior.
+- [ ] Add DetailRequest/DetailResponse for selected compact entities.
+- [ ] Add property-update commands with ACK/Error handling.
+- [ ] Add packed lifecycle deltas and periodic compact keyframes.
+- [ ] Add interest-region and LOD selection metadata.
+- [ ] Validate compact payload delivery through the connected Julia fixture and GUI.
+
+**Exit criteria**: The compact path is the production representation for large populations without sacrificing inspection or editing. Selected entities can request detail, property edits go through Julia commands, compact lifecycle updates can recover from keyframes, and connected 500K GUI validation passes.
+
+**Implementation note**: The current threshold is 10,000 entities. Below it, dictionaries preserve inspector-rich state. At or above it, the client stores packed positions and IDs and submits a MultiMesh layer. The compact path is a render projection, not the authoritative editable state: detail requests and property-update commands must use stable entity IDs and Julia remains authoritative. See [2026-09-17_phase7c_generic_vs_compact_render_paths.md](2026-09-17_phase7c_generic_vs_compact_render_paths.md) and [2026-09-17_phase7c_06_memory_and_scale_report.md](2026-09-17_phase7c_06_memory_and_scale_report.md) for the design and measured evidence.
 
 ### 7C-07: End-to-End Acceptance
 
@@ -481,15 +516,20 @@ Every major panel needs:
 **Tasks**:
 
 - [ ] Start Julia fixture and Godot client together.
-- [ ] Verify Hello handshake.
-- [ ] Verify full snapshot display.
+- [x] Start Julia fixture and Godot client together.
+- [x] Verify Hello handshake.
+- [x] Verify full snapshot display.
 - [ ] Verify delta stream display.
-- [ ] Verify play/pause/step/reset.
-- [ ] Verify selection and inspector.
+- [x] Verify delta stream display.
+- [x] Verify play/pause/step/reset.
+- [x] Verify selection and inspector.
 - [ ] Verify disconnect/reconnect.
-- [ ] Capture desktop and viewport metrics.
+- [x] Verify disconnect/reconnect.
+- [x] Capture desktop and viewport metrics.
 
-**Exit criteria**: A user can connect, observe, control, disconnect, reconnect, and recover a simulation without manual state repair.
+**Current status**: Normal-scene 7C-07 acceptance is complete. The one-command launcher starts Julia and Godot together and verifies Hello, snapshot, and ACK. Automated smoke covers delta add/update/remove and stale-delta recovery. The live GUI has been visually confirmed with six entities, one queue, trajectories, heatmap/grid layers, FPS/update metrics, working controls, and selection/inspector behavior. Connected compact 500K GUI validation and compact detail editing remain tracked in 7C-06A.
+
+**Exit criteria**: Complete for the normal small-scene GUI acceptance. Large-scale compact GUI acceptance remains separately deferred to 7C-06A.
 
 ## 8. Dependency Order
 
@@ -501,7 +541,8 @@ Every major panel needs:
                 -> 7C-04 Controls/Inspector
                     -> 7C-05 ABM/Overlays
                         -> 7C-06 Performance/Resilience
-                            -> 7C-07 End-to-End Acceptance
+                            -> 7C-06A Large-Scale Compact Rendering
+                                -> 7C-07 End-to-End Acceptance
 ```
 
 7C-03 can use an offline fake state store while 7C-01/7C-02 are developed. 7C-05 should not block the first live DES viewport. 7C-06 must begin before visual polish is considered complete.

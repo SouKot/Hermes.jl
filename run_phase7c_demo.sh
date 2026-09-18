@@ -24,9 +24,14 @@ if [[ ! -x "$GODOT_BIN" ]]; then
 fi
 
 echo "Starting Phase 7C demo..."
-cd "$JULIA_DIR"
-("$JULIA_BIN" --project=. test/fixture_server_phase7c.jl) &
-JULIA_PID=$!
+if (echo >/dev/tcp/127.0.0.1/9107) 2>/dev/null; then
+  echo "JuliaBridge already listening on 127.0.0.1:9107; reusing it."
+  JULIA_PID=""
+else
+  cd "$JULIA_DIR"
+  ("$JULIA_BIN" --project=. test/fixture_server_phase7c.jl) &
+  JULIA_PID=$!
+fi
 
 sleep 1
 
@@ -35,7 +40,9 @@ cd "$GODOT_DIR"
 GODOT_PID=$!
 
 cleanup() {
-  kill "$JULIA_PID" 2>/dev/null || true
+  if [[ -n "$JULIA_PID" ]]; then
+    kill "$JULIA_PID" 2>/dev/null || true
+  fi
   kill "$GODOT_PID" 2>/dev/null || true
   exit 0
 }

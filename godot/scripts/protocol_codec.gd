@@ -178,9 +178,12 @@ func _encode_array(output: PackedByteArray, values: Array) -> void:
     var length := values.size()
     if length < 16:
         output.append(0x90 | length)
-    else:
+    elif length <= 65535:
         output.append(0xdc)
         _append_big_endian(output, length, 2)
+    else:
+        output.append(0xdd)
+        _append_big_endian(output, length, 4)
     for value in values:
         _encode_value(output, value)
 
@@ -188,16 +191,27 @@ func _encode_map(output: PackedByteArray, values: Dictionary) -> void:
     var length := values.size()
     if length < 16:
         output.append(0x80 | length)
-    else:
+    elif length <= 65535:
         output.append(0xde)
         _append_big_endian(output, length, 2)
+    else:
+        output.append(0xdf)
+        _append_big_endian(output, length, 4)
     for key in values:
         _encode_value(output, key)
         _encode_value(output, values[key])
 
 func _encode_binary(output: PackedByteArray, value: PackedByteArray) -> void:
-    output.append(0xc4)
-    output.append(value.size())
+    var length := value.size()
+    if length <= 255:
+        output.append(0xc4)
+        output.append(length)
+    elif length <= 65535:
+        output.append(0xc5)
+        _append_big_endian(output, length, 2)
+    else:
+        output.append(0xc6)
+        _append_big_endian(output, length, 4)
     output.append_array(value)
 
 func _append_big_endian(output: PackedByteArray, value: int, width: int) -> void:

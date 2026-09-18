@@ -22,6 +22,17 @@ var runtime_scene_label: Label
 var inspector_element_label: Label
 var inspector_entity_label: Label
 var connection_endpoint_label: Label
+var command_status_label: Label
+var command_detail_label: Label
+var inspector_selection_label: Label
+var inspector_value_label: Label
+var speed_label: Label
+var speed_slider: HSlider
+var fps_label: Label
+var update_rate_label: Label
+var warnings_label: Label
+var layer_timing_label: Label
+var density_info_label: Label
 var entity_count := 0
 var element_count := 0
 var adapter_name := "Booting"
@@ -31,9 +42,22 @@ var simulation_time := 0.0
 var running := false
 var connection_manager: SimVizConnectionManager
 var state_store: RefCounted
-var _status_tint := WARNING
+var pending_commands: Dictionary = {}
+var selected_kind := ""
+var selected_id := ""
+var _status_tint: Color = WARNING
+var _last_command_status := "idle"
+var _fps: float = 0.0
+var _update_rate: float = 0.0
+var _frame_accum: int = 0
+var _update_accum: int = 0
+var _state_update_accum: int = 0
+var _metric_timer: float = 0.0
+var _last_metrics_time: float = 0.0
+var _last_warning_count: int = 0
 
 func _ready() -> void:
+    pending_commands = {}
     connection_manager = ConnectionManager.new()
     add_child(connection_manager)
     state_store = StateStore.new()
@@ -52,6 +76,28 @@ func _auto_connect() -> void:
         connection_manager.connect_to("127.0.0.1", 9107, "/")
 
 func _process(delta: float) -> void:
+    _metric_timer += delta
+    _frame_accum += 1
+    _update_accum += 1 if running else 0
+    if _metric_timer >= 1.0:
+        var elapsed: float = max(_metric_timer, 0.0001)
+        _fps = _frame_accum / elapsed
+        _update_rate = _state_update_accum / elapsed
+        _frame_accum = 0
+        _update_accum = 0
+        _state_update_accum = 0
+        _metric_timer = 0.0
+        if fps_label != null:
+            fps_label.text = "%.1f FPS" % _fps
+        if update_rate_label != null:
+            update_rate_label.text = "%.1f/s" % _update_rate
+            if layer_timing_label != null and viewport_controller != null:
+                var timings: Dictionary = viewport_controller.get_layer_timings_usec()
+                layer_timing_label.text = "CPU us D/H/T: %d/%d/%d" % [
+                    int(timings.get("density", 0)), int(timings.get("heatmap", 0)), int(timings.get("trajectories", 0))
+                ]
+            if density_info_label != null and viewport_controller != null:
+                density_info_label.text = "Density cells: %d / 10000 cap" % viewport_controller.get_density_cell_count()
     if running:
         simulation_time += delta
         simulation_label.text = "t = %.2f s" % simulation_time
@@ -143,6 +189,12 @@ func _build_left_panel() -> Control:
         label.add_theme_color_override("font_color", MUTED if item != "Simulation" else TEXT)
         label.add_theme_font_size_override("font_size", 13)
         column.add_child(label)
+        var layer_row := _metric("Layer CPU", "0/0/0 us")
+        column.add_child(layer_row)
+        layer_timing_label = layer_row.get_child(1)
+        var density_row := _metric("Density cells", "0 / 10000 cap")
+        column.add_child(density_row)
+        density_info_label = density_row.get_child(1)
     return panel
 
 func _build_viewport() -> Control:
@@ -154,10 +206,20 @@ func _build_viewport() -> Control:
     return panel
 
 func _on_viewport_selection(kind: String, id: String) -> void:
+    selected_kind = kind
+    selected_id = id
     if kind == "":
+        if inspector_selection_label != null:
+            inspector_selection_label.text = "None"
+        if inspector_value_label != null:
+            inspector_value_label.text = "-"
+        if command_detail_label != null:
+            command_detail_label.text = "No selection"
         return
-    status_label.text = "●  SELECTED %s" % id
-    status_label.add_theme_color_override("font_color", ACCENT)
+    if status_label != null:
+        status_label.text = "●  SELECTED %s" % id
+        status_label.add_theme_color_override("font_color", ACCENT)
+    _update_selection_details(kind, id)
 
 func _draw_viewport(panel: Control) -> void:
     var rect := panel.get_rect()
@@ -188,13 +250,38 @@ func _build_right_panel() -> Control:
     column.add_theme_constant_override("margin_bottom", 14)
     panel.add_child(column)
     column.add_child(_heading("INSPECTOR"))
-    column.add_child(_metric("Selection", "None"))
+    var selection_row := _metric("Selection", "None")
+    column.add_child(selection_row)
+    inspector_selection_label = selection_row.get_child(1)
+    var selected_type_row := _metric("Type", "-")
+    column.add_child(selected_type_row)
+    inspector_value_label = selected_type_row.get_child(1)
     var element_row := _metric("Elements", "%d queues" % element_count)
     column.add_child(element_row)
     inspector_element_label = element_row.get_child(1)
     var entity_row := _metric("Entities", str(entity_count))
     column.add_child(entity_row)
     inspector_entity_label = entity_row.get_child(1)
+    var cmd_status_row := _metric("Command", "idle")
+    column.add_child(cmd_status_row)
+    command_status_label = cmd_status_row.get_child(1)
+    command_detail_label = Label.new()
+    command_detail_label.text = "No recent command"
+    command_detail_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    command_detail_label.add_theme_color_override("font_color", MUTED)
+    command_detail_label.add_theme_font_size_override("font_size", 11)
+    column.add_child(command_detail_label)
+    column.add_spacer(false)
+    column.add_child(_heading("METRICS"))
+    var fps_row := _metric("FPS", "0.0 FPS")
+    column.add_child(fps_row)
+    fps_label = fps_row.get_child(1)
+    var update_row := _metric("Update rate", "0.0/s")
+    column.add_child(update_row)
+    update_rate_label = update_row.get_child(1)
+    var warning_row := _metric("Warnings", "0")
+    column.add_child(warning_row)
+    warnings_label = warning_row.get_child(1)
     column.add_child(_metric("Update mode", "Typed delta"))
     column.add_spacer(false)
     column.add_child(_heading("CONNECTION"))
@@ -235,6 +322,27 @@ func _build_transport() -> Control:
     reset.text = "RESET"
     reset.pressed.connect(_on_reset)
     row.add_child(reset)
+    var speed_row := VBoxContainer.new()
+    speed_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    var speed_title := Label.new()
+    speed_title.text = "SPEED"
+    speed_title.add_theme_font_size_override("font_size", 10)
+    speed_title.add_theme_color_override("font_color", MUTED)
+    speed_row.add_child(speed_title)
+    speed_slider = HSlider.new()
+    speed_slider.min_value = 0.25
+    speed_slider.max_value = 4.0
+    speed_slider.step = 0.25
+    speed_slider.value = 1.0
+    speed_slider.custom_minimum_size.x = 120
+    speed_slider.value_changed.connect(_on_speed_changed)
+    speed_row.add_child(speed_slider)
+    row.add_child(speed_row)
+    speed_label = Label.new()
+    speed_label.text = "1.00x"
+    speed_label.add_theme_color_override("font_color", TEXT)
+    speed_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    row.add_child(speed_label)
     var spacer := Control.new()
     spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     row.add_child(spacer)
@@ -243,7 +351,22 @@ func _build_transport() -> Control:
     simulation_label.add_theme_color_override("font_color", TEXT)
     simulation_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     row.add_child(simulation_label)
+    row.add_child(_layer_toggle("TRAJ", "trajectories"))
+    row.add_child(_layer_toggle("GRID", "density"))
+    row.add_child(_layer_toggle("HEAT", "heatmap"))
     return panel
+
+func _layer_toggle(text: String, layer: String) -> CheckButton:
+    var toggle := CheckButton.new()
+    toggle.text = text
+    toggle.button_pressed = true
+    toggle.tooltip_text = "Toggle %s rendering layer" % layer
+    toggle.toggled.connect(_on_layer_toggled.bind(layer))
+    return toggle
+
+func _on_layer_toggled(enabled: bool, layer: String) -> void:
+    if viewport_controller != null:
+        viewport_controller.set_layer_enabled(layer, enabled)
 
 func _on_connect() -> void:
     connection_manager.connect_to()
@@ -252,9 +375,38 @@ func _on_connection_state_changed(state: String, detail: String) -> void:
     _update_status(state, detail)
 
 func _on_protocol_message(message: Dictionary) -> void:
+    var kind := str(message.get("kind", "unknown")).to_lower()
+    _update_status("message", kind.to_upper())
+    if kind == "ack":
+        var payload: Dictionary = message.get("payload", {})
+        var status := str(payload.get("status", "accepted"))
+        var acknowledged_id := str(payload.get("acknowledged_message_id", "unknown"))
+        _last_command_status = status
+        if acknowledged_id in pending_commands:
+            pending_commands.erase(acknowledged_id)
+        _update_status("ack", status)
+        if command_status_label != null:
+            command_status_label.text = "ACK: %s" % status
+        if command_detail_label != null:
+            var detail := str(payload.get("details", "Command accepted"))
+            command_detail_label.text = "%s -> %s" % [acknowledged_id, detail]
+        return
+    if kind == "error":
+        var payload: Dictionary = message.get("payload", {})
+        var code := str(payload.get("error_code", "protocol_error"))
+        var offending_id := str(payload.get("causing_message_id", "unknown"))
+        _last_command_status = "error"
+        if offending_id in pending_commands:
+            pending_commands.erase(offending_id)
+        _update_status("protocol error", code)
+        if command_status_label != null:
+            command_status_label.text = "ERR: %s" % code
+        if command_detail_label != null:
+            var details := str(payload.get("error_message", "Command rejected"))
+            command_detail_label.text = "%s -> %s" % [offending_id, details]
+        return
     if state_store.apply_message(message):
-        var kind := str(message.get("kind", "unknown")).to_upper()
-        _update_status("message", kind)
+        _update_status("message", kind.to_upper())
 
 func _on_protocol_error(detail: String) -> void:
     _update_status("protocol error", detail)
@@ -285,14 +437,20 @@ func _update_status(state: String, detail: String) -> void:
         status_label.add_theme_color_override("font_color", _status_tint)
 
 func _on_state_published(state: Dictionary) -> void:
+    _state_update_accum += 1
     element_count = state.get("elements_by_id", {}).size()
-    entity_count = state.entities_by_id.size()
+    entity_count = state.get("entities_by_id", {}).size()
     if state.has("scene_id") and str(state.scene_id) != "":
         scene_name = str(state.scene_id)
     if state.has("simulation_time"):
         simulation_time = float(state.simulation_time)
+        if simulation_label != null:
+            simulation_label.text = "t = %.2f s" % simulation_time
     adapter_name = "LiveFixture" if state.has("scene_id") else "OfflineFixture"
     endpoint_text = "127.0.0.1:9107"
+    var warning_count: int = int(state.get("warnings", []).size())
+    if warnings_label != null:
+        warnings_label.text = str(warning_count)
     if runtime_adapter_label != null:
         runtime_adapter_label.text = adapter_name
     if runtime_scene_label != null:
@@ -305,6 +463,8 @@ func _on_state_published(state: Dictionary) -> void:
         connection_endpoint_label.text = endpoint_text
     if viewport_controller:
         viewport_controller.set_render_state(state)
+    if selected_kind != "":
+        _update_selection_details(selected_kind, selected_id)
 
 func _on_resync_required(reason: String) -> void:
     status_label.text = "●  RESYNC REQUIRED"
@@ -313,20 +473,100 @@ func _on_resync_required(reason: String) -> void:
 
 func _on_play() -> void:
     running = true
+    _send_command("play", {"action": "play"})
 
 func _on_pause() -> void:
     running = false
+    _send_command("pause", {"action": "pause"})
 
 func _on_step() -> void:
+    running = false
     simulation_time += 0.1
     simulation_label.text = "t = %.2f s" % simulation_time
+    _send_command("step", {"action": "step", "steps": 1})
     queue_redraw()
 
 func _on_reset() -> void:
     running = false
     simulation_time = 0.0
     simulation_label.text = "t = 0.00 s"
+    _send_command("reset", {"action": "reset"})
     queue_redraw()
+
+func _on_speed_changed(value: float) -> void:
+    if speed_label != null:
+        speed_label.text = "%.2fx" % value
+    _send_command("set_clock_speed", {"speed": value})
+
+func _send_command(command_type: String, command: Dictionary) -> void:
+    if connection_manager == null:
+        return
+    var message_id := "godot-command-%s-%d" % [command_type, Time.get_ticks_msec()]
+    pending_commands[message_id] = command_type
+    var message := {
+        "envelope_version": "1.0",
+        "message_id": message_id,
+        "timestamp": Time.get_ticks_msec(),
+        "sender": "godot_gui",
+        "receiver": "julia_runtime",
+        "kind": "command",
+        "payload": {
+            "command_version": "1.0.0",
+            "command_type": command_type,
+            "command": command,
+            "scene_id": scene_name if scene_name != "waiting" else "phase7c_fixture",
+            "apply_at_time": null
+        }
+    }
+    var error_code := connection_manager.send_message(message)
+    if error_code == OK:
+        _last_command_status = command_type
+        _update_status("command", command_type)
+        if command_status_label != null:
+            command_status_label.text = "CMD: %s" % command_type
+        if command_detail_label != null:
+            command_detail_label.text = "%s pending" % message_id
+    else:
+        pending_commands.erase(message_id)
+        _update_status("protocol error", "send_failed")
+        if command_status_label != null:
+            command_status_label.text = "CMD ERR: %s" % error_code
+        if command_detail_label != null:
+            command_detail_label.text = "Send failed: %s" % error_code
+
+func _update_selection_details(kind: String, id: String) -> void:
+    if inspector_selection_label == null:
+        return
+    inspector_selection_label.text = id
+    if inspector_value_label == null:
+        return
+    var state: Dictionary = {}
+    if state_store != null and state_store.has_method("render_state"):
+        state = state_store.render_state()
+    var target: Dictionary = {}
+    if kind == "entity":
+        target = state.get("entities_by_id", {}).get(id, {})
+        inspector_value_label.text = "Entity"
+    elif kind == "element":
+        target = state.get("elements_by_id", {}).get(id, {})
+        inspector_value_label.text = "Element"
+    else:
+        inspector_value_label.text = "-"
+    if target.is_empty():
+        if command_detail_label != null:
+            command_detail_label.text = "No details for %s" % id
+        return
+    var summary := "id=%s" % id
+    if target.has("current_location"):
+        summary += "\nlocation=%s" % str(target.get("current_location", "n/a"))
+    if target.has("kind"):
+        summary += "\nkind=%s" % str(target.get("kind", "n/a"))
+    if target.has("properties"):
+        var props: Dictionary = target.get("properties", {})
+        if props is Dictionary and not props.is_empty():
+            summary += "\nprops=%s" % str(props)
+    if command_detail_label != null:
+        command_detail_label.text = summary
 
 func _build_placeholder_scene() -> void:
     queue_redraw()
