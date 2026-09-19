@@ -166,19 +166,7 @@ function payload_to_dict(p::CommandPayload)::Dict{String, Any}
 end
 
 function payload_to_dict(p::SceneSpecPayload)::Dict{String, Any}
-    Dict(
-        "payload" => Dict(
-            "spec_version" => p.spec_version,
-            "scene" => p.scene,
-            "simulation" => p.simulation,
-            "abm_config" => p.abm_config,
-            "elements" => p.elements,
-            "connections" => p.connections,
-            "subgraphs" => p.subgraphs,
-            "overlays" => p.overlays,
-            "validation_metadata" => p.validation_metadata,
-        )
-    )
+    Dict("payload" => scenespec_to_dict(p))
 end
 
 function payload_to_dict(p::AckPayload)::Dict{String, Any}
@@ -276,17 +264,7 @@ function dict_to_message(d::Dict{String, Any})::Message
             get(payload_data, "apply_at_time", nothing),
         )
     elseif kind == "scene_spec"
-        SceneSpecPayload(
-            get(payload_data, "spec_version", ""),
-            get(payload_data, "scene", Dict{String, Any}()),
-            get(payload_data, "simulation", Dict{String, Any}()),
-            get(payload_data, "abm_config", nothing),
-            get(payload_data, "elements", Dict{String, Any}[]),
-            get(payload_data, "connections", Dict{String, Any}[]),
-            get(payload_data, "subgraphs", Dict{String, Any}[]),
-            get(payload_data, "overlays", Dict{String, Any}[]),
-            get(payload_data, "validation_metadata", Dict{String, Any}()),
-        )
+        parse_scenespec(payload_data)
     elseif kind == "ack"
         AckPayload(
             get(payload_data, "ack_version", ""),

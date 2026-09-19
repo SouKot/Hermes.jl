@@ -9,7 +9,7 @@ using GodotBridge
 
 server = GodotBridgeServer(
     host="127.0.0.1",
-    port=9000,
+    port=9107,
     snapshot_rate_hz=30,
     debug=false
 )
@@ -24,9 +24,9 @@ hello = create_hello(
     runtime_version="0.1.0",
     capabilities=["snapshot_streaming", "delta_updates", "model_selection"]
 )
-
-broadcast_message(server, hello)  # Not yet implemented
 ```
+
+The server sends Hello automatically when a client connects.
 
 ### 3. Broadcast Snapshot
 
@@ -56,8 +56,8 @@ broadcast_snapshot(server, snapshot)
 ### 4. Handle Commands
 
 ```julia
-register_handler!(server, "command") do msg
-    action = msg.payload.command["action"]
+register_handler!(server, "command", function(msg)
+    action = msg.payload.command_type
     
     if action == "play"
         # Signal simulation to play
@@ -72,7 +72,7 @@ register_handler!(server, "command") do msg
         # Reset simulation
         return create_ack(msg.envelope.message_id, status="accepted")
     elseif action == "set_clock_speed"
-        speed = msg.payload.command["value"]
+        speed = msg.payload.command["speed"]
         # Set simulation speed
         return create_ack(msg.envelope.message_id, status="accepted")
     else
@@ -82,7 +82,7 @@ register_handler!(server, "command") do msg
             "Action not supported: $action"
         )
     end
-end
+end)
 ```
 
 ### 5. Debug with JSON
@@ -197,11 +197,16 @@ Reports failures:
 
 ## Performance Notes
 
-- MessagePack payloads typically 100-500 bytes per snapshot
-- Support Float32 and UInt8 for bandwidth efficiency
-- Delta updates reduce bandwidth for moving crowds
-- Server can handle 30 snapshots/second by default
-- No allocations in encoding hot path (coming in Phase 7B.2)
+- MessagePack is used for production traffic; JSON is diagnostic only.
+- Typed snapshots/deltas and compact numeric payloads avoid per-entity object
+    graphs on large visualization paths.
+- The Godot client uses rich dictionaries below 10K entities and packed
+    positions plus `MultiMeshInstance2D` at larger scales.
+- The compact synthetic 500K client path measured approximately 234 MiB peak
+    RSS, versus approximately 6.08 GiB for the legacy generic dictionary stress
+    path. See `../../docs/2026-09-17_phase7c_06_memory_and_scale_report.md`.
+- Snapshot rate defaults to 30 Hz, but achievable rates depend on payload shape,
+    state extraction, transport, and client application costs.
 
 ---
 
@@ -209,7 +214,7 @@ Reports failures:
 
 ### Cannot connect to server
 - Check `is_server_running(server)` returns true
-- Verify port 9000 is not in use
+- Verify port 9107 is not in use
 - Check firewall settings
 - Try `debug=true` for diagnostic output
 
@@ -228,7 +233,7 @@ Reports failures:
 ## API Reference
 
 ### Server Functions
-- `GodotBridgeServer()` - Create server
+- `GodotBridgeServer()` - Create server (the Phase 7C fixture uses port 9107)
 - `start(server)` - Start listening
 - `stop(server)` - Stop and cleanup
 - `register_handler!(server, kind, handler)` - Add message handler

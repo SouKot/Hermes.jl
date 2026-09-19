@@ -1,0 +1,296 @@
+{
+  "spec_version": "1.0.0",
+  "scene": {
+    "id": "scene_minimal_des_001",
+    "name": "Minimal DES Pipeline",
+    "description": "Standard Source -> Queue -> Server -> Sink process line with spatial transforms and graph layout",
+    "author": "Antigravity Engineering",
+    "created_at": "2026-09-18T12:00:00Z",
+    "modified_at": "2026-09-18T12:00:00Z",
+    "revision": 1,
+    "required_libraries": [
+      {
+        "name": "SimElements/DES",
+        "version": ">=0.1.0"
+      }
+    ]
+  },
+  "simulation": {
+    "mode": "des_only",
+    "start_time": 0.0,
+    "end_time": 1000.0,
+    "warmup_time": 50.0,
+    "random_seed": 42,
+    "time_unit": "seconds",
+    "space_unit": "meters"
+  },
+  "abm_config": {
+    "enabled": false,
+    "model_name": null,
+    "model_version": null,
+    "model_library": null,
+    "parameters": {}
+  },
+  "spatial": {
+    "coordinate_system": "right_handed_z_up",
+    "length_unit": "meters",
+    "origin": [0.0, 0.0, 0.0],
+    "levels": [
+      {
+        "id": "level_ground",
+        "name": "Ground Floor",
+        "elevation": 0.0,
+        "default_height": 3.0,
+        "visible": true
+      }
+    ]
+  },
+  "elements": [
+    {
+      "id": "elem_src_01",
+      "name": "Intake Source",
+      "kind": "source",
+      "library": "SimElements/DES",
+      "library_version": "0.1.0",
+      "level_id": "level_ground",
+      "transform": {
+        "position": [0.0, 10.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "geometry": {
+        "shape": "box",
+        "dimensions": [1.0, 1.0, 1.0]
+      },
+      "editor": {
+        "graph_position": [100.0, 200.0],
+        "collapsed": false,
+        "color": "#4CAF50",
+        "notes": "Generates customer arrivals"
+      },
+      "properties": {
+        "arrival_distribution": "exponential",
+        "arrival_rate": 0.5,
+        "entity_type": "customer"
+      },
+      "input_ports": [],
+      "output_ports": [
+        {
+          "id": "out",
+          "name": "flow_out",
+          "direction": "output",
+          "kind": "flow",
+          "data_type": "entity",
+          "cardinality": "many",
+          "required": true
+        }
+      ],
+      "metric_ports": []
+    },
+    {
+      "id": "elem_q_01",
+      "name": "Buffer Queue",
+      "kind": "queue",
+      "library": "SimElements/DES",
+      "library_version": "0.1.0",
+      "level_id": "level_ground",
+      "transform": {
+        "position": [5.0, 10.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "geometry": {
+        "shape": "box",
+        "dimensions": [3.0, 1.5, 0.8]
+      },
+      "editor": {
+        "graph_position": [300.0, 200.0],
+        "collapsed": false,
+        "color": "#2196F3",
+        "notes": "FIFO waiting queue"
+      },
+      "properties": {
+        "capacity": 50,
+        "discipline": "fifo",
+        "initial_occupancy": 0
+      },
+      "input_ports": [
+        {
+          "id": "in",
+          "name": "flow_in",
+          "direction": "input",
+          "kind": "flow",
+          "data_type": "entity",
+          "cardinality": "many",
+          "required": true
+        }
+      ],
+      "output_ports": [
+        {
+          "id": "out",
+          "name": "flow_out",
+          "direction": "output",
+          "kind": "flow",
+          "data_type": "entity",
+          "cardinality": "many",
+          "required": true
+        }
+      ],
+      "metric_ports": [
+        {
+          "id": "occupancy",
+          "name": "Queue Occupancy",
+          "direction": "output",
+          "kind": "metric",
+          "data_type": "uint32",
+          "cardinality": "many",
+          "required": false,
+          "unit": "entities"
+        }
+      ]
+    },
+    {
+      "id": "elem_srv_01",
+      "name": "Main Server",
+      "kind": "server",
+      "library": "SimElements/DES",
+      "library_version": "0.1.0",
+      "level_id": "level_ground",
+      "transform": {
+        "position": [12.0, 10.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "geometry": {
+        "shape": "box",
+        "dimensions": [2.0, 2.0, 1.2]
+      },
+      "editor": {
+        "graph_position": [500.0, 200.0],
+        "collapsed": false,
+        "color": "#FF9800",
+        "notes": "Single service station"
+      },
+      "properties": {
+        "service_distribution": "exponential",
+        "service_rate": 0.6,
+        "num_servers": 1
+      },
+      "input_ports": [
+        {
+          "id": "in",
+          "name": "flow_in",
+          "direction": "input",
+          "kind": "flow",
+          "data_type": "entity",
+          "cardinality": "one",
+          "required": true
+        }
+      ],
+      "output_ports": [
+        {
+          "id": "out",
+          "name": "flow_out",
+          "direction": "output",
+          "kind": "flow",
+          "data_type": "entity",
+          "cardinality": "many",
+          "required": true
+        }
+      ],
+      "metric_ports": [
+        {
+          "id": "utilization",
+          "name": "Server Utilization",
+          "direction": "output",
+          "kind": "metric",
+          "data_type": "float64",
+          "cardinality": "many",
+          "required": false,
+          "unit": "ratio"
+        }
+      ]
+    },
+    {
+      "id": "elem_snk_01",
+      "name": "Exit Sink",
+      "kind": "sink",
+      "library": "SimElements/DES",
+      "library_version": "0.1.0",
+      "level_id": "level_ground",
+      "transform": {
+        "position": [18.0, 10.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "geometry": {
+        "shape": "box",
+        "dimensions": [1.5, 1.5, 0.5]
+      },
+      "editor": {
+        "graph_position": [700.0, 200.0],
+        "collapsed": false,
+        "color": "#9E9E9E",
+        "notes": "Disposes completed entities"
+      },
+      "properties": {
+        "record_sojourn": true
+      },
+      "input_ports": [
+        {
+          "id": "in",
+          "name": "flow_in",
+          "direction": "input",
+          "kind": "flow",
+          "data_type": "entity",
+          "cardinality": "many",
+          "required": true
+        }
+      ],
+      "output_ports": [],
+      "metric_ports": []
+    }
+  ],
+  "connections": [
+    {
+      "id": "conn_01",
+      "source_element": "elem_src_01",
+      "source_port": "out",
+      "target_element": "elem_q_01",
+      "target_port": "in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "conn_02",
+      "source_element": "elem_q_01",
+      "source_port": "out",
+      "target_element": "elem_srv_01",
+      "target_port": "in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "conn_03",
+      "source_element": "elem_srv_01",
+      "source_port": "out",
+      "target_element": "elem_snk_01",
+      "target_port": "in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    }
+  ],
+  "subgraphs": [],
+  "overlays": [],
+  "validation_metadata": {
+    "is_valid": true,
+    "diagnostic_count": 0,
+    "diagnostics": [],
+    "last_validated_at": "2026-09-18T12:00:00Z",
+    "validator_version": "1.0.0"
+  }
+}
+

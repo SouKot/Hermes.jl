@@ -25,6 +25,10 @@ This is research-stage software and not production-ready.
   execution path through KernelAbstractions.jl.
 - **SimViz**: desktop visualization (GLMakie) with demo scenarios including:
   evacuation, M/M/1 queue, DES+crowd integration, and a composite DES+ORCA demo.
+- **GodotBridge + Godot GUI**: Protocol v1 MessagePack bridge and Godot 4
+  monitoring client with live DES/ABM/hybrid state, runtime controls, inspector,
+  trajectories, density/heatmap layers, reconnect recovery, and performance
+  instrumentation.
 
 ### Not implemented / incomplete
 
@@ -73,10 +77,12 @@ packages/
 ├── SimDES/     Discrete-event simulation engine
 ├── SimCrowd/   Crowd/agent dynamics
 ├── SimFluid/   Fluid simulation scaffold
-└── SimViz/     Visualization and demo scenarios
+├── SimViz/     GLMakie visualization and demo scenarios
+└── GodotBridge/ Protocol v1 runtime bridge
 
 experiments/    Validation scripts (DrWatson environment)
 docs/           Design notes, methodology, and session state
+godot/          Godot 4 monitoring and authoring client
 ```
 
 ---
@@ -135,6 +141,28 @@ julia --project=. -e 'using SimViz; run_des_orca_demo!()'
 If you want a faster alarm transition in integration demos, set
 `evac_alarm_time` to a smaller value (for example, `20.0`).
 
+### Godot live monitor
+
+Requires Julia, Godot 4.7+, and local port `9107`.
+
+```bash
+bash run_phase7c_demo.sh
+```
+
+The live monitor displays DES elements, moving entities, trajectories, an ABM
+density heatmap, runtime metrics, selection/inspection, and acknowledged
+play/pause/step/reset/speed controls.
+
+Run the clean automated Julia/Godot interoperability acceptance check with:
+
+```bash
+bash run_phase7c_acceptance.sh
+```
+
+Phase 7C normal-scene monitoring acceptance is complete. The compact packed
+array/`MultiMeshInstance2D` path is synthetically validated through 500K
+entities; connected 500K GUI acceptance remains a separate scale gate.
+
 ---
 
 ## Running Tests
@@ -151,6 +179,15 @@ julia --project=. -e 'import Pkg; Pkg.test("SimViz")'
 Focused validation suites can also be run from individual package test
 directories.
 
+Godot smoke tests can be run from `godot/`:
+
+```bash
+godot --headless --path . --script res://tests/protocol_smoke.gd
+godot --headless --path . --script res://tests/state_store_smoke.gd
+godot --headless --path . --script res://tests/viewport_smoke.gd
+godot --headless --path . --script res://tests/phase7c_acceptance_smoke.gd
+```
+
 Requires Julia 1.12+. GPU-dependent paths require compatible hardware/runtime.
 
 ---
@@ -165,6 +202,17 @@ Project process constraints are documented in:
 - `docs/DEBUGGING_PROTOCOL.md`
 - `docs/METHODOLOGY.md`
 - `docs/2026-08-07_code_design_practices.md`
+
+Current Godot plans and evidence:
+
+- `docs/2026-09-17_phase7c_design_and_implementation_plan.md`
+- `docs/2026-09-17_phase7c_06_memory_and_scale_report.md`
+- `docs/2026-09-18_phase7d_design_and_implementation_plan.md`
+
+Phase 7D is planned as a SceneSpec-driven authoring environment with typed
+ports, registry-based elements/models, synchronized 2D layout and 3D spatial
+views, undo/redo, validation, import/export, and deterministic Julia runtime
+compilation.
 
 ---
 

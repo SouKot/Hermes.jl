@@ -1,0 +1,142 @@
+{
+  "spec_version": "1.0.0",
+  "future_distributed_engine": true,
+  "cluster_target_nodes": [
+    "compute_worker_01",
+    "compute_worker_02"
+  ],
+  "scene": {
+    "id": "scene_future_fields_001",
+    "name": "Future Schema Evolution Fixture",
+    "description": "Tests complete round-trip preservation of unknown root, element, port, connection, and nested extension fields",
+    "author": "Antigravity Engineering",
+    "created_at": "2026-09-18T12:00:00Z",
+    "modified_at": "2026-09-18T12:00:00Z",
+    "revision": 3,
+    "required_libraries": [
+      {
+        "name": "SimElements/DES",
+        "version": ">=0.1.0"
+      }
+    ],
+    "organization_id": "deepmind-research-advanced",
+    "compliance_tags": [
+      "ISO-9001",
+      "EU-AI-ACT-CLASS-2"
+    ],
+    "extensions": {
+      "ai_copilot": {
+        "authoring_session_id": "sess_8943729",
+        "confidence_score": 0.985
+      }
+    }
+  },
+  "simulation": {
+    "mode": "des_only",
+    "start_time": 0.0,
+    "end_time": 100.0,
+    "warmup_time": 0.0,
+    "random_seed": 42,
+    "time_unit": "seconds",
+    "space_unit": "meters",
+    "future_execution_mode": "lockstep_multithreaded",
+    "extensions": {
+      "profiler_tracing": {
+        "sample_interval_ms": 10
+      }
+    }
+  },
+  "abm_config": null,
+  "spatial": {
+    "coordinate_system": "right_handed_z_up",
+    "length_unit": "meters",
+    "origin": [0.0, 0.0, 0.0],
+    "global_geo_reference": {
+      "latitude": 37.7749,
+      "longitude": -122.4194,
+      "srs": "EPSG:4326"
+    },
+    "levels": [
+      {
+        "id": "level_ground",
+        "name": "Ground Floor",
+        "elevation": 0.0,
+        "default_height": 3.0,
+        "visible": true,
+        "acoustic_absorption_coeff": 0.85
+      }
+    ],
+    "extensions": {
+      "bim_metadata": {
+        "ifc_guid": "3h8k9sDfk294KslaP0"
+      }
+    }
+  },
+  "elements": [
+    {
+      "id": "elem_future_source",
+      "name": "Intelligent Smart Source",
+      "kind": "source",
+      "library": "SimElements/DES",
+      "library_version": "0.1.0",
+      "level_id": "level_ground",
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "geometry": {
+        "shape": "box",
+        "dimensions": [1.0, 1.0, 1.0]
+      },
+      "editor": {
+        "graph_position": [100.0, 100.0],
+        "collapsed": false,
+        "custom_badge": "SMART-V2"
+      },
+      "properties": {
+        "arrival_rate": 2.0
+      },
+      "thermal_dissipation_watts": 450.0,
+      "maintenance_schedule_url": "https://telemetry.local/device/elem_future_source",
+      "input_ports": [],
+      "output_ports": [
+        {
+          "id": "out",
+          "name": "flow_out",
+          "direction": "output",
+          "kind": "flow",
+          "data_type": "entity",
+          "cardinality": "many",
+          "required": true,
+          "bus_channel_id": 4,
+          "security_token_required": false
+        }
+      ],
+      "metric_ports": [],
+      "extensions": {
+        "custom_vendor_blob": {
+          "can_bus_speed_kbps": 500,
+          "retry_limit": 3
+        }
+      }
+    }
+  ],
+  "connections": [],
+  "subgraphs": [],
+  "overlays": [],
+  "validation_metadata": {
+    "is_valid": true,
+    "diagnostic_count": 0,
+    "diagnostics": [],
+    "last_validated_at": "2026-09-18T12:00:00Z",
+    "validator_version": "1.0.0"
+  },
+  "extensions": {
+    "root_level_extension_key": "val_12345",
+    "experimental_flags": {
+      "enable_neural_surrogate": true
+    }
+  }
+}
+

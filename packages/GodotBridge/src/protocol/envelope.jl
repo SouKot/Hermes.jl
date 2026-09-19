@@ -193,11 +193,58 @@ struct SceneSpecPayload <: MessagePayload
     scene::Dict{String, Any}
     simulation::Dict{String, Any}
     abm_config::Union{Dict{String, Any}, Nothing}
+    spatial::Union{Dict{String, Any}, Nothing}
     elements::Vector{Dict{String, Any}}
     connections::Vector{Dict{String, Any}}
     subgraphs::Vector{Dict{String, Any}}
     overlays::Vector{Dict{String, Any}}
     validation_metadata::Dict{String, Any}
+    extensions::Dict{String, Any}
+
+    function SceneSpecPayload(
+        spec_version::String,
+        scene::AbstractDict,
+        simulation::AbstractDict,
+        abm_config::Union{AbstractDict, Nothing},
+        spatial::Union{AbstractDict, Nothing},
+        elements::AbstractVector,
+        connections::AbstractVector,
+        subgraphs::AbstractVector,
+        overlays::AbstractVector,
+        validation_metadata::AbstractDict,
+        extensions::AbstractDict = Dict{String, Any}()
+    )
+        _scene = Dict{String, Any}(string(k) => v for (k, v) in scene)
+        _sim = Dict{String, Any}(string(k) => v for (k, v) in simulation)
+        _abm = abm_config === nothing ? nothing : Dict{String, Any}(string(k) => v for (k, v) in abm_config)
+        _spatial = spatial === nothing ? nothing : Dict{String, Any}(string(k) => v for (k, v) in spatial)
+        _elem = [Dict{String, Any}(string(k) => v for (k, v) in e) for e in elements]
+        _conn = [Dict{String, Any}(string(k) => v for (k, v) in c) for c in connections]
+        _sub = [Dict{String, Any}(string(k) => v for (k, v) in s) for s in subgraphs]
+        _over = [Dict{String, Any}(string(k) => v for (k, v) in o) for o in overlays]
+        _val = Dict{String, Any}(string(k) => v for (k, v) in validation_metadata)
+        _ext = Dict{String, Any}(string(k) => v for (k, v) in extensions)
+        return new(spec_version, _scene, _sim, _abm, _spatial, _elem, _conn, _sub, _over, _val, _ext)
+    end
+
+    # Backward-compatible 9-argument constructor
+    function SceneSpecPayload(
+        spec_version::String,
+        scene::AbstractDict,
+        simulation::AbstractDict,
+        abm_config::Union{AbstractDict, Nothing},
+        elements::AbstractVector,
+        connections::AbstractVector,
+        subgraphs::AbstractVector,
+        overlays::AbstractVector,
+        validation_metadata::AbstractDict
+    )
+        return SceneSpecPayload(
+            spec_version, scene, simulation, abm_config, nothing,
+            elements, connections, subgraphs, overlays, validation_metadata,
+            Dict{String, Any}()
+        )
+    end
 end
 
 # ============================================================================

@@ -1,0 +1,316 @@
+{
+  "spec_version": "1.0.0",
+  "scene": {
+    "id": "scene_minimal_hybrid_001",
+    "name": "Minimal Hybrid DES-ABM Airport Check-In",
+    "description": "Discrete ticket desk transitioning into continuous crowd concourse with signal feedback link",
+    "author": "Antigravity Engineering",
+    "created_at": "2026-09-18T12:00:00Z",
+    "modified_at": "2026-09-18T12:00:00Z",
+    "revision": 1,
+    "required_libraries": [
+      {
+        "name": "SimElements/DES",
+        "version": ">=0.1.0"
+      },
+      {
+        "name": "SimElements/Crowd",
+        "version": ">=0.1.0"
+      },
+      {
+        "name": "SimElements/Hybrid",
+        "version": ">=0.1.0"
+      }
+    ]
+  },
+  "simulation": {
+    "mode": "hybrid",
+    "start_time": 0.0,
+    "end_time": 300.0,
+    "warmup_time": 30.0,
+    "random_seed": 999,
+    "time_unit": "seconds",
+    "space_unit": "meters"
+  },
+  "abm_config": {
+    "enabled": true,
+    "model_name": "HybridFSM",
+    "model_version": "1.0.0",
+    "model_library": "SimCrowd",
+    "parameters": {
+      "rho_on": 1.5,
+      "rho_off": 0.2,
+      "k_contact": 12000.0,
+      "kappa_slide": 24000.0,
+      "v_pref": 1.2
+    }
+  },
+  "spatial": {
+    "coordinate_system": "right_handed_z_up",
+    "length_unit": "meters",
+    "origin": [0.0, 0.0, 0.0],
+    "levels": [
+      {
+        "id": "level_ground",
+        "name": "Terminal Ground Level",
+        "elevation": 0.0,
+        "default_height": 3.2,
+        "visible": true
+      }
+    ]
+  },
+  "elements": [
+    {
+      "id": "elem_src_01",
+      "name": "Passenger Arrival",
+      "kind": "source",
+      "library": "SimElements/DES",
+      "library_version": "0.1.0",
+      "level_id": "level_ground",
+      "transform": {
+        "position": [0.0, 5.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "geometry": {
+        "shape": "box",
+        "dimensions": [1.0, 1.0, 1.0]
+      },
+      "editor": {
+        "graph_position": [80.0, 150.0],
+        "collapsed": false
+      },
+      "properties": {
+        "arrival_rate": 1.2
+      },
+      "input_ports": [],
+      "output_ports": [
+        {
+          "id": "out",
+          "name": "passengers",
+          "direction": "output",
+          "kind": "flow",
+          "data_type": "entity",
+          "cardinality": "many",
+          "required": true
+        }
+      ],
+      "metric_ports": []
+    },
+    {
+      "id": "elem_q_01",
+      "name": "Check-In Queue",
+      "kind": "queue",
+      "library": "SimElements/DES",
+      "library_version": "0.1.0",
+      "level_id": "level_ground",
+      "transform": {
+        "position": [4.0, 5.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "geometry": {
+        "shape": "box",
+        "dimensions": [3.0, 2.0, 0.8]
+      },
+      "editor": {
+        "graph_position": [260.0, 150.0],
+        "collapsed": false
+      },
+      "properties": {
+        "capacity": 40,
+        "discipline": "fifo"
+      },
+      "input_ports": [
+        {
+          "id": "in",
+          "name": "queue_in",
+          "direction": "input",
+          "kind": "flow",
+          "data_type": "entity",
+          "cardinality": "many",
+          "required": true
+        }
+      ],
+      "output_ports": [
+        {
+          "id": "out",
+          "name": "queue_out",
+          "direction": "output",
+          "kind": "flow",
+          "data_type": "entity",
+          "cardinality": "one",
+          "required": true
+        }
+      ],
+      "metric_ports": [
+        {
+          "id": "occupancy",
+          "name": "Queue Occupancy",
+          "direction": "output",
+          "kind": "metric",
+          "data_type": "uint32",
+          "cardinality": "many",
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "elem_desk_01",
+      "name": "Check-In Counter",
+      "kind": "server",
+      "library": "SimElements/DES",
+      "library_version": "0.1.0",
+      "level_id": "level_ground",
+      "transform": {
+        "position": [9.0, 5.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "geometry": {
+        "shape": "box",
+        "dimensions": [1.5, 2.0, 1.1]
+      },
+      "editor": {
+        "graph_position": [450.0, 150.0],
+        "collapsed": false
+      },
+      "properties": {
+        "service_rate": 1.0
+      },
+      "input_ports": [
+        {
+          "id": "in",
+          "name": "passenger_in",
+          "direction": "input",
+          "kind": "flow",
+          "data_type": "entity",
+          "cardinality": "one",
+          "required": true
+        }
+      ],
+      "output_ports": [
+        {
+          "id": "out",
+          "name": "served_passenger",
+          "direction": "output",
+          "kind": "flow",
+          "data_type": "entity",
+          "cardinality": "one",
+          "required": true
+        }
+      ],
+      "metric_ports": []
+    },
+    {
+      "id": "elem_portal_01",
+      "name": "Concourse Admission Gate",
+      "kind": "hybrid_portal",
+      "library": "SimElements/Hybrid",
+      "library_version": "0.1.0",
+      "level_id": "level_ground",
+      "transform": {
+        "position": [13.0, 5.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "geometry": {
+        "shape": "box",
+        "dimensions": [1.0, 2.5, 2.2]
+      },
+      "editor": {
+        "graph_position": [650.0, 150.0],
+        "collapsed": false
+      },
+      "properties": {
+        "conversion_mode": "des_to_crowd",
+        "initial_speed": 1.2
+      },
+      "input_ports": [
+        {
+          "id": "flow_in",
+          "name": "des_in",
+          "direction": "input",
+          "kind": "flow",
+          "data_type": "entity",
+          "cardinality": "one",
+          "required": true
+        },
+        {
+          "id": "gate_control",
+          "name": "Backlog Throttling",
+          "direction": "input",
+          "kind": "control",
+          "data_type": "float64",
+          "cardinality": "one",
+          "required": false
+        }
+      ],
+      "output_ports": [
+        {
+          "id": "crowd_out",
+          "name": "crowd_stream",
+          "direction": "output",
+          "kind": "flow",
+          "data_type": "agent",
+          "cardinality": "many",
+          "required": true
+        }
+      ],
+      "metric_ports": []
+    }
+  ],
+  "connections": [
+    {
+      "id": "conn_flow_01",
+      "source_element": "elem_src_01",
+      "source_port": "out",
+      "target_element": "elem_q_01",
+      "target_port": "in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "conn_flow_02",
+      "source_element": "elem_q_01",
+      "source_port": "out",
+      "target_element": "elem_desk_01",
+      "target_port": "in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "conn_flow_03",
+      "source_element": "elem_desk_01",
+      "source_port": "out",
+      "target_element": "elem_portal_01",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "conn_signal_feedback",
+      "source_element": "elem_q_01",
+      "source_port": "occupancy",
+      "target_element": "elem_portal_01",
+      "target_port": "gate_control",
+      "link_type": "signal",
+      "enabled": true,
+      "ordering": 2,
+      "condition": "occupancy > 30"
+    }
+  ],
+  "subgraphs": [],
+  "overlays": [],
+  "validation_metadata": {
+    "is_valid": true,
+    "diagnostic_count": 0,
+    "diagnostics": [],
+    "last_validated_at": "2026-09-18T12:00:00Z",
+    "validator_version": "1.0.0"
+  }
+}
+

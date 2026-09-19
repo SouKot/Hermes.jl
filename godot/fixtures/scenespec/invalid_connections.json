@@ -1,0 +1,177 @@
+{
+  "spec_version": "1.0.0",
+  "scene": {
+    "id": "scene_invalid_connections_001",
+    "name": "Draft Scene with Connection Errors",
+    "description": "Demonstrates draft preservation where connections have missing or incompatible ports without losing draft data",
+    "author": "Antigravity Engineering",
+    "created_at": "2026-09-18T12:00:00Z",
+    "modified_at": "2026-09-18T12:00:00Z",
+    "revision": 2,
+    "required_libraries": [
+      {
+        "name": "SimElements/DES",
+        "version": ">=0.1.0"
+      }
+    ]
+  },
+  "simulation": {
+    "mode": "des_only",
+    "start_time": 0.0,
+    "end_time": 100.0,
+    "warmup_time": 0.0,
+    "random_seed": 1,
+    "time_unit": "seconds",
+    "space_unit": "meters"
+  },
+  "abm_config": null,
+  "spatial": {
+    "coordinate_system": "right_handed_z_up",
+    "length_unit": "meters",
+    "origin": [0.0, 0.0, 0.0],
+    "levels": [
+      {
+        "id": "level_ground",
+        "name": "Ground Floor",
+        "elevation": 0.0,
+        "default_height": 3.0,
+        "visible": true
+      }
+    ]
+  },
+  "elements": [
+    {
+      "id": "elem_src_01",
+      "name": "Intake Source",
+      "kind": "source",
+      "library": "SimElements/DES",
+      "library_version": "0.1.0",
+      "level_id": "level_ground",
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "geometry": {
+        "shape": "box",
+        "dimensions": [1.0, 1.0, 1.0]
+      },
+      "editor": {
+        "graph_position": [100.0, 100.0],
+        "collapsed": false
+      },
+      "properties": {},
+      "input_ports": [],
+      "output_ports": [
+        {
+          "id": "flow_out",
+          "name": "out",
+          "direction": "output",
+          "kind": "flow",
+          "data_type": "entity",
+          "cardinality": "many",
+          "required": true
+        }
+      ],
+      "metric_ports": []
+    },
+    {
+      "id": "elem_q_01",
+      "name": "Queue",
+      "kind": "queue",
+      "library": "SimElements/DES",
+      "library_version": "0.1.0",
+      "level_id": "level_ground",
+      "transform": {
+        "position": [5.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "geometry": {
+        "shape": "box",
+        "dimensions": [2.0, 1.0, 1.0]
+      },
+      "editor": {
+        "graph_position": [300.0, 100.0],
+        "collapsed": false
+      },
+      "properties": {
+        "capacity": 10
+      },
+      "input_ports": [
+        {
+          "id": "flow_in",
+          "name": "in",
+          "direction": "input",
+          "kind": "flow",
+          "data_type": "entity",
+          "cardinality": "many",
+          "required": true
+        }
+      ],
+      "output_ports": [],
+      "metric_ports": [
+        {
+          "id": "occupancy",
+          "name": "occupancy",
+          "direction": "output",
+          "kind": "metric",
+          "data_type": "uint32",
+          "cardinality": "many",
+          "required": false
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "conn_bad_target_port",
+      "source_element": "elem_src_01",
+      "source_port": "flow_out",
+      "target_element": "elem_q_01",
+      "target_port": "non_existent_port_xyz",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "conn_incompatible_kinds",
+      "source_element": "elem_src_01",
+      "source_port": "flow_out",
+      "target_element": "elem_q_01",
+      "target_port": "occupancy",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 2
+    }
+  ],
+  "subgraphs": [],
+  "overlays": [],
+  "validation_metadata": {
+    "is_valid": false,
+    "diagnostic_count": 2,
+    "diagnostics": [
+      {
+        "rule_id": "PORT_001_NOT_FOUND",
+        "severity": "error",
+        "object_kind": "connection",
+        "object_id": "conn_bad_target_port",
+        "property_path": "target_port",
+        "message": "Target port 'non_existent_port_xyz' does not exist on element 'elem_q_01'",
+        "suggested_fix": "Connect to 'flow_in'"
+      },
+      {
+        "rule_id": "PORT_002_KIND_MISMATCH",
+        "severity": "error",
+        "object_kind": "connection",
+        "object_id": "conn_incompatible_kinds",
+        "property_path": "target_port",
+        "message": "Cannot connect flow output port to metric output port 'occupancy'",
+        "suggested_fix": "Connect to a compatible flow input port"
+      }
+    ],
+    "last_validated_at": "2026-09-18T12:00:00Z",
+    "validator_version": "1.0.0"
+  }
+}
+

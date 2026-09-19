@@ -1,0 +1,170 @@
+{
+  "spec_version": "1.0.0",
+  "scene": {
+    "id": "scene_missing_library_001",
+    "name": "Scene with External Unregistered Library",
+    "description": "Tests non-destructive placeholder preservation when an element references a library that is not yet installed",
+    "author": "Antigravity Engineering",
+    "created_at": "2026-09-18T12:00:00Z",
+    "modified_at": "2026-09-18T12:00:00Z",
+    "revision": 1,
+    "required_libraries": [
+      {
+        "name": "SimElements/DES",
+        "version": ">=0.1.0"
+      },
+      {
+        "name": "VendorRobotics/HeavyGantry",
+        "version": "^3.0.0"
+      }
+    ]
+  },
+  "simulation": {
+    "mode": "des_only",
+    "start_time": 0.0,
+    "end_time": 200.0,
+    "warmup_time": 10.0,
+    "random_seed": 42,
+    "time_unit": "seconds",
+    "space_unit": "meters"
+  },
+  "abm_config": null,
+  "spatial": {
+    "coordinate_system": "right_handed_z_up",
+    "length_unit": "meters",
+    "origin": [0.0, 0.0, 0.0],
+    "levels": [
+      {
+        "id": "level_ground",
+        "name": "Ground Floor",
+        "elevation": 0.0,
+        "default_height": 6.0,
+        "visible": true
+      }
+    ]
+  },
+  "elements": [
+    {
+      "id": "elem_feed_q",
+      "name": "Feed Queue",
+      "kind": "queue",
+      "library": "SimElements/DES",
+      "library_version": "0.1.0",
+      "level_id": "level_ground",
+      "transform": {
+        "position": [2.0, 4.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "geometry": {
+        "shape": "box",
+        "dimensions": [2.0, 1.0, 0.8]
+      },
+      "editor": {
+        "graph_position": [100.0, 150.0],
+        "collapsed": false
+      },
+      "properties": {
+        "capacity": 20
+      },
+      "input_ports": [],
+      "output_ports": [
+        {
+          "id": "out",
+          "name": "out",
+          "direction": "output",
+          "kind": "flow",
+          "data_type": "container",
+          "cardinality": "one",
+          "required": true
+        }
+      ],
+      "metric_ports": []
+    },
+    {
+      "id": "elem_gantry_01",
+      "name": "Automated Gantry Crane",
+      "kind": "overhead_crane",
+      "library": "VendorRobotics/HeavyGantry",
+      "library_version": "3.1.4",
+      "level_id": "level_ground",
+      "transform": {
+        "position": [10.0, 4.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "geometry": {
+        "shape": "box",
+        "dimensions": [8.0, 6.0, 5.5]
+      },
+      "editor": {
+        "graph_position": [350.0, 150.0],
+        "collapsed": false,
+        "color": "#9C27B0",
+        "notes": "Custom vendor equipment"
+      },
+      "properties": {
+        "max_payload_kg": 5000.0,
+        "hoist_speed_mps": 0.8,
+        "trolley_speed_mps": 2.0,
+        "firmware_build": "2026.08-rev4",
+        "custom_safety_interlock": true
+      },
+      "input_ports": [
+        {
+          "id": "pickup_port",
+          "name": "crane_pickup",
+          "direction": "input",
+          "kind": "flow",
+          "data_type": "container",
+          "cardinality": "one",
+          "required": true
+        }
+      ],
+      "output_ports": [
+        {
+          "id": "dropoff_port",
+          "name": "crane_dropoff",
+          "direction": "output",
+          "kind": "flow",
+          "data_type": "container",
+          "cardinality": "one",
+          "required": true
+        }
+      ],
+      "metric_ports": []
+    }
+  ],
+  "connections": [
+    {
+      "id": "conn_q_to_crane",
+      "source_element": "elem_feed_q",
+      "source_port": "out",
+      "target_element": "elem_gantry_01",
+      "target_port": "pickup_port",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    }
+  ],
+  "subgraphs": [],
+  "overlays": [],
+  "validation_metadata": {
+    "is_valid": true,
+    "diagnostic_count": 1,
+    "diagnostics": [
+      {
+        "rule_id": "LIB_001_LIBRARY_UNREGISTERED",
+        "severity": "warning",
+        "object_kind": "element",
+        "object_id": "elem_gantry_01",
+        "property_path": "library",
+        "message": "Library 'VendorRobotics/HeavyGantry' version '3.1.4' is not registered locally; rendering as placeholder",
+        "suggested_fix": "Install or resolve 'VendorRobotics/HeavyGantry' extension"
+      }
+    ],
+    "last_validated_at": "2026-09-18T12:00:00Z",
+    "validator_version": "1.0.0"
+  }
+}
+

@@ -24,6 +24,9 @@ module GodotBridge
 
 # Protocol module
 include("protocol/envelope.jl")
+include("protocol/scenespec.jl")
+include("protocol/scenespec_types.jl")
+include("protocol/scenespec_normalization.jl")
 include("protocol/serialization.jl")
 include("protocol/direct_delta.jl")
 include("protocol/debug.jl")
@@ -64,6 +67,15 @@ include("server/websocket_server.jl")
 export Message, MessageEnvelope, MessagePayload
 export HelloPayload, SnapshotPayload, DeltaPayload, CommandPayload
 export SceneSpecPayload, AckPayload, ErrorPayload
+export SceneSpec, parse_scenespec, scenespec_to_dict
+export encode_scenespec_json, decode_scenespec_json
+export encode_scenespec_msgpack, decode_scenespec_msgpack
+export scenespec_semantic_equal
+export LibraryRequirement, SceneMetadata, SimulationConfig, ABMConfig
+export SpatialLevel, SpatialConfig, TransformRecord, GeometryRecord, EditorMetadata
+export PortRecord, ElementRecord, ConnectionRecord, SubgraphRecord, DiagnosticRecord
+export ValidationMetadataRecord, OverlayRecord, TypedSceneSpec
+export to_typed_scenespec, to_payload, parse_typed_scenespec, migrate_scenespec
 export create_hello, create_ack, create_error
 export encode_messagepack, decode_messagepack
 export MessagePackWorkspace, encode_messagepack!
