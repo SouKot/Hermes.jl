@@ -1,10 +1,10 @@
 # Phase 7D: Checkpoint & Session Resume Handoff
 
-**Timestamp**: 2026-09-18T23:51:29-07:00  
+**Timestamp**: 2026-09-20T01:45:00-07:00  
 **Workspace**: `/run/media/sourabh/SANDISK-2TB/antigravity/ABM`  
 **Git Branch**: `main`  
-**Current Milestone**: Phase 7D-01 Completed & Accepted (100% Tests Passing, Zero Regressions)  
-**Next Immediate Milestone**: Phase 7D-02 (Semantic Validation & Diagnostics Engine)
+**Current Milestone**: Phase 7D-02 Completed & Accepted (100% Tests Passing, Zero Regressions)  
+**Next Immediate Milestone**: Phase 7D-03 (Dynamic Extension Preservation & Custom Metadata API)
 
 ---
 
@@ -30,6 +30,16 @@
    - **Godot Codec Integration** ([`godot/scripts/scenespec_codec.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/scenespec_codec.gd)):
      `load_document`, `save_document`, `encode_document_msgpack`, `decode_document_msgpack`, `normalize_document`.
 
+3. **Phase 7D-02 (Semantic Scene Validation & Diagnostics Engine)**:
+   - **Authoritative Julia Engine** ([`packages/GodotBridge/src/protocol/scenespec_validator.jl`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/packages/GodotBridge/src/protocol/scenespec_validator.jl)):
+     `validate_scenespec`, `apply_validation!`, `is_scene_valid`. Enforces 12 canonical rules covering duplicate IDs (`ID_001`), spatial level constraints (`ELEM_001`, `SPATIAL_001`, `SPATIAL_002`), port existence, kind mismatch, direction, cardinality, required connections (`PORT_001` - `PORT_005`), zero-delay cycles / livelocks and disconnected islands (`GRAPH_001`, `GRAPH_002`), and ABM configuration (`ABM_001`).
+   - **Client-Side Godot Validator** ([`godot/scripts/scenespec_validator.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/scenespec_validator.gd)):
+     `SimVizSceneValidator.validate_document`, `is_scene_valid`, wired directly into `SimVizSceneSpecCodec`.
+   - **Canonical Grounding Parity**:
+     `invalid_connections.json` reliably produces exactly 2 canonical error diagnostics (`PORT_001_NOT_FOUND` and `PORT_002_KIND_MISMATCH` with exact suggested fixes `"Connect to 'flow_in'"` and `"Connect to a compatible flow input port"`).
+   - **Valid Fixtures Verification**:
+     All 6 valid golden fixtures (`minimal_des.json`, `minimal_abm.json`, `minimal_hybrid.json`, `two_level_spatial.json`, `missing_library.json`, `future_fields.json`) pass validation with 0 errors.
+
 ---
 
 ## 2. Test Verification & Evidence
@@ -43,14 +53,16 @@ All automated test suites are passing with 100% success:
    - Step 1: Julia SceneSpec Protocol Suite (**93/93 passed**)
    - Step 2: Godot Headless Golden Fixture Suite (**7/7 passed**)
    - Step 3: End-to-End Julia $\leftrightarrow$ Godot Cross-Boundary Round-Trip (**22/22 passed**)
-   - Step 4: Julia Strongly-Typed Core & Migration Suite (**100/100 passed**)
+   - Step 4: Julia Strongly-Typed Core Suite (**100/100 passed**)
    - Step 5: Godot Headless Typed Domain Classes Suite (**7/7 fixtures + deep cloning + extensions + normalization passed**)
+   - Step 6: Julia SceneSpec Semantic Validation Suite (**86/86 passed**)
+   - Step 7: Godot Headless SimVizSceneValidator Suite (**All 9 validation test cases passed**)
 
 2. **Full Julia Regression Suite**:
    ```bash
    /home/sourabh/.juliaup/bin/julia --project=packages/GodotBridge packages/GodotBridge/test/runtests.jl
    ```
-   - **291/291 passed** (Zero regressions across protocol, extraction, worker pools, adaptive updates, dirty tracking, full snapshot, SIMD profiling, and SceneSpec).
+   - **377/377 passed** (Zero regressions across protocol, extraction, worker pools, adaptive updates, dirty tracking, full snapshot, SIMD profiling, and all Phase 7D suites).
 
 3. **Phase 7C Interop Launcher**:
    ```bash
@@ -60,33 +72,17 @@ All automated test suites are passing with 100% success:
 
 ---
 
-## 3. Runtimes & Paths
+## 3. Plan for Next Phase: Phase 7D-03 (Dynamic Extension Preservation & Custom Metadata API)
 
-- **Julia binary**: `/home/sourabh/.juliaup/bin/julia` (version 1.13.0)
-- **Godot binary**: `/home/sourabh/.local/bin/godot` (version 4.7.2 stable)
-- **Godot project path**: `/run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot`
-- **Julia package path**: `/run/media/sourabh/SANDISK-2TB/antigravity/ABM/packages/GodotBridge`
+Phase 7D-03 will build upon the completed typed models and validation engine to provide dedicated high-level APIs for manipulating domain extensions and custom metadata without touching core types:
 
----
-
-## 4. Immediate Next Step: Phase 7D-02
-
-The next milestone is **Phase 7D-02: Semantic Scene Validation & Diagnostics Engine**:
-- **Goals**:
-  1. Connection compatibility rules (flow $\to$ flow, metric $\to$ signal/control, event $\to$ event/control).
-  2. Port cardinality validation (preventing $>1$ connection on `:one` ports).
-  3. Topological sort and cycle detection for pure DES networks (distinguishing valid feedback loops from deadlocks).
-  4. Spatial extent validation (ensuring elements stay within their declared level elevations).
-  5. Generating structured `DiagnosticRecord` items (`rule_id`, `severity`, `object_kind`, `object_id`, `property_path`, `message`, `suggested_fix`).
-  6. Updating `validation_metadata` on `TypedSceneSpec` / `SceneDocument`.
-
----
-
-## 5. What to Prompt After Restart
-
-When you restart the IDE, paste this simple prompt into the chat:
-
-```text
-Resume Phase 7D: Phase 7D-01 is complete and verified (291/291 tests passing). Please read docs/PHASE_7D_RESUME_CHECKPOINT.md and plan Phase 7D-02 (Semantic Scene Validation & Diagnostics Engine).
-```
-
+1. **Julia Metadata API**:
+   - `get_extension(obj, key, default=nothing)`
+   - `set_extension!(obj, key, value)`
+   - `has_extension(obj, key)`
+   - Namespaced extension support (e.g. `vendor:analytics`, `rendering:pbr`).
+2. **Godot Metadata API**:
+   - Equivalent methods on `SimVizSceneTypes` classes for typed access to `extensions`.
+3. **Extension Validation Rules**:
+   - Optional schema validation for registered extensions.
+   - Preservation during partial updates and cloning.

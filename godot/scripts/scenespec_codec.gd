@@ -3,6 +3,7 @@ extends RefCounted
 
 const PROTOCOL_CODEC = preload("res://scripts/protocol_codec.gd")
 const SCENE_TYPES = preload("res://scripts/scenespec_types.gd")
+const SCENE_VALIDATOR = preload("res://scripts/scenespec_validator.gd")
 
 var _codec = PROTOCOL_CODEC.new()
 
@@ -52,6 +53,14 @@ func encode_document_msgpack(doc: RefCounted) -> PackedByteArray:
 	if doc == null or not doc.has_method("to_dict"):
 		return PackedByteArray()
 	return encode_msgpack(doc.to_dict())
+
+func validate_document(doc: RefCounted, strict: bool = false, check_required: Variant = null) -> Dictionary:
+	var validator := SCENE_VALIDATOR.new()
+	return validator.validate_document(doc, strict, check_required)
+
+func is_document_valid(doc: RefCounted) -> bool:
+	var validator := SCENE_VALIDATOR.new()
+	return validator.is_scene_valid(doc)
 
 func normalize_document(doc: RefCounted) -> void:
 	if doc == null:

@@ -26,31 +26,38 @@ fi
 export GODOT_BIN
 
 echo "============================================================"
-echo "Phase 7D-00 SceneSpec v1 Acceptance & Round-Trip Validation"
+echo "Phase 7D SceneSpec v1 Acceptance & Verification Suite"
 echo "============================================================"
 
 echo ""
-echo "[Step 1/3] Running Julia SceneSpec Protocol Suite..."
+echo "[Step 1/7] Running Julia SceneSpec Protocol Suite (Phase 7D-00)..."
 "$JULIA_BIN" --project="$JULIA_PROJECT" "$JULIA_PROJECT/test/test_scenespec.jl"
 
 echo ""
-echo "[Step 2/3] Running Godot Headless Golden Fixture Suite..."
+echo "[Step 2/7] Running Godot Headless Golden Fixture Suite (Phase 7D-00)..."
 "$GODOT_BIN" --headless --path "$GODOT_DIR" --script res://tests/scenespec_smoke.gd
 
 echo ""
-echo "[Step 3/5] Running End-to-End Julia <-> Godot Cross-Boundary Round-Trip..."
+echo "[Step 3/7] Running End-to-End Julia <-> Godot Cross-Boundary Round-Trip..."
 "$JULIA_BIN" --project="$JULIA_PROJECT" "$JULIA_PROJECT/test/test_cross_boundary_roundtrip.jl"
 
 echo ""
-echo "[Step 4/5] Running Julia SceneSpec Strongly-Typed Core & Migration Suite (Phase 7D-01)..."
+echo "[Step 4/7] Running Julia SceneSpec Strongly-Typed Core Suite (Phase 7D-01)..."
 "$JULIA_BIN" --project="$JULIA_PROJECT" "$JULIA_PROJECT/test/test_scenespec_typed.jl"
 
 echo ""
-echo "[Step 5/5] Running Godot Headless Typed Domain Classes Suite (Phase 7D-01)..."
+echo "[Step 5/7] Running Godot Headless Typed Domain Classes Suite (Phase 7D-01)..."
 "$GODOT_BIN" --headless --path "$GODOT_DIR" --script res://tests/scenespec_types_smoke.gd
 
 echo ""
-echo "============================================================"
-echo "✓ Phase 7D-00 & 7D-01 SceneSpec Contracts & Typed Core ACCEPTED"
-echo "============================================================"
+echo "[Step 6/7] Running Julia SceneSpec Semantic Validation Suite (Phase 7D-02)..."
+"$JULIA_BIN" --project="$JULIA_PROJECT" "$JULIA_PROJECT/test/test_scenespec_validation.jl"
 
+echo ""
+echo "[Step 7/7] Running Godot Headless SimVizSceneValidator Suite (Phase 7D-02)..."
+"$GODOT_BIN" --headless --path "$GODOT_DIR" --script res://tests/scenespec_validator_smoke.gd
+
+echo ""
+echo "============================================================"
+echo "✓ Phase 7D-00, 7D-01 & 7D-02 SceneSpec Contracts & Validation ACCEPTED"
+echo "============================================================"
