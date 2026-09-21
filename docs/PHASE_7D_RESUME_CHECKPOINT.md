@@ -101,14 +101,89 @@ All automated test suites are passing with 100% success:
 
 ---
 
-## 3. Plan for Next Milestone: Phase 7D-05 (Authoring Shell & Component Catalog)
+---
 
-Phase 7D-05 will build the interactive authoring shell and component palette in Godot 4:
-1. **Catalog Panel & Asset Browser**:
-   - Palette listing registered DES, ABM, and spatial connector primitives.
-   - Drag-and-drop or click-to-place instantiation onto 2D canvas / 3D viewport.
-2. **Multi-Document Shell UI**:
-   - Menu bar (New, Open, Save, Revert, Validate, Run).
-   - Document tabs, dirty-state indicators (`*`), and modal/dock layout.
-3. **Reactive Validation & Diagnostics UI**:
-   - Real-time diagnostic panel displaying errors and warnings with click-to-navigate and one-click suggested fixes.
+## 3. Current Session State & Alignment for Phase 7D-05
+
+The design and technical specifications for **Phase 7D-05 (Authoring Shell & Component Catalog)** are fully established, aligned with user feedback, and documented in [`implementation_plan.md`](file:///home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/implementation_plan.md):
+
+### A. Strictly Two-View Architecture
+- Only **`[ 2D LAYOUT ]`** and **`[ 3D LAYOUT ]`** views exist in the top bar.
+- No separate "Monitor Mode", and no separate "Process Graph Mode".
+- The 2D Layout Canvas unifies CAD architectural drawing (walls, columns, rooms), active simulation equipment blocks, and direct process connection wires on a single floor plan.
+- The 3D Layout View automatically extrudes 2D blocks by height $H$, supports multi-level spatial connectors (stairs, ramps), and provides orbit camera navigation.
+- The simulation transport bar (**`PLAY`**, **`PAUSE`**, **`STEP`**, **`RESET`**, **`Speed Slider`**, **`Clock`**) is persistent at the bottom across both 2D and 3D views.
+
+### B. Single Entity Block Architecture (Matching User Sketch)
+Each placed simulation entity (e.g. Conveyor, Queue, Server, Sink) is rendered as a **single block** matching its physical $X \times Y$ dimensions ($L \times W$ in meters) and divided into 3 zones:
+1. **LEFT BAY (Flow Movement)**:
+   - Green/white circular sockets with `+` buttons to add more ports.
+   - Input (`Flow In`) and Output (`Flow Out`) ports.
+   - Connection rule: **`Flow Out` $\longrightarrow$ `Flow In`** on another entity.
+   - Models physical transfer of discrete simulation items (pallets, parts, items) with physical transfer delays and capacity blocking.
+2. **CENTER BODY (Physical Footprint)**:
+   - Entity ID and physical dimensions ($L \times W$ in meters mapped to 2D canvas coordinates).
+3. **RIGHT BAY (Control, Telemetry & Observation)**:
+   - Circular sockets with `+` buttons to add more ports.
+   - **`Metric Port` (`:metric`) [Output only, orange]**: Emits continuous operational telemetry and sensor measurements (queue length, buffer fill ratio, motor speed, temperature). **Exists specifically to connect to a `Signal Port` on another entity**.
+   - **`Signal Port` (`:signal` / `:control`) [Input only, amber/red]**: Actuator/control input that modulates entity behavior (speed override, pause motor, divert lane) based on incoming signals from a `Metric Port`.
+   - **`Event Port` (`:event`) [Output only, purple]**: Emits discrete incident notices (`breakdown`, `item_rejected`, `shift_change`). **Strictly for observation and logging**; never alters flow routing. Connects to real-time charting/graphing widgets or loggers.
+
+```
+                     ┌────────────────────────────────────────────────────────┐
+                     │                   SINGLE ENTITY BLOCK                  │
+                     ├──────────────────┬──────────────────┬──────────────────┤
+                     │    LEFT BAY      │   CENTER BODY    │    RIGHT BAY     │
+                     │  (Flow Movement) │ (Physical Model) │(Control & Logic) │
+                     │                  │                  │                  │
+    Flow Input  ───> │ [In]             │  Conveyor_01     │    [Metric Out]  │ ───> Metric Output
+                     │                  │  8.0m × 1.2m     │                  │     (Connects to Signal In)
+    Flow Output <─── │ [Out]            │                  │    [Signal In] <─│ <─── Signal Input
+                     │                  │                  │    [Event Out] ──│ ───> Event Output (Graphing/Logs)
+                     │ [+] Add Flow     │                  │ [+] Add Control  │
+                     └──────────────────┴──────────────────┴──────────────────┘
+```
+
+### C. Visual Artifacts & References in Brain Directory
+- **User Sketch**: [`user_sketch_cropped.png`](file:///home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/user_sketch_cropped.png)
+- **CAD Canvas & Block Layout**: [`precise_user_sketch_block_layout.png`](file:///home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/precise_user_sketch_block_layout.png)
+- **3D Preview Viewport**: [`preview_3d_view_1789968568352.jpg`](file:///home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/preview_3d_view_1789968568352.jpg)
+- **Catalog & Diagnostics Panel**: [`catalog_and_diagnostics_1789968604236.jpg`](file:///home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/catalog_and_diagnostics_1789968604236.jpg)
+- **Full Implementation Plan**: [`implementation_plan.md`](file:///home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/implementation_plan.md)
+
+---
+
+## 4. Implementation Steps for Phase 7D-05 (Upon Resume)
+
+When executing Phase 7D-05:
+1. `godot/scripts/authoring_block_node.gd` [NEW]:
+   - 3-part layout: Left Flow bay, Center physical body ($L \times W$), Right Control/Metric/Event bay.
+   - Dynamic port addition via `+` buttons.
+   - Port hovering, tooltips, and drag-and-drop wire initiation.
+2. `godot/scripts/authoring_2d_canvas.gd` [NEW]:
+   - Passive CAD background geometry (walls, columns, room labels).
+   - Active entity blocks at $(X, Y)$ world coordinates.
+   - Flow splines (green) and Metric $\rightarrow$ Signal splines (amber).
+   - Live port-compatibility drag wire.
+3. `godot/scripts/authoring_catalog.gd` & `authoring_document_store.gd` [NEW]:
+   - Palette of DES/ABM/spatial primitives with default physical dimensions ($L \times W$) and port templates.
+   - Document lifecycle, dirty tracking (`*`), undo/redo stack, and atomic `.tmp` disk saving.
+4. `godot/scripts/authoring_diagnostics_panel.gd` & `authoring_3d_viewport.gd` [NEW]:
+   - Real-time diagnostic list with click-to-focus and one-click suggested fixes.
+   - Synchronized 3D viewport with extruded block meshes and orbit camera.
+5. `godot/scripts/authoring_shell.gd` [NEW] & `godot/scripts/main.gd` [MODIFY]:
+   - Two-view top header switcher (`[ 2D LAYOUT ]` and `[ 3D LAYOUT ]`).
+   - Left dock (Catalog & Tree), Right dock (Inspector & Diagnostics).
+   - Persistent bottom simulation transport.
+6. Verification:
+   - `godot/tests/scenespec_authoring_shell_smoke.gd` [NEW] headless test.
+   - Step 12 added to `run_phase7d_roundtrip_acceptance.sh` (12/12 steps passing).
+   - Master Julia test suite verified (533/533 passing).
+
+---
+
+## 5. Instructions for Resuming the Session
+
+When you restart or begin a new conversation, simply say:
+> **"Resume Phase 7D-05 based on docs/PHASE_7D_RESUME_CHECKPOINT.md and implementation_plan.md. Proceed with implementation."**
+

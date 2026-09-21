@@ -23,31 +23,81 @@ if [[ ! -x "$GODOT_BIN" ]]; then
   exit 127
 fi
 
-echo "Starting Phase 7C demo..."
+echo "============================================================"
+echo "      ANTIGRAVITY SIMVIZ — LIVE SIMULATION GUI DEMO"
+echo "============================================================"
+echo "Starting backend Julia bridge server on port 9107..."
+
+JULIA_PID=""
 if (echo >/dev/tcp/127.0.0.1/9107) 2>/dev/null; then
-  echo "JuliaBridge already listening on 127.0.0.1:9107; reusing it."
-  JULIA_PID=""
+  echo "● Port 9107 is already active; connecting to existing server."
 else
   cd "$JULIA_DIR"
-  ("$JULIA_BIN" --project=. test/fixture_server_phase7c.jl) &
+  "$JULIA_BIN" --project=. test/fixture_server_phase7c.jl &
   JULIA_PID=$!
+
+  # Poll until port 9107 is actively listening
+  echo "Waiting for JuliaBridge server to bind 127.0.0.1:9107..."
+  READY=0
+  for i in {1..30}; do
+    if (echo >/dev/tcp/127.0.0.1/9107) 2>/dev/null; then
+      READY=1
+      echo "● JuliaBridge server is ready and listening on port 9107!"
+      break
+    fi
+    sleep 0.3
+  done
+
+  if [[ "$READY" -ne 1 ]]; then
+    echo "ERROR: Timed out waiting for Julia server to listen on port 9107." >&2
+    if [[ -n "$JULIA_PID" ]]; then
+      kill "$JULIA_PID" 2>/dev/null || true
+    fi
+    exit 1
+  fi
 fi
 
-sleep 1
-
-cd "$GODOT_DIR"
-"$GODOT_BIN" --path . &
-GODOT_PID=$!
+echo ""
+echo "Launching Godot 4 GUI client..."
+echo "------------------------------------------------------------"
+echo "WHAT TO EXPECT IN THE GUI:"
+echo "1. Top Status: '● CONNECTED · MESSAGE' (green light)"
+echo "2. Viewport:"
+echo "   - Live orbiting entities with trailing paths"
+echo "   - Interactive 2D spatial grid & dynamic density heatmap"
+echo "3. Interactivity:"
+echo "   - LEFT-CLICK: Select any entity or queue to view properties"
+echo "   - MIDDLE-MOUSE DRAG: Pan canvas"
+echo "   - MOUSE WHEEL: Zoom in/out (0.2x to 8.0x)"
+echo "   - BOTTOM TRANSPORT: PAUSE, STEP (+0.1s), PLAY, RESET"
+echo "   - SPEED SLIDER: Adjust simulation speed (0.25x to 4.00x)"
+echo "   - TOGGLES: TRAJ (trajectories), GRID (density), HEAT (heatmap)"
+echo "4. Inspector (Right Panel): Live entity metrics, state updates"
+echo "------------------------------------------------------------"
+echo "Closing the Godot window will cleanly terminate the demo."
+echo "============================================================"
 
 cleanup() {
-  if [[ -n "$JULIA_PID" ]]; then
+  echo ""
+  echo "Shutting down Phase 7C demo..."
+  if [[ -n "${GODOT_PID:-}" ]]; then
+    kill "$GODOT_PID" 2>/dev/null || true
+  fi
+  if [[ -n "${JULIA_PID:-}" ]]; then
     kill "$JULIA_PID" 2>/dev/null || true
   fi
-  kill "$GODOT_PID" 2>/dev/null || true
   exit 0
 }
 
 trap cleanup INT TERM
 
-wait "$GODOT_PID"
-kill "$JULIA_PID" 2>/dev/null || true
+cd "$GODOT_DIR"
+"$GODOT_BIN" --path . &
+GODOT_PID=$!
+
+wait "$GODOT_PID" || true
+
+if [[ -n "${JULIA_PID:-}" ]]; then
+  kill "$JULIA_PID" 2>/dev/null || true
+fi
+echo "Phase 7C demo finished."
