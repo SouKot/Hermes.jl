@@ -57,8 +57,8 @@ const KNOWN_CONNECTION_KEYS = Set{String}([
 ])
 
 const KNOWN_SUBGRAPH_KEYS = Set{String}([
-    "id", "name", "role", "template_id", "template_version", "elements",
-    "connections", "exposed_ports", "parameter_overrides", "extensions"
+    "id", "name", "role", "template_id", "template_version", "level_id", "transform",
+    "elements", "connections", "exposed_ports", "parameter_overrides", "extensions"
 ])
 
 const KNOWN_OVERLAY_KEYS = Set{String}([
@@ -405,13 +405,22 @@ function to_typed_scenespec(
         role = Symbol(get(s, "role", "group"))
         tmpl_id = haskey(s, "template_id") && s["template_id"] !== nothing ? string(s["template_id"]) : nothing
         tmpl_ver = haskey(s, "template_version") && s["template_version"] !== nothing ? string(s["template_version"]) : nothing
+        level_id = haskey(s, "level_id") && s["level_id"] !== nothing ? string(s["level_id"]) : nothing
+        trans = nothing
+        if haskey(s, "transform") && isa(s["transform"], AbstractDict)
+            td = s["transform"]
+            t_pos = _to_tuple3(get(td, "position", [0.0, 0.0, 0.0]))
+            t_rot = _to_tuple3(get(td, "rotation", [0.0, 0.0, 0.0]))
+            t_scl = _to_tuple3(get(td, "scale", [1.0, 1.0, 1.0]), (1.0, 1.0, 1.0))
+            trans = TransformRecord(t_pos, t_rot, t_scl)
+        end
         elems = [string(x) for x in get(s, "elements", Any[])]
         conns = [string(x) for x in get(s, "connections", Any[])]
         exposed = [Dict{String, Any}(string(k) => v for (k, v) in x) for x in get(s, "exposed_ports", Any[])]
         params = Dict{String, Any}(string(k) => v for (k, v) in get(s, "parameter_overrides", Dict{String, Any}()))
         sub_ext = _extract_extensions(s, KNOWN_SUBGRAPH_KEYS)
         push!(typed_subs, SubgraphRecord(
-            sid, sname, role, tmpl_id, tmpl_ver, elems, conns, exposed, params, sub_ext
+            sid, sname, role, tmpl_id, tmpl_ver, level_id, trans, elems, conns, exposed, params, sub_ext
         ))
     end
 
@@ -664,6 +673,16 @@ function to_payload(spec::TypedSceneSpec)::SceneSpecPayload
         end
         if s.template_version !== nothing
             sd["template_version"] = s.template_version
+        end
+        if s.level_id !== nothing
+            sd["level_id"] = s.level_id
+        end
+        if s.transform !== nothing
+            sd["transform"] = Dict{String, Any}(
+                "position" => collect(s.transform.position),
+                "rotation" => collect(s.transform.rotation),
+                "scale" => collect(s.transform.scale)
+            )
         end
         _merge_extensions!(sd, s.extensions)
         push!(subs_vec, sd)

@@ -9,6 +9,11 @@ class SceneTransform extends RefCounted:
 	var rotation: Vector3 = Vector3.ZERO
 	var scale: Vector3 = Vector3.ONE
 
+	func _init(p: Vector3 = Vector3.ZERO, r: Vector3 = Vector3.ZERO, s: Vector3 = Vector3.ONE) -> void:
+		position = p
+		rotation = r
+		scale = s
+
 	static func from_dict(d: Dictionary) -> SceneTransform:
 		var st := SceneTransform.new()
 		if d.has("position") and d["position"] is Array and d["position"].size() >= 3:
@@ -597,6 +602,94 @@ class SceneElement extends SceneExtensible:
 		return c
 
 # ============================================================================
+# SceneSubgraph
+# ============================================================================
+class SceneSubgraph extends SceneExtensible:
+	var id: String = ""
+	var name: String = ""
+	var role: String = "group" # "group", "template", "compound"
+	var template_id: Variant = null
+	var template_version: Variant = null
+	var level_id: Variant = null
+	var transform: SceneTransform = null
+	var elements: Array = []
+	var connections: Array = []
+	var exposed_ports: Array = []
+	var parameter_overrides: Dictionary = {}
+
+	static func from_dict(d: Dictionary) -> SceneSubgraph:
+		var s := SceneSubgraph.new()
+		s.id = str(d.get("id", ""))
+		s.name = str(d.get("name", s.id))
+		s.role = str(d.get("role", "group"))
+		if d.has("template_id") and d["template_id"] != null:
+			s.template_id = str(d["template_id"])
+		if d.has("template_version") and d["template_version"] != null:
+			s.template_version = str(d["template_version"])
+		if d.has("level_id") and d["level_id"] != null:
+			s.level_id = str(d["level_id"])
+		if d.has("transform") and d["transform"] is Dictionary:
+			s.transform = SceneTransform.from_dict(d["transform"])
+		else:
+			s.transform = SceneTransform.new()
+
+		s.elements = d.get("elements", []).duplicate(true)
+		s.connections = d.get("connections", []).duplicate(true)
+		s.exposed_ports = d.get("exposed_ports", []).duplicate(true)
+		s.parameter_overrides = d.get("parameter_overrides", {}).duplicate(true)
+
+		for k in d.keys():
+			var sk := str(k)
+			if sk not in ["id", "name", "role", "template_id", "template_version", "level_id", "transform", "elements", "connections", "exposed_ports", "parameter_overrides"]:
+				if sk == "extensions" and d["extensions"] is Dictionary:
+					s.extensions["extensions"] = d["extensions"].duplicate(true)
+				else:
+					s.extensions[sk] = d[k]
+		return s
+
+	func to_dict() -> Dictionary:
+		var out: Dictionary = {
+			"id": id,
+			"name": name,
+			"role": role,
+			"elements": elements.duplicate(true),
+			"connections": connections.duplicate(true),
+			"exposed_ports": exposed_ports.duplicate(true),
+			"parameter_overrides": parameter_overrides.duplicate(true)
+		}
+		if template_id != null:
+			out["template_id"] = template_id
+		if template_version != null:
+			out["template_version"] = template_version
+		if level_id != null:
+			out["level_id"] = level_id
+		if transform != null:
+			out["transform"] = transform.to_dict()
+
+		for k in extensions.keys():
+			if k == "extensions":
+				out["extensions"] = extensions["extensions"].duplicate(true)
+			else:
+				out[k] = extensions[k]
+		return out
+
+	func clone() -> SceneSubgraph:
+		var c := SceneSubgraph.new()
+		c.id = id
+		c.name = name
+		c.role = role
+		c.template_id = template_id
+		c.template_version = template_version
+		c.level_id = level_id
+		c.transform = transform.clone() if transform != null else null
+		c.elements = elements.duplicate(true)
+		c.connections = connections.duplicate(true)
+		c.exposed_ports = exposed_ports.duplicate(true)
+		c.parameter_overrides = parameter_overrides.duplicate(true)
+		c.extensions = extensions.duplicate(true)
+		return c
+
+# ============================================================================
 # SceneDocument
 # ============================================================================
 class SceneDocument extends SceneExtensible:
@@ -634,7 +727,16 @@ class SceneDocument extends SceneExtensible:
 				if c is Dictionary:
 					doc.connections.append(SceneConnection.from_dict(c))
 
-		doc.subgraphs = d.get("subgraphs", []).duplicate(true)
+		var raw_subs = d.get("subgraphs", [])
+		if raw_subs is Array:
+			for s in raw_subs:
+				if s is Dictionary:
+					doc.subgraphs.append(SceneSubgraph.from_dict(s))
+				elif s is SceneSubgraph:
+					doc.subgraphs.append(s.clone())
+				else:
+					doc.subgraphs.append(s)
+
 		doc.overlays = d.get("overlays", []).duplicate(true)
 		doc.validation_metadata = d.get("validation_metadata", {}).duplicate(true)
 
@@ -656,6 +758,10 @@ class SceneDocument extends SceneExtensible:
 		for c in connections:
 			conns_arr.append(c.to_dict() if c is SceneConnection else c)
 
+		var subs_arr: Array = []
+		for s in subgraphs:
+			subs_arr.append(s.to_dict() if s is SceneSubgraph else s)
+
 		var out: Dictionary = {
 			"spec_version": spec_version,
 			"scene": scene.duplicate(true),
@@ -663,7 +769,7 @@ class SceneDocument extends SceneExtensible:
 			"abm_config": abm_config.duplicate(true) if abm_config is Dictionary else abm_config,
 			"elements": elems_arr,
 			"connections": conns_arr,
-			"subgraphs": subgraphs.duplicate(true),
+			"subgraphs": subs_arr,
 			"overlays": overlays.duplicate(true),
 			"validation_metadata": validation_metadata.duplicate(true)
 		}
@@ -688,7 +794,8 @@ class SceneDocument extends SceneExtensible:
 			c.elements.append(e.clone() if e is SceneElement else e)
 		for conn in connections:
 			c.connections.append(conn.clone() if conn is SceneConnection else conn)
-		c.subgraphs = subgraphs.duplicate(true)
+		for s in subgraphs:
+			c.subgraphs.append(s.clone() if s is SceneSubgraph else s)
 		c.overlays = overlays.duplicate(true)
 		c.validation_metadata = validation_metadata.duplicate(true)
 		c.extensions = extensions.duplicate(true)

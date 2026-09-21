@@ -1,0 +1,324 @@
+{
+  "spec_version": "1.0.0",
+  "scene": {
+    "id": "scene_hierarchical_subgraph_001",
+    "name": "Hierarchical Multi-Level Facility",
+    "description": "Golden fixture showcasing compound subgraphs, template instantiations, relative transforms, parameter overrides, and cross-level boundary connections",
+    "author": "Antigravity Engineering",
+    "created_at": "2026-09-20T18:00:00Z",
+    "modified_at": "2026-09-20T18:00:00Z",
+    "revision": 1
+  },
+  "simulation": {
+    "mode": "des_only",
+    "start_time": 0.0,
+    "end_time": 1800.0,
+    "warmup_time": 0.0,
+    "random_seed": 42,
+    "time_unit": "seconds",
+    "space_unit": "meters"
+  },
+  "spatial": {
+    "levels": [
+      {
+        "id": "level_ground",
+        "name": "Ground Concourse",
+        "elevation": 0.0,
+        "default_height": 4.5,
+        "visible": true
+      },
+      {
+        "id": "level_mezzanine",
+        "name": "Mezzanine Concourse",
+        "elevation": 4.5,
+        "default_height": 4.0,
+        "visible": true
+      }
+    ]
+  },
+  "elements": [
+    {
+      "id": "src_ground_entry",
+      "name": "Ground Entry Source",
+      "kind": "source",
+      "library": "SimElements/DES",
+      "library_version": "1.0.0",
+      "level_id": "level_ground",
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "geometry": {
+        "shape": "box",
+        "dimensions": [1.0, 1.0, 1.0]
+      },
+      "editor": {
+        "graph_position": [0.0, 0.0],
+        "collapsed": false
+      },
+      "properties": {
+        "interarrival_time": 5.0
+      },
+      "input_ports": [],
+      "output_ports": [
+        { "id": "flow_out", "name": "Generated Flow", "direction": "output", "kind": "flow", "data_type": "item", "cardinality": "many", "required": true }
+      ],
+      "metric_ports": []
+    },
+    {
+      "id": "snk_mezzanine_exit",
+      "name": "Mezzanine Exit Sink",
+      "kind": "sink",
+      "library": "SimElements/DES",
+      "library_version": "1.0.0",
+      "level_id": "level_mezzanine",
+      "transform": {
+        "position": [50.0, 0.0, 4.5],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "geometry": {
+        "shape": "box",
+        "dimensions": [1.0, 1.0, 1.0]
+      },
+      "editor": {
+        "graph_position": [500.0, 0.0],
+        "collapsed": false
+      },
+      "properties": {},
+      "input_ports": [
+        { "id": "flow_in", "name": "Consumed Flow", "direction": "input", "kind": "flow", "data_type": "item", "cardinality": "many", "required": true }
+      ],
+      "output_ports": [],
+      "metric_ports": []
+    },
+    {
+      "id": "tpl_q",
+      "name": "Template Buffer Queue",
+      "kind": "queue",
+      "library": "SimElements/DES",
+      "library_version": "1.0.0",
+      "level_id": "level_ground",
+      "transform": {
+        "position": [-2.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "geometry": {
+        "shape": "box",
+        "dimensions": [1.0, 1.0, 1.0]
+      },
+      "editor": {
+        "graph_position": [100.0, 0.0],
+        "collapsed": false
+      },
+      "properties": {
+        "capacity": 50,
+        "discipline": "FIFO"
+      },
+      "input_ports": [
+        { "id": "flow_in", "name": "Arrival", "direction": "input", "kind": "flow", "data_type": "item", "cardinality": "many", "required": true }
+      ],
+      "output_ports": [
+        { "id": "flow_out", "name": "Departure", "direction": "output", "kind": "flow", "data_type": "item", "cardinality": "one", "required": true }
+      ],
+      "metric_ports": []
+    },
+    {
+      "id": "tpl_srv",
+      "name": "Template Service Unit",
+      "kind": "server",
+      "library": "SimElements/DES",
+      "library_version": "1.0.0",
+      "level_id": "level_ground",
+      "transform": {
+        "position": [2.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "geometry": {
+        "shape": "box",
+        "dimensions": [1.0, 1.0, 1.0]
+      },
+      "editor": {
+        "graph_position": [250.0, 0.0],
+        "collapsed": false
+      },
+      "properties": {
+        "service_time": 10.0,
+        "servers": 2
+      },
+      "input_ports": [
+        { "id": "flow_in", "name": "Intake", "direction": "input", "kind": "flow", "data_type": "item", "cardinality": "one", "required": true }
+      ],
+      "output_ports": [
+        { "id": "flow_out", "name": "Release", "direction": "output", "kind": "flow", "data_type": "item", "cardinality": "many", "required": true }
+      ],
+      "metric_ports": []
+    }
+  ],
+  "connections": [
+    {
+      "id": "tpl_q_to_srv",
+      "source_element": "tpl_q",
+      "source_port": "flow_out",
+      "target_element": "tpl_srv",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "conn_entry_to_alpha",
+      "source_element": "src_ground_entry",
+      "source_port": "flow_out",
+      "target_element": "station_alpha",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "conn_alpha_to_beta",
+      "source_element": "station_alpha",
+      "source_port": "flow_out",
+      "target_element": "station_beta",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "conn_beta_to_exit",
+      "source_element": "station_beta",
+      "source_port": "flow_out",
+      "target_element": "snk_mezzanine_exit",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    }
+  ],
+  "subgraphs": [
+    {
+      "id": "tpl_station",
+      "name": "Processing Station Template",
+      "role": "template",
+      "template_version": "1.0.0",
+      "level_id": "level_ground",
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "elements": ["tpl_q", "tpl_srv"],
+      "connections": ["tpl_q_to_srv"],
+      "exposed_ports": [
+        {
+          "id": "flow_in",
+          "name": "Station Flow Intake",
+          "kind": "flow",
+          "direction": "input",
+          "data_type": "item",
+          "cardinality": "many",
+          "target_element": "tpl_q",
+          "target_port": "flow_in"
+        },
+        {
+          "id": "flow_out",
+          "name": "Station Flow Release",
+          "kind": "flow",
+          "direction": "output",
+          "data_type": "item",
+          "cardinality": "many",
+          "target_element": "tpl_srv",
+          "target_port": "flow_out"
+        }
+      ],
+      "parameter_overrides": {}
+    },
+    {
+      "id": "station_alpha",
+      "name": "Ground Station Alpha",
+      "role": "compound",
+      "template_id": "tpl_station",
+      "template_version": "1.0.0",
+      "level_id": "level_ground",
+      "transform": {
+        "position": [10.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "elements": [],
+      "connections": [],
+      "exposed_ports": [
+        {
+          "id": "flow_in",
+          "name": "Alpha Flow Intake",
+          "kind": "flow",
+          "direction": "input",
+          "data_type": "item",
+          "cardinality": "many",
+          "target_element": "tpl_q",
+          "target_port": "flow_in"
+        },
+        {
+          "id": "flow_out",
+          "name": "Alpha Flow Release",
+          "kind": "flow",
+          "direction": "output",
+          "data_type": "item",
+          "cardinality": "many",
+          "target_element": "tpl_srv",
+          "target_port": "flow_out"
+        }
+      ],
+      "parameter_overrides": {
+        "tpl_srv.service_time": 8.0,
+        "tpl_q.capacity": 75
+      }
+    },
+    {
+      "id": "station_beta",
+      "name": "Mezzanine Station Beta",
+      "role": "compound",
+      "template_id": "tpl_station",
+      "template_version": "1.0.0",
+      "level_id": "level_mezzanine",
+      "transform": {
+        "position": [30.0, 0.0, 4.5],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "elements": [],
+      "connections": [],
+      "exposed_ports": [
+        {
+          "id": "flow_in",
+          "name": "Beta Flow Intake",
+          "kind": "flow",
+          "direction": "input",
+          "data_type": "item",
+          "cardinality": "many",
+          "target_element": "tpl_q",
+          "target_port": "flow_in"
+        },
+        {
+          "id": "flow_out",
+          "name": "Beta Flow Release",
+          "kind": "flow",
+          "direction": "output",
+          "data_type": "item",
+          "cardinality": "many",
+          "target_element": "tpl_srv",
+          "target_port": "flow_out"
+        }
+      ],
+      "parameter_overrides": {
+        "tpl_srv.service_time": 4.0,
+        "tpl_srv.servers": 4
+      }
+    }
+  ]
+}

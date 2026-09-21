@@ -20,7 +20,8 @@ func _init() -> void:
 		"minimal_hybrid.json",
 		"two_level_spatial.json",
 		"missing_library.json",
-		"future_fields.json"
+		"future_fields.json",
+		"hierarchical_subgraph.json"
 	]
 
 	for fname in valid_fixtures:

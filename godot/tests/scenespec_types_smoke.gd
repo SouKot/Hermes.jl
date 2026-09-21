@@ -13,7 +13,8 @@ func _init() -> void:
 		"two_level_spatial.json",
 		"invalid_connections.json",
 		"missing_library.json",
-		"future_fields.json"
+		"future_fields.json",
+		"hierarchical_subgraph.json"
 	]
 
 	var passed_count := 0

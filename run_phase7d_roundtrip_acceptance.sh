@@ -58,14 +58,22 @@ echo "[Step 7/9] Running Godot Headless SimVizSceneValidator Suite (Phase 7D-02)
 "$GODOT_BIN" --headless --path "$GODOT_DIR" --script res://tests/scenespec_validator_smoke.gd
 
 echo ""
-echo "[Step 8/9] Running Julia SceneSpec Extensions & Metadata Suite (Phase 7D-03)..."
+echo "[Step 8/11] Running Julia SceneSpec Extensions & Metadata Suite (Phase 7D-03)..."
 "$JULIA_BIN" --project="$JULIA_PROJECT" "$JULIA_PROJECT/test/test_scenespec_extensions.jl"
 
 echo ""
-echo "[Step 9/9] Running Godot Headless SceneSpec Extensions & Metadata Suite (Phase 7D-03)..."
+echo "[Step 9/11] Running Godot Headless SceneSpec Extensions & Metadata Suite (Phase 7D-03)..."
 "$GODOT_BIN" --headless --path "$GODOT_DIR" --script res://tests/scenespec_extensions_smoke.gd
 
 echo ""
+echo "[Step 10/11] Running Julia Subgraph Expansion & Spatial Layout Suite (Phase 7D-04)..."
+"$JULIA_BIN" --project="$JULIA_PROJECT" "$JULIA_PROJECT/test/test_scenespec_subgraphs.jl"
+
+echo ""
+echo "[Step 11/11] Running Godot Headless Subgraph Expansion & Spatial Layout Smoke (Phase 7D-04)..."
+"$GODOT_BIN" --headless --path "$GODOT_DIR" --script res://tests/scenespec_subgraphs_smoke.gd
+
+echo ""
 echo "============================================================"
-echo "✓ Phase 7D-00, 7D-01, 7D-02 & 7D-03 SceneSpec Contracts, Validation & Extensions ACCEPTED"
+echo "✓ Phase 7D-00, 7D-01, 7D-02, 7D-03 & 7D-04 SceneSpec Contracts, Validation, Extensions & Subgraphs ACCEPTED"
 echo "============================================================"

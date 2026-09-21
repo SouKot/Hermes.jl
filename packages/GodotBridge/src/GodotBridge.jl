@@ -26,6 +26,10 @@ module GodotBridge
 include("protocol/envelope.jl")
 include("protocol/scenespec.jl")
 include("protocol/scenespec_types.jl")
+include("protocol/scenespec_backend.jl")
+include("protocol/scenespec_ports.jl")
+include("protocol/scenespec_spatial.jl")
+include("protocol/scenespec_subgraphs.jl")
 include("protocol/scenespec_normalization.jl")
 include("protocol/scenespec_validator.jl")
 include("protocol/scenespec_extensions.jl")
@@ -79,6 +83,17 @@ export PortRecord, ElementRecord, ConnectionRecord, SubgraphRecord, DiagnosticRe
 export ValidationMetadataRecord, OverlayRecord, TypedSceneSpec
 export to_typed_scenespec, to_payload, parse_typed_scenespec, migrate_scenespec
 export validate_scenespec, apply_validation!, is_scene_valid
+export AbstractExecutionBackend, AutoBackend, CPUBackend, GPUBackend
+export detect_available_gpu_backend, resolve_execution_backend, get_ka_backend
+export SpatialBufferSoA, compose_transforms, compose_transforms_kernel!
+export zup_to_godot_position, godot_to_zup_position, resolve_element_elevation
+export filter_level_elements, resolve_vertical_connector, resolve_all_transforms
+export to_godot_byte_array
+export PortProtocolDefinition, register_port_protocol!, get_port_protocol
+export list_port_protocols, reset_port_protocols!, is_connection_compatible
+export check_cardinality, check_port_cardinality
+export SubgraphSourceMap, CompiledSceneGraph, compile_scene_graph
+export expand_subgraphs, expand_subgraphs_with_meta, query_hierarchical_metric
 export get_extension, set_extension!, has_extension, delete_extension!, list_extensions
 export get_extension_path, set_extension_path!
 export get_namespace, set_namespace!, has_namespace, delete_namespace!

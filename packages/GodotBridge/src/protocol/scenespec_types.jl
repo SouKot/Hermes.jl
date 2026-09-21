@@ -34,6 +34,15 @@ struct SceneMetadata
     extensions::Dict{String, Any}
 end
 
+SceneMetadata(id::String, name::String, description::String, author::String, extensions::Dict{String, Any}) =
+    SceneMetadata(id, name, description, author, "", "", 1, LibraryRequirement[], extensions)
+
+SceneMetadata(id::String, name::String, description::String, author::String, req_libs::Vector{LibraryRequirement}, extensions::Dict{String, Any}) =
+    SceneMetadata(id, name, description, author, "", "", 1, req_libs, extensions)
+
+SceneMetadata(id::String, name::String, description::String, author::String, req_libs::Dict{String, Any}, extensions::Dict{String, Any}) =
+    SceneMetadata(id, name, description, author, "", "", 1, LibraryRequirement[], extensions)
+
 """
     SimulationConfig
 
@@ -50,6 +59,24 @@ struct SimulationConfig
     space_unit::String
     extensions::Dict{String, Any}
 end
+
+SimulationConfig(
+    mode::Symbol,
+    start_time::Float64,
+    end_time::Float64,
+    warmup_time::Float64,
+    random_seed::Integer,
+    extensions::Dict{String, Any}
+) = SimulationConfig(mode, start_time, end_time, warmup_time, UInt64(random_seed), "seconds", "meters", extensions)
+
+SimulationConfig(
+    mode::String,
+    start_time::Float64,
+    end_time::Float64,
+    warmup_time::Float64,
+    random_seed::Integer,
+    extensions::Dict{String, Any}
+) = SimulationConfig(Symbol(mode), start_time, end_time, warmup_time, UInt64(random_seed), "seconds", "meters", extensions)
 
 """
     ABMConfig
@@ -202,6 +229,7 @@ end
     SubgraphRecord
 
 Group, template, or compound node hierarchy containing nested elements and connections.
+Optionally defines a spatial level_id and local transform for nested 3D coordinate composition.
 """
 struct SubgraphRecord
     id::String
@@ -209,12 +237,29 @@ struct SubgraphRecord
     role::Symbol # :group, :template, :compound
     template_id::Union{String, Nothing}
     template_version::Union{String, Nothing}
+    level_id::Union{String, Nothing}
+    transform::Union{TransformRecord, Nothing}
     elements::Vector{String}
     connections::Vector{String}
     exposed_ports::Vector{Dict{String, Any}}
     parameter_overrides::Dict{String, Any}
     extensions::Dict{String, Any}
 end
+
+# Backward-compatibility outer constructor
+SubgraphRecord(
+    id::String,
+    name::String,
+    role::Symbol,
+    tmpl_id::Union{String, Nothing},
+    tmpl_ver::Union{String, Nothing},
+    elems::Vector{String},
+    conns::Vector{String},
+    exposed::Vector{Dict{String, Any}},
+    params::Dict{String, Any},
+    sub_ext::Dict{String, Any}
+) = SubgraphRecord(id, name, role, tmpl_id, tmpl_ver, nothing, nothing, elems, conns, exposed, params, sub_ext)
+
 
 """
     DiagnosticRecord

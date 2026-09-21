@@ -29,16 +29,19 @@ function validate_scenespec(spec::TypedSceneSpec; strict::Bool=false, check_requ
     # 2. Spatial Level Constraints
     _validate_spatial_constraints!(diagnostics, spec, elements_by_id, levels_by_id)
 
-    # 3. Connection & Port Rules
+    # 3. Subgraph & Template Rules
+    _validate_subgraphs!(diagnostics, spec, elements_by_id)
+
+    # 4. Connection & Port Rules
     _validate_connections_and_ports!(diagnostics, spec, elements_by_id; check_required=check_required)
 
-    # 4. Graph Topology & Cycle / Livelock Detection
+    # 5. Graph Topology & Cycle / Livelock Detection
     _validate_graph_topology!(diagnostics, spec, elements_by_id)
 
-    # 5. ABM Configuration Rules
+    # 6. ABM Configuration Rules
     _validate_abm_config!(diagnostics, spec)
 
-    # 6. Extension Governance Rules
+    # 7. Extension Governance Rules
     _validate_extensions!(diagnostics, spec)
 
     # Count errors vs warnings
@@ -195,6 +198,24 @@ function _validate_id_uniqueness!(
             end
         end
     end
+
+    # Check subgraphs
+    seen_sub_ids = Set{String}()
+    for sub in spec.subgraphs
+        if sub.id in seen_sub_ids || sub.id in seen_elem_ids
+            push!(diagnostics, DiagnosticRecord(
+                "ID_001_DUPLICATE",
+                :error,
+                "subgraph",
+                sub.id,
+                "id",
+                "Duplicate subgraph ID '$(sub.id)' found in document",
+                "Assign a unique identifier to the subgraph"
+            ))
+        else
+            push!(seen_sub_ids, sub.id)
+        end
+    end
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -266,6 +287,24 @@ function _validate_spatial_constraints!(
                         "Vertical connector '$(elem.id)' references invalid, non-existent, or identical levels",
                         "Specify valid, distinct source_level_id and target_level_id with height > 0"
                     ))
+                else
+                    sl = levels_by_id[src_str]
+                    tl = levels_by_id[tgt_str]
+                    min_elev = min(sl.elevation, tl.elevation)
+                    max_elev = max(sl.elevation, tl.elevation)
+                    elem_z = elem.transform.position[3]
+                    connector_top = elem_z + height
+                    if elem_z > min_elev + 1e-4 || connector_top < max_elev - 1e-4
+                        push!(diagnostics, DiagnosticRecord(
+                            "SPATIAL_003_CONNECTOR_INACCESSIBLE",
+                            :error,
+                            "element",
+                            elem.id,
+                            "vertical_extent",
+                            "Vertical connector '$(elem.id)' span [Z=$elem_z, $connector_top] does not span elevations of levels '$src_str' (elev $(sl.elevation)) and '$tgt_str' (elev $(tl.elevation))",
+                            "Adjust connector position Z and height to bridge both level elevations"
+                        ))
+                    end
                 end
             end
         end
@@ -273,7 +312,128 @@ function _validate_spatial_constraints!(
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Internal Pass 3: Connection & Port Rules
+# Internal Pass 3: Subgraph & Template Rules
+# ─────────────────────────────────────────────────────────────────────────────
+
+function _validate_subgraphs!(
+    diagnostics::Vector{DiagnosticRecord},
+    spec::TypedSceneSpec,
+    elements_by_id::Dict{String, ElementRecord}
+)
+    if isempty(spec.subgraphs)
+        return
+    end
+
+    subgraphs_by_id = Dict{String, SubgraphRecord}()
+    templates_by_id = Dict{String, SubgraphRecord}()
+    for s in spec.subgraphs
+        subgraphs_by_id[s.id] = s
+        if s.role == :template
+            templates_by_id[s.id] = s
+        end
+    end
+
+    # 1. SUBGRAPH_003_TEMPLATE_NOT_FOUND
+    for s in spec.subgraphs
+        if s.template_id !== nothing && !isempty(s.template_id)
+            if !haskey(templates_by_id, s.template_id)
+                push!(diagnostics, DiagnosticRecord(
+                    "SUBGRAPH_003_TEMPLATE_NOT_FOUND",
+                    :error,
+                    "subgraph",
+                    s.id,
+                    "template_id",
+                    "Subgraph '$(s.id)' references non-existent template '$(s.template_id)'",
+                    "Define a template with id '$(s.template_id)' or fix template_id reference"
+                ))
+            end
+        end
+    end
+
+    # 2. SUBGRAPH_001_RECURSIVE_CYCLE
+    visited = Dict{String, Int}() # 0=unvisited, 1=in-stack, 2=done
+    for s in spec.subgraphs
+        visited[s.id] = 0
+    end
+
+    function _detect_sub_cycle(curr_id::String, stack::Vector{String})
+        visited[curr_id] = 1
+        push!(stack, curr_id)
+
+        curr_sub = get(subgraphs_by_id, curr_id, nothing)
+        if curr_sub !== nothing && curr_sub.template_id !== nothing && haskey(subgraphs_by_id, curr_sub.template_id)
+            target = curr_sub.template_id
+            if get(visited, target, 0) == 1
+                cycle_str = join(vcat(stack, [target]), " -> ")
+                push!(diagnostics, DiagnosticRecord(
+                    "SUBGRAPH_001_RECURSIVE_CYCLE",
+                    :error,
+                    "subgraph",
+                    curr_id,
+                    "template_id",
+                    "Recursive template/subgraph cycle detected: $cycle_str",
+                    "Break the cyclic template reference in subgraph '$curr_id'"
+                ))
+            elseif get(visited, target, 0) == 0
+                _detect_sub_cycle(target, stack)
+            end
+        end
+
+        pop!(stack)
+        visited[curr_id] = 2
+    end
+
+    for s in spec.subgraphs
+        if get(visited, s.id, 0) == 0
+            _detect_sub_cycle(s.id, String[])
+        end
+    end
+
+    # 3. SUBGRAPH_002_PORT_NOT_FOUND
+    for s in spec.subgraphs
+        avail_elem_ids = Set{String}(s.elements)
+        if s.template_id !== nothing && haskey(templates_by_id, s.template_id)
+            union!(avail_elem_ids, templates_by_id[s.template_id].elements)
+        end
+
+        for ep in s.exposed_ports
+            pid = string(get(ep, "id", get(ep, "name", get(ep, "port_id", ""))))
+            telem = string(get(ep, "target_element", get(ep, "internal_element", get(ep, "element", ""))))
+            tport = string(get(ep, "target_port", get(ep, "internal_port", get(ep, "port", ""))))
+
+            if isempty(telem) || !(telem in avail_elem_ids)
+                push!(diagnostics, DiagnosticRecord(
+                    "SUBGRAPH_002_PORT_NOT_FOUND",
+                    :error,
+                    "subgraph",
+                    s.id,
+                    "exposed_ports",
+                    "Exposed port '$(pid)' references non-existent internal element '$(telem)' in subgraph '$(s.id)'",
+                    "Reference a valid internal element defined in the subgraph or its template"
+                ))
+            else
+                elem_rec = get(elements_by_id, telem, nothing)
+                if elem_rec !== nothing
+                    port_rec = _find_port_on_element(elem_rec, tport)
+                    if port_rec === nothing
+                        push!(diagnostics, DiagnosticRecord(
+                            "SUBGRAPH_002_PORT_NOT_FOUND",
+                            :error,
+                            "subgraph",
+                            s.id,
+                            "exposed_ports",
+                            "Exposed port '$(pid)' references non-existent internal port '$(tport)' on element '$(telem)'",
+                            "Reference an existing port on internal element '$(telem)'"
+                        ))
+                    end
+                end
+            end
+        end
+    end
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Internal Pass 4: Connection & Port Rules
 # ─────────────────────────────────────────────────────────────────────────────
 
 const VALID_KIND_PAIRS = Set{Tuple{Symbol, Symbol}}([
@@ -307,6 +467,56 @@ function _find_port_on_element(elem::ElementRecord, port_id_or_name::String)::Un
     return nothing
 end
 
+function _find_port_on_subgraph(
+    sub::SubgraphRecord,
+    port_id_or_name::String,
+    elements_by_id::Dict{String, ElementRecord},
+    templates_by_id::Dict{String, SubgraphRecord}
+)::Union{PortRecord, Nothing}
+    # Check directly exposed ports
+    for ep in sub.exposed_ports
+        pid = string(get(ep, "id", get(ep, "name", get(ep, "port_id", ""))))
+        if pid == port_id_or_name
+            telem = string(get(ep, "target_element", get(ep, "internal_element", get(ep, "element", ""))))
+            tport = string(get(ep, "target_port", get(ep, "internal_port", get(ep, "port", ""))))
+            if haskey(elements_by_id, telem)
+                internal_port = _find_port_on_element(elements_by_id[telem], tport)
+                if internal_port !== nothing
+                    return internal_port
+                end
+            end
+            kind = Symbol(get(ep, "kind", "flow"))
+            dir = Symbol(get(ep, "direction", "output"))
+            card = Symbol(get(ep, "cardinality", "many"))
+            return PortRecord(pid, pid, dir, kind, "any", card, false, nothing, nothing, Dict{String, Any}())
+        end
+    end
+
+    # Check template exposed ports
+    if sub.template_id !== nothing && haskey(templates_by_id, sub.template_id)
+        tmpl = templates_by_id[sub.template_id]
+        for ep in tmpl.exposed_ports
+            pid = string(get(ep, "id", get(ep, "name", get(ep, "port_id", ""))))
+            if pid == port_id_or_name
+                telem = string(get(ep, "target_element", get(ep, "internal_element", get(ep, "element", ""))))
+                tport = string(get(ep, "target_port", get(ep, "internal_port", get(ep, "port", ""))))
+                if haskey(elements_by_id, telem)
+                    internal_port = _find_port_on_element(elements_by_id[telem], tport)
+                    if internal_port !== nothing
+                        return internal_port
+                    end
+                end
+                kind = Symbol(get(ep, "kind", "flow"))
+                dir = Symbol(get(ep, "direction", "output"))
+                card = Symbol(get(ep, "cardinality", "many"))
+                return PortRecord(pid, pid, dir, kind, "any", card, false, nothing, nothing, Dict{String, Any}())
+            end
+        end
+    end
+
+    return nothing
+end
+
 function _validate_connections_and_ports!(
     diagnostics::Vector{DiagnosticRecord},
     spec::TypedSceneSpec,
@@ -316,6 +526,15 @@ function _validate_connections_and_ports!(
     # Track cardinality connection counts: (elem_id, port_id, direction) => count
     port_connection_counts = Dict{Tuple{String, String, Symbol}, Int}()
 
+    subgraphs_by_id = Dict{String, SubgraphRecord}()
+    templates_by_id = Dict{String, SubgraphRecord}()
+    for s in spec.subgraphs
+        subgraphs_by_id[s.id] = s
+        if s.role == :template
+            templates_by_id[s.id] = s
+        end
+    end
+
     for conn in spec.connections
         if !conn.enabled
             continue
@@ -323,71 +542,81 @@ function _validate_connections_and_ports!(
 
         src_elem = get(elements_by_id, conn.source_element, nothing)
         tgt_elem = get(elements_by_id, conn.target_element, nothing)
+        src_sub = src_elem === nothing ? get(subgraphs_by_id, conn.source_element, nothing) : nothing
+        tgt_sub = tgt_elem === nothing ? get(subgraphs_by_id, conn.target_element, nothing) : nothing
 
-        # 1. Source element existence
-        if src_elem === nothing
+        # 1. Source element / subgraph existence
+        if src_elem === nothing && src_sub === nothing
             push!(diagnostics, DiagnosticRecord(
                 "PORT_001_NOT_FOUND",
                 :error,
                 "connection",
                 conn.id,
                 "source_element",
-                "Source element '$(conn.source_element)' does not exist in elements",
-                "Connect to an existing element"
+                "Source '$(conn.source_element)' does not exist in elements or subgraphs",
+                "Connect to an existing element or subgraph"
             ))
             continue
         end
 
-        # 2. Target element existence
-        if tgt_elem === nothing
+        # 2. Target element / subgraph existence
+        if tgt_elem === nothing && tgt_sub === nothing
             push!(diagnostics, DiagnosticRecord(
                 "PORT_001_NOT_FOUND",
                 :error,
                 "connection",
                 conn.id,
                 "target_element",
-                "Target element '$(conn.target_element)' does not exist in elements",
-                "Connect to an existing element"
+                "Target '$(conn.target_element)' does not exist in elements or subgraphs",
+                "Connect to an existing element or subgraph"
             ))
             continue
         end
 
         # 3. Source port existence
-        src_port = _find_port_on_element(src_elem, conn.source_port)
+        src_port = src_elem !== nothing ?
+            _find_port_on_element(src_elem, conn.source_port) :
+            _find_port_on_subgraph(src_sub, conn.source_port, elements_by_id, templates_by_id)
+
         if src_port === nothing
-            avail_outs = [p.id for p in src_elem.output_ports]
-            fix = isempty(avail_outs) ? "Add output port to source element" : "Connect from '$(avail_outs[1])'"
+            parent_kind = src_elem !== nothing ? "element" : "subgraph"
+            avail_outs = src_elem !== nothing ? [p.id for p in src_elem.output_ports] : [string(get(ep, "id", "")) for ep in src_sub.exposed_ports]
+            fix = isempty(avail_outs) ? "Add output/exposed port to source $parent_kind" : "Connect from '$(avail_outs[1])'"
             push!(diagnostics, DiagnosticRecord(
                 "PORT_001_NOT_FOUND",
                 :error,
                 "connection",
                 conn.id,
                 "source_port",
-                "Source port '$(conn.source_port)' does not exist on element '$(conn.source_element)'",
+                "Source port '$(conn.source_port)' does not exist on $parent_kind '$(conn.source_element)'",
                 fix
             ))
             continue
         end
 
         # 4. Target port existence
-        tgt_port = _find_port_on_element(tgt_elem, conn.target_port)
+        tgt_port = tgt_elem !== nothing ?
+            _find_port_on_element(tgt_elem, conn.target_port) :
+            _find_port_on_subgraph(tgt_sub, conn.target_port, elements_by_id, templates_by_id)
+
         if tgt_port === nothing
-            avail_ins = [p.id for p in tgt_elem.input_ports]
-            fix = isempty(avail_ins) ? "Add input port to target element" : "Connect to '$(avail_ins[1])'"
+            parent_kind = tgt_elem !== nothing ? "element" : "subgraph"
+            avail_ins = tgt_elem !== nothing ? [p.id for p in tgt_elem.input_ports] : [string(get(ep, "id", "")) for ep in tgt_sub.exposed_ports]
+            fix = isempty(avail_ins) ? "Add input/exposed port to target $parent_kind" : "Connect to '$(avail_ins[1])'"
             push!(diagnostics, DiagnosticRecord(
                 "PORT_001_NOT_FOUND",
                 :error,
                 "connection",
                 conn.id,
                 "target_port",
-                "Target port '$(conn.target_port)' does not exist on element '$(conn.target_element)'",
+                "Target port '$(conn.target_port)' does not exist on $parent_kind '$(conn.target_element)'",
                 fix
             ))
             continue
         end
 
         # 5. Port Kinds Compatibility Check
-        is_kind_compatible = (src_port.kind, tgt_port.kind) in VALID_KIND_PAIRS
+        is_kind_compatible = is_connection_compatible(src_port.kind, tgt_port.kind) || ((src_port.kind, tgt_port.kind) in VALID_KIND_PAIRS)
         if !is_kind_compatible
             push!(diagnostics, DiagnosticRecord(
                 "PORT_002_KIND_MISMATCH",
@@ -426,8 +655,10 @@ function _validate_connections_and_ports!(
         end
 
         # Accumulate connection counts for cardinality check
-        src_key = (src_elem.id, src_port.id, :output)
-        tgt_key = (tgt_elem.id, tgt_port.id, :input)
+        src_id = src_elem !== nothing ? src_elem.id : src_sub.id
+        tgt_id = tgt_elem !== nothing ? tgt_elem.id : tgt_sub.id
+        src_key = (src_id, src_port.id, :output)
+        tgt_key = (tgt_id, tgt_port.id, :input)
         port_connection_counts[src_key] = get(port_connection_counts, src_key, 0) + 1
         port_connection_counts[tgt_key] = get(port_connection_counts, tgt_key, 0) + 1
     end
@@ -509,6 +740,10 @@ function _validate_graph_topology!(
     for elem in spec.elements
         flow_adj[elem.id] = Tuple{String, Float64}[]
         flow_degree[elem.id] = 0
+    end
+    for sub in spec.subgraphs
+        flow_adj[sub.id] = Tuple{String, Float64}[]
+        flow_degree[sub.id] = 0
     end
 
     for conn in spec.connections
@@ -685,6 +920,11 @@ const RESERVED_LEVEL_KEYS = Set{String}([
     "id", "name", "elevation", "default_height", "visible"
 ])
 
+const RESERVED_SUBGRAPH_KEYS = Set{String}([
+    "id", "name", "role", "template_id", "template_version", "level_id", "transform",
+    "elements", "connections", "exposed_ports", "parameter_overrides"
+])
+
 const VALID_EXTENSION_KEY_REGEX = r"^[a-zA-Z0-9_\-:/.]+$"
 
 function _check_dict_keys!(diagnostics::Vector{DiagnosticRecord}, ext::AbstractDict, object_kind::String, object_id::String, path_prefix::String, reserved::Set{String})
@@ -761,5 +1001,10 @@ function _validate_extensions!(diagnostics::Vector{DiagnosticRecord}, spec::Type
     # 3. Connections
     for conn in spec.connections
         _check_dict_keys!(diagnostics, conn.extensions, "connection", conn.id, "connections[$(conn.id)].extensions", RESERVED_CONNECTION_KEYS)
+    end
+
+    # 4. Subgraphs
+    for s in spec.subgraphs
+        _check_dict_keys!(diagnostics, s.extensions, "subgraph", s.id, "subgraphs[$(s.id)].extensions", RESERVED_SUBGRAPH_KEYS)
     end
 end

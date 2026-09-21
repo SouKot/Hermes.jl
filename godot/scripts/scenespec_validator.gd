@@ -40,16 +40,19 @@ func validate_document(doc: RefCounted, strict: bool = false, check_required: Va
 	# 2. Spatial Constraints
 	_validate_spatial_constraints(doc, diagnostics, elems_by_id, levels_by_id)
 
-	# 3. Connection & Port Rules
+	# 3. Subgraph & Template Rules
+	_validate_subgraphs(doc, diagnostics, elems_by_id)
+
+	# 4. Connection & Port Rules
 	_validate_connections_and_ports(doc, diagnostics, elems_by_id, do_check_req)
 
-	# 4. Graph Topology & Cycle / Livelock Detection
+	# 5. Graph Topology & Cycle / Livelock Detection
 	_validate_graph_topology(doc, diagnostics, elems_by_id)
 
-	# 5. ABM Config Rules
+	# 6. ABM Config Rules
 	_validate_abm_config(doc, diagnostics)
 
-	# 6. Extension Governance Rules
+	# 7. Extension Governance Rules
 	_validate_extensions(doc, diagnostics)
 
 	var error_count := 0
@@ -167,6 +170,25 @@ func _validate_id_uniqueness(doc: RefCounted, diagnostics: Array, elems_by_id: D
 			seen_level_ids[lid] = true
 			levels_by_id[lid] = lvl
 
+	# Check subgraphs
+	var seen_sub_ids := {}
+	var subs_val = _prop(doc, "subgraphs", [])
+	var subs: Array = subs_val if subs_val is Array else []
+	for s in subs:
+		var sid: String = str(_prop(s, "id", ""))
+		if seen_sub_ids.has(sid) or seen_elem_ids.has(sid):
+			diagnostics.append({
+				"rule_id": "ID_001_DUPLICATE",
+				"severity": "error",
+				"object_kind": "subgraph",
+				"object_id": sid,
+				"property_path": "id",
+				"message": "Duplicate subgraph ID '%s' found in document" % sid,
+				"suggested_fix": "Assign a unique identifier to the subgraph"
+			})
+		else:
+			seen_sub_ids[sid] = true
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. Spatial Level Constraints
 # ─────────────────────────────────────────────────────────────────────────────
@@ -244,9 +266,150 @@ func _validate_spatial_constraints(doc: RefCounted, diagnostics: Array, elems_by
 						"message": "Vertical connector '%s' references invalid, non-existent, or identical levels" % eid,
 						"suggested_fix": "Specify valid, distinct source_level_id and target_level_id with height > 0"
 					})
+				else:
+					var sl = levels_by_id[s_str]
+					var tl = levels_by_id[t_str]
+					var sl_elev: float = float(_prop(sl, "elevation", 0.0))
+					var tl_elev: float = float(_prop(tl, "elevation", 0.0))
+					var min_elev: float = min(sl_elev, tl_elev)
+					var max_elev: float = max(sl_elev, tl_elev)
+					var connector_top: float = elem_z + h
+					if elem_z > min_elev + 1e-4 or connector_top < max_elev - 1e-4:
+						diagnostics.append({
+							"rule_id": "SPATIAL_003_CONNECTOR_INACCESSIBLE",
+							"severity": "error",
+							"object_kind": "element",
+							"object_id": eid,
+							"property_path": "vertical_extent",
+							"message": "Vertical connector '%s' span [Z=%f, %f] does not span elevations of levels '%s' (elev %f) and '%s' (elev %f)" % [eid, elem_z, connector_top, s_str, sl_elev, t_str, tl_elev],
+							"suggested_fix": "Adjust connector position Z and height to bridge both level elevations"
+						})
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. Connection & Port Rules
+# 3. Subgraph & Template Rules
+# ─────────────────────────────────────────────────────────────────────────────
+
+func _validate_subgraphs(doc: RefCounted, diagnostics: Array, elems_by_id: Dictionary) -> void:
+	var subs_val = _prop(doc, "subgraphs", [])
+	var subs: Array = subs_val if subs_val is Array else []
+	if subs.is_empty():
+		return
+
+	var subgraphs_by_id := {}
+	var templates_by_id := {}
+	for s in subs:
+		var sid: String = str(_prop(s, "id", ""))
+		subgraphs_by_id[sid] = s
+		if str(_prop(s, "role", "group")) == "template":
+			templates_by_id[sid] = s
+
+	# 1. SUBGRAPH_003_TEMPLATE_NOT_FOUND
+	for s in subs:
+		var sid: String = str(_prop(s, "id", ""))
+		var tmpl_id = _prop(s, "template_id")
+		if tmpl_id != null and str(tmpl_id) != "":
+			var tid := str(tmpl_id)
+			if not templates_by_id.has(tid):
+				diagnostics.append({
+					"rule_id": "SUBGRAPH_003_TEMPLATE_NOT_FOUND",
+					"severity": "error",
+					"object_kind": "subgraph",
+					"object_id": sid,
+					"property_path": "template_id",
+					"message": "Subgraph '%s' references non-existent template '%s'" % [sid, tid],
+					"suggested_fix": "Define a template with id '%s' or fix the template reference" % tid
+				})
+
+	# 2. SUBGRAPH_001_RECURSIVE_CYCLE
+	var visited := {}
+	for s in subs:
+		visited[str(_prop(s, "id", ""))] = 0
+
+	for s in subs:
+		var sid: String = str(_prop(s, "id", ""))
+		if visited.get(sid, 0) == 0:
+			var stack: Array = []
+			var curr: Variant = sid
+			while curr != null:
+				if visited.get(curr, 0) == 1:
+					var cycle_str := " -> ".join(stack) + " -> " + str(curr)
+					diagnostics.append({
+						"rule_id": "SUBGRAPH_001_RECURSIVE_CYCLE",
+						"severity": "error",
+						"object_kind": "subgraph",
+						"object_id": str(curr),
+						"property_path": "template_id",
+						"message": "Recursive template/subgraph cycle detected: %s" % cycle_str,
+						"suggested_fix": "Break the cyclic template reference in subgraph '%s'" % str(curr)
+					})
+					break
+				elif visited.get(curr, 0) == 2:
+					break
+
+				visited[curr] = 1
+				stack.append(curr)
+
+				var curr_sub = subgraphs_by_id.get(curr, null)
+				var next_target: Variant = null
+				if curr_sub != null:
+					var tid = _prop(curr_sub, "template_id")
+					if tid != null and subgraphs_by_id.has(str(tid)):
+						next_target = str(tid)
+				curr = next_target
+
+			for node in stack:
+				visited[node] = 2
+
+	# 3. SUBGRAPH_002_PORT_NOT_FOUND
+	for s in subs:
+		var sid: String = str(_prop(s, "id", ""))
+		var avail_elems := {}
+		var s_elems = _prop(s, "elements", [])
+		if s_elems is Array:
+			for eid in s_elems:
+				avail_elems[str(eid)] = true
+
+		var tmpl_id = _prop(s, "template_id")
+		if tmpl_id != null and templates_by_id.has(str(tmpl_id)):
+			var tmpl = templates_by_id[str(tmpl_id)]
+			var t_elems = _prop(tmpl, "elements", [])
+			if t_elems is Array:
+				for eid in t_elems:
+					avail_elems[str(eid)] = true
+
+		var exposed = _prop(s, "exposed_ports", [])
+		if exposed is Array:
+			for ep in exposed:
+				if ep is Dictionary:
+					var pid := str(ep.get("id", ep.get("name", ep.get("port_id", ""))))
+					var telem := str(ep.get("target_element", ep.get("internal_element", ep.get("element", ""))))
+					var tport := str(ep.get("target_port", ep.get("internal_port", ep.get("port", ""))))
+
+					if telem == "" or not avail_elems.has(telem):
+						diagnostics.append({
+							"rule_id": "SUBGRAPH_002_PORT_NOT_FOUND",
+							"severity": "error",
+							"object_kind": "subgraph",
+							"object_id": sid,
+							"property_path": "exposed_ports",
+							"message": "Exposed port '%s' references non-existent internal element '%s' in subgraph '%s'" % [pid, telem, sid],
+							"suggested_fix": "Reference a valid internal element defined in the subgraph or its template"
+						})
+					elif elems_by_id.has(telem):
+						var p = _find_port(elems_by_id[telem], tport)
+						if p == null:
+							diagnostics.append({
+								"rule_id": "SUBGRAPH_002_PORT_NOT_FOUND",
+								"severity": "error",
+								"object_kind": "subgraph",
+								"object_id": sid,
+								"property_path": "exposed_ports",
+								"message": "Exposed port '%s' references non-existent internal port '%s' on element '%s'" % [pid, tport, telem],
+								"suggested_fix": "Reference an existing port on internal element '%s'" % telem
+							})
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Connection & Port Rules
 # ─────────────────────────────────────────────────────────────────────────────
 
 func _find_port(elem: Variant, port_id: String) -> Variant:
@@ -258,8 +421,66 @@ func _find_port(elem: Variant, port_id: String) -> Variant:
 					return p
 	return null
 
+func _find_subgraph_port(sub: Variant, port_id: String, elems_by_id: Dictionary, templates_by_id: Dictionary) -> Dictionary:
+	var exposed = _prop(sub, "exposed_ports", [])
+	if exposed is Array:
+		for ep in exposed:
+			if ep is Dictionary and str(ep.get("id", ep.get("name", ep.get("port_id", "")))) == port_id:
+				var telem := str(ep.get("target_element", ep.get("internal_element", ep.get("element", ""))))
+				var tport := str(ep.get("target_port", ep.get("internal_port", ep.get("port", ""))))
+				if elems_by_id.has(telem):
+					var p = _find_port(elems_by_id[telem], tport)
+					if p != null:
+						return {
+							"id": port_id,
+							"kind": str(_prop(p, "kind", "flow")),
+							"direction": str(_prop(p, "direction", "output")),
+							"cardinality": str(_prop(p, "cardinality", "many"))
+						}
+				return {
+					"id": port_id,
+					"kind": str(ep.get("kind", "flow")),
+					"direction": str(ep.get("direction", "output")),
+					"cardinality": str(ep.get("cardinality", "many"))
+				}
+	var tmpl_id = _prop(sub, "template_id")
+	if tmpl_id != null and templates_by_id.has(str(tmpl_id)):
+		var tmpl = templates_by_id[str(tmpl_id)]
+		var tmpl_exposed = _prop(tmpl, "exposed_ports", [])
+		if tmpl_exposed is Array:
+			for ep in tmpl_exposed:
+				if ep is Dictionary and str(ep.get("id", ep.get("name", ep.get("port_id", "")))) == port_id:
+					var telem := str(ep.get("target_element", ep.get("internal_element", ep.get("element", ""))))
+					var tport := str(ep.get("target_port", ep.get("internal_port", ep.get("port", ""))))
+					if elems_by_id.has(telem):
+						var p = _find_port(elems_by_id[telem], tport)
+						if p != null:
+							return {
+								"id": port_id,
+								"kind": str(_prop(p, "kind", "flow")),
+								"direction": str(_prop(p, "direction", "output")),
+								"cardinality": str(_prop(p, "cardinality", "many"))
+							}
+					return {
+						"id": port_id,
+						"kind": str(ep.get("kind", "flow")),
+						"direction": str(ep.get("direction", "output")),
+						"cardinality": str(ep.get("cardinality", "many"))
+					}
+	return {}
+
 func _validate_connections_and_ports(doc: RefCounted, diagnostics: Array, elems_by_id: Dictionary, check_required: bool) -> void:
 	var port_connection_counts := {}
+
+	var subs_val = _prop(doc, "subgraphs", [])
+	var subs: Array = subs_val if subs_val is Array else []
+	var subgraphs_by_id := {}
+	var templates_by_id := {}
+	for s in subs:
+		var sid: String = str(_prop(s, "id", ""))
+		subgraphs_by_id[sid] = s
+		if str(_prop(s, "role", "group")) == "template":
+			templates_by_id[sid] = s
 
 	var conns_val = _prop(doc, "connections", [])
 	var conns: Array = conns_val if conns_val is Array else []
@@ -273,84 +494,129 @@ func _validate_connections_and_ports(doc: RefCounted, diagnostics: Array, elems_
 		var src_pid: String = str(_prop(conn, "source_port", ""))
 		var tgt_pid: String = str(_prop(conn, "target_port", ""))
 
-		# 1. Source element existence
-		if not elems_by_id.has(src_eid):
+		# 1. Source element / subgraph existence
+		if not elems_by_id.has(src_eid) and not subgraphs_by_id.has(src_eid):
 			diagnostics.append({
 				"rule_id": "PORT_001_NOT_FOUND",
 				"severity": "error",
 				"object_kind": "connection",
 				"object_id": cid,
 				"property_path": "source_element",
-				"message": "Source element '%s' does not exist in elements" % src_eid,
-				"suggested_fix": "Connect to an existing element"
+				"message": "Source '%s' does not exist in elements or subgraphs" % src_eid,
+				"suggested_fix": "Connect to an existing element or subgraph"
 			})
 			continue
 
-		# 2. Target element existence
-		if not elems_by_id.has(tgt_eid):
+		# 2. Target element / subgraph existence
+		if not elems_by_id.has(tgt_eid) and not subgraphs_by_id.has(tgt_eid):
 			diagnostics.append({
 				"rule_id": "PORT_001_NOT_FOUND",
 				"severity": "error",
 				"object_kind": "connection",
 				"object_id": cid,
 				"property_path": "target_element",
-				"message": "Target element '%s' does not exist in elements" % tgt_eid,
-				"suggested_fix": "Connect to an existing element"
+				"message": "Target '%s' does not exist in elements or subgraphs" % tgt_eid,
+				"suggested_fix": "Connect to an existing element or subgraph"
 			})
 			continue
 
-		var src_elem = elems_by_id[src_eid]
-		var tgt_elem = elems_by_id[tgt_eid]
+		var src_port = null
+		var s_kind := "flow"
+		var s_dir := "output"
+		var s_card := "many"
+		if elems_by_id.has(src_eid):
+			src_port = _find_port(elems_by_id[src_eid], src_pid)
+			if src_port != null:
+				s_kind = str(_prop(src_port, "kind", "flow"))
+				s_dir = str(_prop(src_port, "direction", "output"))
+				s_card = str(_prop(src_port, "cardinality", "many"))
+		elif subgraphs_by_id.has(src_eid):
+			var sp_info := _find_subgraph_port(subgraphs_by_id[src_eid], src_pid, elems_by_id, templates_by_id)
+			if not sp_info.is_empty():
+				src_port = sp_info
+				s_kind = sp_info["kind"]
+				s_dir = sp_info["direction"]
+				s_card = sp_info["cardinality"]
 
-		# 3. Source port existence
-		var src_port = _find_port(src_elem, src_pid)
 		if src_port == null:
-			var outs_val = _prop(src_elem, "output_ports", [])
-			var outs: Array = outs_val if outs_val is Array else []
-			var fix := "Add output port to source element"
-			if not outs.is_empty():
-				fix = "Connect from '%s'" % str(_prop(outs[0], "id", ""))
+			var parent_kind := "element" if elems_by_id.has(src_eid) else "subgraph"
+			var avail_outs: Array = []
+			if elems_by_id.has(src_eid):
+				var outs_val = _prop(elems_by_id[src_eid], "output_ports", [])
+				if outs_val is Array:
+					for p in outs_val:
+						avail_outs.append(str(_prop(p, "id", "")))
+			elif subgraphs_by_id.has(src_eid):
+				var exp_val = _prop(subgraphs_by_id[src_eid], "exposed_ports", [])
+				if exp_val is Array:
+					for ep in exp_val:
+						if ep is Dictionary:
+							avail_outs.append(str(ep.get("id", ep.get("name", ""))))
+			var fix := "Add output/exposed port to source %s" % parent_kind if avail_outs.is_empty() else "Connect from '%s'" % str(avail_outs[0])
 			diagnostics.append({
 				"rule_id": "PORT_001_NOT_FOUND",
 				"severity": "error",
 				"object_kind": "connection",
 				"object_id": cid,
 				"property_path": "source_port",
-				"message": "Source port '%s' does not exist on element '%s'" % [src_pid, src_eid],
+				"message": "Source port '%s' does not exist on %s '%s'" % [src_pid, parent_kind, src_eid],
 				"suggested_fix": fix
 			})
 			continue
 
-		# 4. Target port existence
-		var tgt_port = _find_port(tgt_elem, tgt_pid)
+		var tgt_port = null
+		var t_kind := "flow"
+		var t_dir := "input"
+		var t_card := "many"
+		if elems_by_id.has(tgt_eid):
+			tgt_port = _find_port(elems_by_id[tgt_eid], tgt_pid)
+			if tgt_port != null:
+				t_kind = str(_prop(tgt_port, "kind", "flow"))
+				t_dir = str(_prop(tgt_port, "direction", "input"))
+				t_card = str(_prop(tgt_port, "cardinality", "many"))
+		elif subgraphs_by_id.has(tgt_eid):
+			var tp_info := _find_subgraph_port(subgraphs_by_id[tgt_eid], tgt_pid, elems_by_id, templates_by_id)
+			if not tp_info.is_empty():
+				tgt_port = tp_info
+				t_kind = tp_info["kind"]
+				t_dir = tp_info["direction"]
+				t_card = tp_info["cardinality"]
+
 		if tgt_port == null:
-			var ins_val = _prop(tgt_elem, "input_ports", [])
-			var ins: Array = ins_val if ins_val is Array else []
-			var fix := "Add input port to target element"
-			if not ins.is_empty():
-				fix = "Connect to '%s'" % str(_prop(ins[0], "id", ""))
+			var parent_kind := "element" if elems_by_id.has(tgt_eid) else "subgraph"
+			var avail_ins: Array = []
+			if elems_by_id.has(tgt_eid):
+				var ins_val = _prop(elems_by_id[tgt_eid], "input_ports", [])
+				if ins_val is Array:
+					for p in ins_val:
+						avail_ins.append(str(_prop(p, "id", "")))
+			elif subgraphs_by_id.has(tgt_eid):
+				var exp_val = _prop(subgraphs_by_id[tgt_eid], "exposed_ports", [])
+				if exp_val is Array:
+					for ep in exp_val:
+						if ep is Dictionary:
+							avail_ins.append(str(ep.get("id", ep.get("name", ""))))
+			var fix := "Add input/exposed port to target %s" % parent_kind if avail_ins.is_empty() else "Connect to '%s'" % str(avail_ins[0])
 			diagnostics.append({
 				"rule_id": "PORT_001_NOT_FOUND",
 				"severity": "error",
 				"object_kind": "connection",
 				"object_id": cid,
 				"property_path": "target_port",
-				"message": "Target port '%s' does not exist on element '%s'" % [tgt_pid, tgt_eid],
+				"message": "Target port '%s' does not exist on %s '%s'" % [tgt_pid, parent_kind, tgt_eid],
 				"suggested_fix": fix
 			})
 			continue
 
-		var s_kind: String = str(_prop(src_port, "kind", "flow"))
-		var t_kind: String = str(_prop(tgt_port, "kind", "flow"))
-		var s_dir: String = str(_prop(src_port, "direction", "output"))
-		var t_dir: String = str(_prop(tgt_port, "direction", "input"))
-
 		# 5. Port Kinds Compatibility
 		var is_compatible := false
-		for pair in VALID_KIND_PAIRS:
-			if pair[0] == s_kind and pair[1] == t_kind:
-				is_compatible = true
-				break
+		if s_kind == t_kind:
+			is_compatible = true
+		else:
+			for pair in VALID_KIND_PAIRS:
+				if pair[0] == s_kind and pair[1] == t_kind:
+					is_compatible = true
+					break
 
 		if not is_compatible:
 			diagnostics.append({
@@ -466,6 +732,12 @@ func _validate_graph_topology(doc: RefCounted, diagnostics: Array, elems_by_id: 
 		var eid: String = str(_prop(elem, "id", ""))
 		flow_adj[eid] = []
 		flow_degree[eid] = 0
+	var subs_val = _prop(doc, "subgraphs", [])
+	var subs: Array = subs_val if subs_val is Array else []
+	for sub in subs:
+		var sid: String = str(_prop(sub, "id", ""))
+		flow_adj[sid] = []
+		flow_degree[sid] = 0
 
 	var conns_val = _prop(doc, "connections", [])
 	var conns: Array = conns_val if conns_val is Array else []
@@ -638,6 +910,11 @@ const RESERVED_LEVEL_KEYS := [
 	"id", "name", "elevation", "default_height", "visible"
 ]
 
+const RESERVED_SUBGRAPH_KEYS := [
+	"id", "name", "role", "template_id", "template_version", "level_id", "transform",
+	"elements", "connections", "exposed_ports", "parameter_overrides"
+]
+
 static var _ext_key_regex: RegEx = null
 
 static func _get_ext_key_regex() -> RegEx:
@@ -727,4 +1004,10 @@ func _validate_extensions(doc: RefCounted, diagnostics: Array) -> void:
 		for conn in conns_val:
 			var cid: String = str(_prop(conn, "id", ""))
 			_check_dict_keys(diagnostics, _prop(conn, "extensions"), "connection", cid, "connections[%s].extensions" % cid, RESERVED_CONNECTION_KEYS)
+
+	var subs_val = _prop(doc, "subgraphs", [])
+	if subs_val is Array:
+		for s in subs_val:
+			var sid: String = str(_prop(s, "id", ""))
+			_check_dict_keys(diagnostics, _prop(s, "extensions"), "subgraph", sid, "subgraphs[%s].extensions" % sid, RESERVED_SUBGRAPH_KEYS)
 
