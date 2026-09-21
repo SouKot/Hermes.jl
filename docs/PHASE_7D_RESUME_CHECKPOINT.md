@@ -4,7 +4,8 @@
 **Workspace**: `/run/media/sourabh/SANDISK-2TB/antigravity/ABM`  
 **Git Branch**: `main`  
 **Current Milestone**: Phase 7D-04 Completed & Accepted (100% Tests Passing, Zero Regressions)  
-**Next Immediate Milestone**: Phase 7D-05 (Authoring Shell & Component Catalog)
+**Next Immediate Milestone**: Phase 7D-05 (Authoring Shell & Component Catalog)  
+**Detailed Walkthrough**: [`docs/walkthroughs/phase_07d_scenespec_authoring_core.md`](walkthroughs/phase_07d_scenespec_authoring_core.md)
 
 ---
 
