@@ -58,8 +58,7 @@ func _register_defaults() -> void:
 		{"id": "speed_signal", "kind": "signal", "direction": "input", "cardinality": "one", "name": "Speed Signal"}
 	]
 	conv.default_output_ports = [
-		{"id": "flow_out", "kind": "flow", "direction": "output", "cardinality": "one", "name": "Flow Out"},
-		{"id": "event_out", "kind": "event", "direction": "output", "cardinality": "many", "name": "Events"}
+		{"id": "flow_out", "kind": "flow", "direction": "output", "cardinality": "one", "name": "Flow Out"}
 	]
 	conv.default_metric_ports = [
 		{"id": "occupancy", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Occupancy"},
@@ -86,8 +85,7 @@ func _register_defaults() -> void:
 		{"id": "flow_in", "kind": "flow", "direction": "input", "cardinality": "many", "name": "Flow In"}
 	]
 	queue.default_output_ports = [
-		{"id": "flow_out", "kind": "flow", "direction": "output", "cardinality": "one", "name": "Flow Out"},
-		{"id": "event_out", "kind": "event", "direction": "output", "cardinality": "many", "name": "Events"}
+		{"id": "flow_out", "kind": "flow", "direction": "output", "cardinality": "one", "name": "Flow Out"}
 	]
 	queue.default_metric_ports = [
 		{"id": "length", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Queue Length"},
@@ -114,8 +112,7 @@ func _register_defaults() -> void:
 		{"id": "pause_signal", "kind": "signal", "direction": "input", "cardinality": "one", "name": "Pause Signal"}
 	]
 	server.default_output_ports = [
-		{"id": "flow_out", "kind": "flow", "direction": "output", "cardinality": "one", "name": "Flow Out"},
-		{"id": "event_out", "kind": "event", "direction": "output", "cardinality": "many", "name": "Events"}
+		{"id": "flow_out", "kind": "flow", "direction": "output", "cardinality": "one", "name": "Flow Out"}
 	]
 	server.default_metric_ports = [
 		{"id": "utilization", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Utilization"},
@@ -139,8 +136,7 @@ func _register_defaults() -> void:
 	source.color = Color("#27ae60")
 	source.default_input_ports = []
 	source.default_output_ports = [
-		{"id": "flow_out", "kind": "flow", "direction": "output", "cardinality": "one", "name": "Flow Out"},
-		{"id": "event_out", "kind": "event", "direction": "output", "cardinality": "many", "name": "Events"}
+		{"id": "flow_out", "kind": "flow", "direction": "output", "cardinality": "one", "name": "Flow Out"}
 	]
 	source.default_metric_ports = [
 		{"id": "generation_count", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Generated Count"}
@@ -164,9 +160,7 @@ func _register_defaults() -> void:
 	sink.default_input_ports = [
 		{"id": "flow_in", "kind": "flow", "direction": "input", "cardinality": "many", "name": "Flow In"}
 	]
-	sink.default_output_ports = [
-		{"id": "event_out", "kind": "event", "direction": "output", "cardinality": "many", "name": "Events"}
-	]
+	sink.default_output_ports = []
 	sink.default_metric_ports = [
 		{"id": "completed_count", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Completed Count"}
 	]

@@ -17,7 +17,7 @@ const CAD_WALL_COLOR := Color("#2e4359")
 const ROOM_LABEL_COLOR := Color("#415b76")
 const FLOW_WIRE_COLOR := Color("#2ecc71")
 const SIGNAL_WIRE_COLOR := Color("#f39c12")
-const DRAG_WIRE_COLOR := Color("#52c7a5")
+const INCOMPATIBLE_WIRE_COLOR := Color("#e74c3c")
 
 var doc_store: DocumentStore
 var _block_nodes: Dictionary = {} # element_id -> SimVizAuthoringBlockNode
@@ -36,6 +36,9 @@ var _wire_source_kind: String = ""
 var _wire_source_is_output: bool = true
 var _wire_source_pos: Vector2 = Vector2.ZERO
 var _wire_current_mouse: Vector2 = Vector2.ZERO
+var _wire_hovered_elem: String = ""
+var _wire_hovered_port: String = ""
+var _wire_is_compatible: bool = false
 
 func _init(p_store: DocumentStore = null) -> void:
 	doc_store = p_store
@@ -71,7 +74,6 @@ func rebuild_blocks() -> void:
 		b.block_selected.connect(_on_block_selected)
 		b.block_moved.connect(_on_block_moved)
 		b.port_drag_started.connect(_on_port_drag_started)
-		b.port_drag_ended.connect(_on_port_drag_ended)
 		b.add_port_requested.connect(_on_add_port_requested)
 
 	queue_redraw()
@@ -113,49 +115,136 @@ func _on_port_drag_started(elem_id: String, port_id: String, port_kind: String, 
 	_wire_source_is_output = is_output
 	_wire_source_pos = global_pos - global_position
 	_wire_current_mouse = _wire_source_pos
+	_wire_hovered_elem = ""
+	_wire_hovered_port = ""
+	_wire_is_compatible = false
 	queue_redraw()
 
-func _on_port_drag_ended(target_elem: String, target_port: String) -> void:
+func _input(event: InputEvent) -> void:
 	if not _is_dragging_wire:
 		return
 
-	if target_elem != _wire_source_elem:
-		# Validate connection semantics
-		var can_connect := false
-		var src_elem := _wire_source_elem
-		var src_port := _wire_source_port
-		var tgt_elem := target_elem
-		var tgt_port := target_port
+	if event is InputEventMouseMotion:
+		var mm := event as InputEventMouseMotion
+		_wire_current_mouse = get_local_mouse_position() if is_inside_tree() else mm.position
+		_update_wire_hover()
+		queue_redraw()
+		if is_inside_tree() and get_viewport() != null:
+			get_viewport().set_input_as_handled()
 
-		# Flow Out -> Flow In
-		if _wire_source_kind == "flow" and _wire_source_is_output:
-			can_connect = true
-		# Metric Out -> Signal In
-		elif _wire_source_kind == "metric" and _wire_source_is_output:
-			can_connect = true
-		elif not _wire_source_is_output:
-			# Swapped drag direction
-			src_elem = target_elem
-			src_port = target_port
-			tgt_elem = _wire_source_elem
-			tgt_port = _wire_source_port
-			can_connect = true
+	elif event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		if mb.button_index == MOUSE_BUTTON_LEFT and not mb.pressed:
+			_finish_wire_drag()
+			if is_inside_tree() and get_viewport() != null:
+				get_viewport().set_input_as_handled()
+		elif mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
+			_cancel_wire_drag()
+			if is_inside_tree() and get_viewport() != null:
+				get_viewport().set_input_as_handled()
 
-		if can_connect and doc_store != null:
-			var conn := SceneTypes.SceneConnection.new()
-			conn.id = "%s_%s__%s_%s" % [src_elem, src_port, tgt_elem, tgt_port]
-			conn.source_element = src_elem
-			conn.source_port = src_port
-			conn.target_element = tgt_elem
-			conn.target_port = tgt_port
-			conn.link_type = _wire_source_kind
-			doc_store.add_connection(conn)
-			connection_created.emit(conn)
+	elif event is InputEventKey:
+		var ik := event as InputEventKey
+		if ik.pressed and ik.keycode == KEY_ESCAPE:
+			_cancel_wire_drag()
+			if is_inside_tree() and get_viewport() != null:
+				get_viewport().set_input_as_handled()
 
+func _update_wire_hover() -> void:
+	var mouse_gpos := get_global_mouse_position() if is_inside_tree() else global_position + _wire_current_mouse
+	var prev_hover_elem := _wire_hovered_elem
+	var prev_hover_port := _wire_hovered_port
+
+	_wire_hovered_elem = ""
+	_wire_hovered_port = ""
+	_wire_is_compatible = false
+
+	for eid in _block_nodes.keys():
+		if eid == _wire_source_elem:
+			continue
+		var b: BlockNode = _block_nodes[eid]
+		var lpos: Vector2 = b.to_local(mouse_gpos)
+		var hit_pid: String = b._hit_test_port(lpos)
+		if not hit_pid.is_empty():
+			var p_info: Dictionary = b.get_port_info(hit_pid)
+			var tgt_kind: String = str(p_info.get("kind", ""))
+			var tgt_is_out: bool = bool(p_info.get("is_output", false))
+
+			# Flow Out -> Flow In (or reverse)
+			if _wire_source_kind == "flow" and tgt_kind == "flow":
+				if (_wire_source_is_output and not tgt_is_out) or (not _wire_source_is_output and tgt_is_out):
+					_wire_is_compatible = true
+			# Metric Out -> Signal In
+			elif _wire_source_kind == "metric" and _wire_source_is_output and tgt_kind in ["signal", "control"] and not tgt_is_out:
+				_wire_is_compatible = true
+			# Signal In <- Metric Out
+			elif _wire_source_kind in ["signal", "control"] and not _wire_source_is_output and tgt_kind == "metric" and tgt_is_out:
+				_wire_is_compatible = true
+
+			_wire_hovered_elem = eid
+			_wire_hovered_port = hit_pid
+			# Snap endpoint to target socket center
+			_wire_current_mouse = b.get_port_global_position(hit_pid) - global_position
+			break
+
+	# Update visual port hover halo on block nodes
+	if prev_hover_elem != _wire_hovered_elem or prev_hover_port != _wire_hovered_port:
+		if _block_nodes.has(prev_hover_elem):
+			_block_nodes[prev_hover_elem].set_hovered_port("")
+		if _block_nodes.has(_wire_hovered_elem):
+			_block_nodes[_wire_hovered_elem].set_hovered_port(_wire_hovered_port)
+
+func _finish_wire_drag() -> void:
+	if _wire_is_compatible and not _wire_hovered_elem.is_empty() and not _wire_hovered_port.is_empty():
+		_create_connection(
+			_wire_source_elem, _wire_source_port, _wire_source_kind, _wire_source_is_output,
+			_wire_hovered_elem, _wire_hovered_port
+		)
+	_cancel_wire_drag()
+
+func _cancel_wire_drag() -> void:
+	if _block_nodes.has(_wire_hovered_elem):
+		_block_nodes[_wire_hovered_elem].set_hovered_port("")
 	_is_dragging_wire = false
+	_wire_hovered_elem = ""
+	_wire_hovered_port = ""
+	_wire_is_compatible = false
 	queue_redraw()
 
-func _on_add_port_requested(elem_id: String, bay_type: String) -> void:
+func _create_connection(src_e: String, src_p: String, src_kind: String, src_is_out: bool, tgt_e: String, tgt_p: String) -> void:
+	var from_elem := src_e
+	var from_port := src_p
+	var to_elem := tgt_e
+	var to_port := tgt_p
+	var link_type := "flow" if src_kind == "flow" else "signal"
+
+	# Normalize direction: source is output, target is input
+	if not src_is_out:
+		from_elem = tgt_e
+		from_port = tgt_p
+		to_elem = src_e
+		to_port = src_p
+
+	# Avoid duplicate connection
+	if doc_store != null and doc_store.active_document != null:
+		for c in doc_store.active_document.connections:
+			if c.source_element == from_elem and c.source_port == from_port and c.target_element == to_elem and c.target_port == to_port:
+				return
+
+		var conn := SceneTypes.SceneConnection.new()
+		conn.id = "%s_%s__%s_%s" % [from_elem, from_port, to_elem, to_port]
+		conn.source_element = from_elem
+		conn.source_port = from_port
+		conn.target_element = to_elem
+		conn.target_port = to_port
+		conn.link_type = link_type
+
+		doc_store.add_connection(conn)
+		connection_created.emit(conn)
+
+	queue_redraw()
+
+func _on_add_port_requested(elem_id: String, bay_action: String) -> void:
 	if doc_store == null:
 		return
 	var elem := doc_store.get_element(elem_id)
@@ -163,24 +252,50 @@ func _on_add_port_requested(elem_id: String, bay_type: String) -> void:
 		return
 
 	var port := SceneTypes.ScenePort.new()
-	if bay_type == "flow":
-		var count := elem.output_ports.size() + 1
-		port.id = "flow_out_%d" % count
-		port.kind = "flow"
-		port.direction = "output"
-		port.cardinality = "one"
-		port.name = "Flow Out %d" % count
-	else:
-		# Control bay: alternate metric and signal
-		var count := elem.metric_ports.size() + 1
-		port.id = "metric_out_%d" % count
-		port.kind = "metric"
-		port.direction = "output"
-		port.cardinality = "many"
-		port.name = "Metric %d" % count
+	match bay_action:
+		"flow_in":
+			var count := _count_ports(elem.input_ports, "flow") + 1
+			port.id = "flow_in_%d" % count
+			port.kind = "flow"
+			port.direction = "input"
+			port.cardinality = "one"
+			port.name = "Flow In %d" % count
+			elem.input_ports.append(port)
+		"flow_out":
+			var count := _count_ports(elem.output_ports, "flow") + 1
+			port.id = "flow_out_%d" % count
+			port.kind = "flow"
+			port.direction = "output"
+			port.cardinality = "one"
+			port.name = "Flow Out %d" % count
+			elem.output_ports.append(port)
+		"signal_in":
+			var count := _count_ports(elem.input_ports, "signal") + 1
+			port.id = "signal_in_%d" % count
+			port.kind = "signal"
+			port.direction = "input"
+			port.cardinality = "one"
+			port.name = "Signal %d" % count
+			elem.input_ports.append(port)
+		"metric_out":
+			var count := elem.metric_ports.size() + 1
+			port.id = "metric_out_%d" % count
+			port.kind = "metric"
+			port.direction = "output"
+			port.cardinality = "many"
+			port.name = "Metric %d" % count
+			elem.metric_ports.append(port)
 
-	doc_store.add_port_to_element(elem_id, port)
+	doc_store.is_dirty = true
+	doc_store.validate()
 	rebuild_blocks()
+
+func _count_ports(ports_arr: Array, kind: String) -> int:
+	var c := 0
+	for p in ports_arr:
+		if p.kind == kind:
+			c += 1
+	return c
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
@@ -199,20 +314,12 @@ func _gui_input(event: InputEvent) -> void:
 		elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			_adjust_zoom(0.9, mb.position)
 			accept_event()
-		elif mb.button_index == MOUSE_BUTTON_LEFT and not mb.pressed and _is_dragging_wire:
-			_is_dragging_wire = false
-			queue_redraw()
-			accept_event()
 
 	elif event is InputEventMouseMotion:
 		var mm := event as InputEventMouseMotion
 		if _panning:
 			pan_offset = mm.position - _pan_start
 			_update_blocks_transform()
-			queue_redraw()
-			accept_event()
-		elif _is_dragging_wire:
-			_wire_current_mouse = mm.position
 			queue_redraw()
 			accept_event()
 
@@ -245,7 +352,12 @@ func _draw() -> void:
 
 	# 4. Live Drag Wire
 	if _is_dragging_wire:
-		_draw_spline(_wire_source_pos, _wire_current_mouse, DRAG_WIRE_COLOR, 2.5, false)
+		var wire_col := FLOW_WIRE_COLOR
+		if not _wire_hovered_elem.is_empty():
+			wire_col = (FLOW_WIRE_COLOR if _wire_source_kind == "flow" else SIGNAL_WIRE_COLOR) if _wire_is_compatible else INCOMPATIBLE_WIRE_COLOR
+		else:
+			wire_col = FLOW_WIRE_COLOR if _wire_source_kind == "flow" else SIGNAL_WIRE_COLOR
+		_draw_spline(_wire_source_pos, _wire_current_mouse, wire_col, 2.5, false)
 
 func _draw_cad_background() -> void:
 	var grid_size := 40.0 * zoom_level
@@ -297,7 +409,6 @@ func _draw_spline(from: Vector2, to: Vector2, col: Color, width: float, dashed: 
 	var segments := 24
 	for i in range(segments + 1):
 		var t := float(i) / float(segments)
-		# Cubic Bézier
 		var pt := from.bezier_interpolate(cp1, cp2, to, t)
 		points.append(pt)
 
@@ -308,8 +419,9 @@ func _draw_spline(from: Vector2, to: Vector2, col: Color, width: float, dashed: 
 		draw_polyline(points, col, width, true)
 
 	# Draw arrowhead at target
-	var dir := (to - points[points.size() - 2]).normalized()
-	var perp := Vector2(-dir.y, dir.x) * 5.0
-	var a1 := to - (dir * 10.0) + perp
-	var a2 := to - (dir * 10.0) - perp
-	draw_colored_polygon(PackedVector2Array([to, a1, a2]), col)
+	if points.size() >= 2:
+		var dir := (to - points[points.size() - 2]).normalized()
+		var perp := Vector2(-dir.y, dir.x) * 5.0
+		var a1 := to - (dir * 10.0) + perp
+		var a2 := to - (dir * 10.0) - perp
+		draw_colored_polygon(PackedVector2Array([to, a1, a2]), col)

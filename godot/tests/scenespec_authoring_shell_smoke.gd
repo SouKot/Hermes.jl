@@ -119,21 +119,35 @@ func test_authoring_block_node_three_part_layout() -> void:
 	var block := BlockNode.new(elem)
 	block._ready()
 
-	_assert(block.size.x >= 220.0, "Block width is at least 220px to fit 3 zones")
-	_assert(block.size.y >= 84.0, "Block height fits port bays and dimensions")
+	_assert(block.size.x >= 260.0, "Block width is at least 260px to fit 2-column bays and center")
+	_assert(block.size.y >= 96.0, "Block height fits port bays and dimensions")
 
-	var flow_socket_pos := block.get_port_global_position("flow_in")
-	_assert(flow_socket_pos != Vector2.ZERO, "Flow socket resolved on Left Bay")
+	# Sockets in Left Bay (2 columns: IN at x=16, OUT at x=46)
+	var flow_in_pos: Vector2 = block._port_sockets["flow_in"]["pos"]
+	_assert(abs(flow_in_pos.x - 16.0) < 1.0, "Flow In socket resolved on Left Bay Column 1 (IN)")
 
-	var metric_socket_pos := block.get_port_global_position("occupancy")
-	_assert(metric_socket_pos != Vector2.ZERO, "Metric socket resolved on Right Bay")
+	var flow_out_pos: Vector2 = block._port_sockets["flow_out"]["pos"]
+	_assert(abs(flow_out_pos.x - 46.0) < 1.0, "Flow Out socket resolved on Left Bay Column 2 (OUT)")
 
-	# Hit test add buttons
-	var hit_left := block._hit_test_add_button(Vector2(10.0, block.size.y - 10.0))
-	_assert(hit_left == "flow", "Left Bay bottom button triggers Add Flow")
+	# Sockets in Right Bay (2 columns: SIG at size.x - 48, MET at size.x - 16)
+	var sig_pos: Vector2 = block._port_sockets["speed_signal"]["pos"]
+	_assert(abs(sig_pos.x - (block.size.x - 48.0)) < 1.0, "Signal In socket resolved on Right Bay Column 1 (SIG)")
 
-	var hit_right := block._hit_test_add_button(Vector2(block.size.x - 10.0, block.size.y - 10.0))
-	_assert(hit_right == "control", "Right Bay bottom button triggers Add Control")
+	var met_pos: Vector2 = block._port_sockets["occupancy"]["pos"]
+	_assert(abs(met_pos.x - (block.size.x - 16.0)) < 1.0, "Metric Out socket resolved on Right Bay Column 2 (MET)")
+
+	# Hit test add buttons for all 4 columns
+	var hit_flow_in := block._hit_test_add_button(Vector2(10.0, block.size.y - 10.0))
+	_assert(hit_flow_in == "flow_in", "Left Bay Column 1 bottom button triggers Add Flow In")
+
+	var hit_flow_out := block._hit_test_add_button(Vector2(40.0, block.size.y - 10.0))
+	_assert(hit_flow_out == "flow_out", "Left Bay Column 2 bottom button triggers Add Flow Out")
+
+	var hit_sig_in := block._hit_test_add_button(Vector2(block.size.x - 45.0, block.size.y - 10.0))
+	_assert(hit_sig_in == "signal_in", "Right Bay Column 1 bottom button triggers Add Signal In")
+
+	var hit_met_out := block._hit_test_add_button(Vector2(block.size.x - 15.0, block.size.y - 10.0))
+	_assert(hit_met_out == "metric_out", "Right Bay Column 2 bottom button triggers Add Metric Out")
 
 func test_procedural_mesh_factory_conveyor_elevation_and_legs() -> void:
 	_tests_run += 1
@@ -197,8 +211,11 @@ func test_2d_canvas_and_port_wiring() -> void:
 	canvas._wire_source_port = "flow_out"
 	canvas._wire_source_kind = "flow"
 	canvas._wire_source_is_output = true
+	canvas._wire_hovered_elem = "s1"
+	canvas._wire_hovered_port = "flow_in"
+	canvas._wire_is_compatible = true
 	canvas._is_dragging_wire = true
-	canvas._on_port_drag_ended("s1", "flow_in")
+	canvas._finish_wire_drag()
 
 	_assert(store.active_document.connections.size() == 1, "Flow connection created in document")
 	var conn: SceneTypes.SceneConnection = store.active_document.connections[0]
@@ -210,12 +227,41 @@ func test_2d_canvas_and_port_wiring() -> void:
 	canvas._wire_source_port = "utilization"
 	canvas._wire_source_kind = "metric"
 	canvas._wire_source_is_output = true
+	canvas._wire_hovered_elem = "c1"
+	canvas._wire_hovered_port = "speed_signal"
+	canvas._wire_is_compatible = true
 	canvas._is_dragging_wire = true
-	canvas._on_port_drag_ended("c1", "speed_signal")
-
+	canvas._finish_wire_drag()
 	_assert(store.active_document.connections.size() == 2, "Metric -> Signal connection created")
 	var sig_conn: SceneTypes.SceneConnection = store.active_document.connections[1]
 	_assert(sig_conn.source_element == "s1" and sig_conn.target_element == "c1", "Metric links s1 to c1 signal")
+
+	# Test adding ports in each of the 4 columns
+	var prev_flow_in := canvas._count_ports(c1.input_ports, "flow")
+	canvas._on_add_port_requested("c1", "flow_in")
+	_assert(canvas._count_ports(c1.input_ports, "flow") == prev_flow_in + 1, "Added Flow In port to Left Bay Column 1")
+
+	var prev_flow_out := canvas._count_ports(c1.output_ports, "flow")
+	canvas._on_add_port_requested("c1", "flow_out")
+	_assert(canvas._count_ports(c1.output_ports, "flow") == prev_flow_out + 1, "Added Flow Out port to Left Bay Column 2")
+
+	var prev_sig_in := canvas._count_ports(c1.input_ports, "signal")
+	canvas._on_add_port_requested("c1", "signal_in")
+	_assert(canvas._count_ports(c1.input_ports, "signal") == prev_sig_in + 1, "Added Signal In port to Right Bay Column 1")
+
+	var prev_met_out := c1.metric_ports.size()
+	canvas._on_add_port_requested("c1", "metric_out")
+	_assert(c1.metric_ports.size() == prev_met_out + 1, "Added Metric Out port to Right Bay Column 2")
+
+	# Test wire drag motion across block boundary
+	canvas._on_port_drag_started("c1", "flow_out", "flow", true, Vector2(100, 100))
+	_assert(canvas._is_dragging_wire, "Wire drag started")
+	var mm := InputEventMouseMotion.new()
+	mm.position = Vector2(400, 300)
+	canvas._input(mm)
+	_assert(canvas._wire_current_mouse != Vector2.ZERO, "Wire tracks mouse across block boundaries")
+	canvas._cancel_wire_drag()
+	_assert(not canvas._is_dragging_wire, "Wire drag cancelled")
 
 func test_authoring_shell_two_view_switching_and_transport() -> void:
 	_tests_run += 1

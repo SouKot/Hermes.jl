@@ -492,6 +492,13 @@ func _on_diagnostic_fix_requested(diag: Dictionary) -> void:
 				doc_store.remove_connection(conn.id)
 				_canvas_2d.rebuild_blocks()
 				break
+	elif rule.begins_with("GRAPH_001"):
+		# Remove the isolated element
+		var eid: String = str(diag.get("object_id", ""))
+		if not eid.is_empty():
+			doc_store.remove_element(eid)
+			_canvas_2d.rebuild_blocks()
+			_viewport_3d.rebuild_3d_scene()
 
 func _update_title() -> void:
 	var doc_name := "Untitled Scene"
