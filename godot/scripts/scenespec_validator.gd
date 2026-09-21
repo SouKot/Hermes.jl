@@ -206,7 +206,9 @@ func _validate_spatial_constraints(doc: RefCounted, diagnostics: Array, elems_by
 	for elem in elems:
 		var eid: String = str(_prop(elem, "id", ""))
 		var lid: String = str(_prop(elem, "level_id", ""))
-		if not lid.is_empty() and not levels_by_id.has(lid):
+		if lid.is_empty():
+			continue
+		if not levels_by_id.has(lid):
 			diagnostics.append({
 				"rule_id": "ELEM_001_LEVEL_NOT_FOUND",
 				"severity": "error",

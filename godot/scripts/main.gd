@@ -3,6 +3,7 @@ extends Control
 const ConnectionManager := preload("res://scripts/connection_manager.gd")
 const StateStore := preload("res://scripts/state_store.gd")
 const ViewportController := preload("res://scripts/viewport_controller.gd")
+const AuthoringShell := preload("res://scripts/authoring_shell.gd")
 
 const BG := Color("#0b1018")
 const PANEL := Color("#121b27")
@@ -13,6 +14,7 @@ const MUTED := Color("#8da2b5")
 const ACCENT := Color("#52c7a5")
 const WARNING := Color("#e6b85c")
 
+var authoring_shell: Control
 var status_label: Label
 var simulation_label: Label
 var viewport_panel: Control
@@ -67,9 +69,18 @@ func _ready() -> void:
     state_store.state_replaced.connect(_on_state_published)
     state_store.delta_applied.connect(_on_state_published)
     state_store.resync_required.connect(_on_resync_required)
-    _build_shell()
-    _build_placeholder_scene()
+    _build_authoring_shell()
     call_deferred("_auto_connect")
+
+func _build_authoring_shell() -> void:
+    authoring_shell = AuthoringShell.new()
+    authoring_shell.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+    add_child(authoring_shell)
+    authoring_shell.play_requested.connect(_on_play)
+    authoring_shell.pause_requested.connect(_on_pause)
+    authoring_shell.step_requested.connect(_on_step)
+    authoring_shell.reset_requested.connect(_on_reset)
+    authoring_shell.speed_changed.connect(_on_speed_changed)
 
 func _auto_connect() -> void:
     if connection_manager != null and connection_manager.state != ConnectionManager.ConnectionState.CONNECTED:
@@ -446,6 +457,8 @@ func _on_state_published(state: Dictionary) -> void:
         simulation_time = float(state.simulation_time)
         if simulation_label != null:
             simulation_label.text = "t = %.2f s" % simulation_time
+        if authoring_shell != null:
+            authoring_shell.update_sim_time(simulation_time)
     adapter_name = "LiveFixture" if state.has("scene_id") else "OfflineFixture"
     endpoint_text = "127.0.0.1:9107"
     var warning_count: int = int(state.get("warnings", []).size())
@@ -467,35 +480,52 @@ func _on_state_published(state: Dictionary) -> void:
         _update_selection_details(selected_kind, selected_id)
 
 func _on_resync_required(reason: String) -> void:
-    status_label.text = "●  RESYNC REQUIRED"
-    status_label.add_theme_color_override("font_color", WARNING)
+    if status_label != null:
+        status_label.text = "●  RESYNC REQUIRED"
+        status_label.add_theme_color_override("font_color", WARNING)
     push_warning(reason)
 
 func _on_play() -> void:
     running = true
+    if authoring_shell != null:
+        authoring_shell.is_sim_running = true
     _send_command("play", {"action": "play"})
 
 func _on_pause() -> void:
     running = false
+    if authoring_shell != null:
+        authoring_shell.is_sim_running = false
     _send_command("pause", {"action": "pause"})
 
 func _on_step() -> void:
     running = false
+    if authoring_shell != null:
+        authoring_shell.is_sim_running = false
     simulation_time += 0.1
-    simulation_label.text = "t = %.2f s" % simulation_time
+    if simulation_label != null:
+        simulation_label.text = "t = %.2f s" % simulation_time
+    if authoring_shell != null:
+        authoring_shell.update_sim_time(simulation_time)
     _send_command("step", {"action": "step", "steps": 1})
     queue_redraw()
 
 func _on_reset() -> void:
     running = false
+    if authoring_shell != null:
+        authoring_shell.is_sim_running = false
     simulation_time = 0.0
-    simulation_label.text = "t = 0.00 s"
+    if simulation_label != null:
+        simulation_label.text = "t = 0.00 s"
+    if authoring_shell != null:
+        authoring_shell.update_sim_time(0.0)
     _send_command("reset", {"action": "reset"})
     queue_redraw()
 
 func _on_speed_changed(value: float) -> void:
     if speed_label != null:
         speed_label.text = "%.2fx" % value
+    if authoring_shell != null:
+        authoring_shell.sim_speed = value
     _send_command("set_clock_speed", {"speed": value})
 
 func _send_command(command_type: String, command: Dictionary) -> void:

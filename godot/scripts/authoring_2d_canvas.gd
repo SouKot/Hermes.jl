@@ -1,0 +1,315 @@
+# authoring_2d_canvas.gd
+# Unified 2D Layout Canvas rendering CAD floorplan, entity blocks, and direct port connection splines.
+class_name SimVizAuthoring2DCanvas
+extends Control
+
+const BlockNode := preload("res://scripts/authoring_block_node.gd")
+const SceneTypes := preload("res://scripts/scenespec_types.gd")
+const DocumentStore := preload("res://scripts/authoring_document_store.gd")
+
+signal element_selected(element_id: String)
+signal connection_created(conn: SceneTypes.SceneConnection)
+
+const BG_COLOR := Color("#0b1018")
+const GRID_MAJOR := Color("#1a2636")
+const GRID_MINOR := Color("#111a24")
+const CAD_WALL_COLOR := Color("#2e4359")
+const ROOM_LABEL_COLOR := Color("#415b76")
+const FLOW_WIRE_COLOR := Color("#2ecc71")
+const SIGNAL_WIRE_COLOR := Color("#f39c12")
+const DRAG_WIRE_COLOR := Color("#52c7a5")
+
+var doc_store: DocumentStore
+var _block_nodes: Dictionary = {} # element_id -> SimVizAuthoringBlockNode
+
+# Pan & Zoom transform
+var pan_offset: Vector2 = Vector2(80, 80)
+var zoom_level: float = 1.0
+var _panning: bool = false
+var _pan_start: Vector2 = Vector2.ZERO
+
+# Wire drag state
+var _is_dragging_wire: bool = false
+var _wire_source_elem: String = ""
+var _wire_source_port: String = ""
+var _wire_source_kind: String = ""
+var _wire_source_is_output: bool = true
+var _wire_source_pos: Vector2 = Vector2.ZERO
+var _wire_current_mouse: Vector2 = Vector2.ZERO
+
+func _init(p_store: DocumentStore = null) -> void:
+	doc_store = p_store
+	mouse_filter = Control.MOUSE_FILTER_STOP
+	clip_contents = true
+
+func _ready() -> void:
+	if doc_store != null:
+		doc_store.document_loaded.connect(_on_document_reloaded)
+		doc_store.document_modified.connect(_on_document_modified)
+		doc_store.selection_changed.connect(_on_selection_changed)
+		rebuild_blocks()
+
+func rebuild_blocks() -> void:
+	for child in get_children():
+		child.queue_free()
+	_block_nodes.clear()
+
+	if doc_store == null or doc_store.active_document == null:
+		queue_redraw()
+		return
+
+	for elem in doc_store.active_document.elements:
+		var b := BlockNode.new(elem)
+		add_child(b)
+		_block_nodes[elem.id] = b
+
+		# Position block on canvas from editor position or transform
+		var gx: float = elem.editor.graph_position.x if elem.editor.graph_position != Vector2.ZERO else float(elem.transform.position[0]) * 20.0
+		var gy: float = elem.editor.graph_position.y if elem.editor.graph_position != Vector2.ZERO else float(elem.transform.position[1]) * 20.0
+		b.position = pan_offset + (Vector2(gx, gy) * zoom_level)
+
+		b.block_selected.connect(_on_block_selected)
+		b.block_moved.connect(_on_block_moved)
+		b.port_drag_started.connect(_on_port_drag_started)
+		b.port_drag_ended.connect(_on_port_drag_ended)
+		b.add_port_requested.connect(_on_add_port_requested)
+
+	queue_redraw()
+
+func _on_document_reloaded(_doc: SceneTypes.SceneDocument) -> void:
+	rebuild_blocks()
+
+func _on_document_modified() -> void:
+	queue_redraw()
+
+func _on_selection_changed(sel_id: String, _sel_type: String) -> void:
+	for id_val in _block_nodes.keys():
+		_block_nodes[id_val].set_selected(id_val == sel_id)
+	queue_redraw()
+
+func _on_block_selected(elem_id: String) -> void:
+	if doc_store != null:
+		doc_store.select(elem_id, "element")
+	element_selected.emit(elem_id)
+
+func _on_block_moved(elem_id: String, new_pos: Vector2) -> void:
+	var elem := doc_store.get_element(elem_id)
+	if elem != null:
+		# Convert canvas pixel position back to world coordinates
+		var unscaled: Vector2 = (new_pos - pan_offset) / max(zoom_level, 0.01)
+		elem.editor.graph_position = unscaled
+		elem.transform.position.x = unscaled.x / 20.0
+		elem.transform.position.y = unscaled.y / 20.0
+		if doc_store != null:
+			doc_store.is_dirty = true
+			doc_store.validate()
+	queue_redraw()
+
+func _on_port_drag_started(elem_id: String, port_id: String, port_kind: String, is_output: bool, global_pos: Vector2) -> void:
+	_is_dragging_wire = true
+	_wire_source_elem = elem_id
+	_wire_source_port = port_id
+	_wire_source_kind = port_kind
+	_wire_source_is_output = is_output
+	_wire_source_pos = global_pos - global_position
+	_wire_current_mouse = _wire_source_pos
+	queue_redraw()
+
+func _on_port_drag_ended(target_elem: String, target_port: String) -> void:
+	if not _is_dragging_wire:
+		return
+
+	if target_elem != _wire_source_elem:
+		# Validate connection semantics
+		var can_connect := false
+		var src_elem := _wire_source_elem
+		var src_port := _wire_source_port
+		var tgt_elem := target_elem
+		var tgt_port := target_port
+
+		# Flow Out -> Flow In
+		if _wire_source_kind == "flow" and _wire_source_is_output:
+			can_connect = true
+		# Metric Out -> Signal In
+		elif _wire_source_kind == "metric" and _wire_source_is_output:
+			can_connect = true
+		elif not _wire_source_is_output:
+			# Swapped drag direction
+			src_elem = target_elem
+			src_port = target_port
+			tgt_elem = _wire_source_elem
+			tgt_port = _wire_source_port
+			can_connect = true
+
+		if can_connect and doc_store != null:
+			var conn := SceneTypes.SceneConnection.new()
+			conn.id = "%s_%s__%s_%s" % [src_elem, src_port, tgt_elem, tgt_port]
+			conn.source_element = src_elem
+			conn.source_port = src_port
+			conn.target_element = tgt_elem
+			conn.target_port = tgt_port
+			conn.link_type = _wire_source_kind
+			doc_store.add_connection(conn)
+			connection_created.emit(conn)
+
+	_is_dragging_wire = false
+	queue_redraw()
+
+func _on_add_port_requested(elem_id: String, bay_type: String) -> void:
+	if doc_store == null:
+		return
+	var elem := doc_store.get_element(elem_id)
+	if elem == null:
+		return
+
+	var port := SceneTypes.ScenePort.new()
+	if bay_type == "flow":
+		var count := elem.output_ports.size() + 1
+		port.id = "flow_out_%d" % count
+		port.kind = "flow"
+		port.direction = "output"
+		port.cardinality = "one"
+		port.name = "Flow Out %d" % count
+	else:
+		# Control bay: alternate metric and signal
+		var count := elem.metric_ports.size() + 1
+		port.id = "metric_out_%d" % count
+		port.kind = "metric"
+		port.direction = "output"
+		port.cardinality = "many"
+		port.name = "Metric %d" % count
+
+	doc_store.add_port_to_element(elem_id, port)
+	rebuild_blocks()
+
+func _gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		if mb.button_index == MOUSE_BUTTON_MIDDLE:
+			if mb.pressed:
+				_panning = true
+				_pan_start = mb.position - pan_offset
+				accept_event()
+			else:
+				_panning = false
+				accept_event()
+		elif mb.button_index == MOUSE_BUTTON_WHEEL_UP:
+			_adjust_zoom(1.1, mb.position)
+			accept_event()
+		elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			_adjust_zoom(0.9, mb.position)
+			accept_event()
+		elif mb.button_index == MOUSE_BUTTON_LEFT and not mb.pressed and _is_dragging_wire:
+			_is_dragging_wire = false
+			queue_redraw()
+			accept_event()
+
+	elif event is InputEventMouseMotion:
+		var mm := event as InputEventMouseMotion
+		if _panning:
+			pan_offset = mm.position - _pan_start
+			_update_blocks_transform()
+			queue_redraw()
+			accept_event()
+		elif _is_dragging_wire:
+			_wire_current_mouse = mm.position
+			queue_redraw()
+			accept_event()
+
+func _adjust_zoom(factor: float, pivot: Vector2) -> void:
+	var old_zoom := zoom_level
+	zoom_level = clamp(zoom_level * factor, 0.2, 4.0)
+	pan_offset = pivot - (pivot - pan_offset) * (zoom_level / old_zoom)
+	_update_blocks_transform()
+	queue_redraw()
+
+func _update_blocks_transform() -> void:
+	if doc_store == null or doc_store.active_document == null:
+		return
+	for elem in doc_store.active_document.elements:
+		if _block_nodes.has(elem.id):
+			var b: BlockNode = _block_nodes[elem.id]
+			var gx: float = elem.editor.graph_position.x if elem.editor.graph_position != Vector2.ZERO else float(elem.transform.position[0]) * 20.0
+			var gy: float = elem.editor.graph_position.y if elem.editor.graph_position != Vector2.ZERO else float(elem.transform.position[1]) * 20.0
+			b.position = pan_offset + (Vector2(gx, gy) * zoom_level)
+
+func _draw() -> void:
+	# 1. Background Fill
+	draw_rect(Rect2(Vector2.ZERO, size), BG_COLOR, true)
+
+	# 2. CAD Floorplan Grid & Architectural Walls
+	_draw_cad_background()
+
+	# 3. Connection Splines between Ports
+	_draw_connections()
+
+	# 4. Live Drag Wire
+	if _is_dragging_wire:
+		_draw_spline(_wire_source_pos, _wire_current_mouse, DRAG_WIRE_COLOR, 2.5, false)
+
+func _draw_cad_background() -> void:
+	var grid_size := 40.0 * zoom_level
+	if grid_size > 8.0:
+		var start_x: float = fmod(pan_offset.x, grid_size)
+		var start_y: float = fmod(pan_offset.y, grid_size)
+		var cur_x := start_x
+		while cur_x < size.x:
+			draw_line(Vector2(cur_x, 0), Vector2(cur_x, size.y), GRID_MINOR, 1.0)
+			cur_x += grid_size
+		var cur_y := start_y
+		while cur_y < size.y:
+			draw_line(Vector2(0, cur_y), Vector2(size.x, cur_y), GRID_MINOR, 1.0)
+			cur_y += grid_size
+
+	# Architectural Rooms & Perimeter lines
+	var r1 := Rect2(pan_offset + Vector2(20, 20) * zoom_level, Vector2(400, 300) * zoom_level)
+	draw_rect(r1, CAD_WALL_COLOR, false, 2.0)
+	draw_string(ThemeDB.fallback_font, r1.position + Vector2(10, 20), "CAD ZONE: INFEED & RECEIVING", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, ROOM_LABEL_COLOR)
+
+	var r2 := Rect2(pan_offset + Vector2(460, 20) * zoom_level, Vector2(500, 300) * zoom_level)
+	draw_rect(r2, CAD_WALL_COLOR, false, 2.0)
+	draw_string(ThemeDB.fallback_font, r2.position + Vector2(10, 20), "CAD ZONE: MAIN PROCESSING & INSPECTION", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, ROOM_LABEL_COLOR)
+
+func _draw_connections() -> void:
+	if doc_store == null or doc_store.active_document == null:
+		return
+
+	for conn in doc_store.active_document.connections:
+		var p1 := _resolve_port_position(conn.source_element, conn.source_port)
+		var p2 := _resolve_port_position(conn.target_element, conn.target_port)
+		if p1 != Vector2.ZERO and p2 != Vector2.ZERO:
+			var col := FLOW_WIRE_COLOR if conn.link_type == "flow" else SIGNAL_WIRE_COLOR
+			var dashed: bool = (conn.link_type != "flow")
+			_draw_spline(p1, p2, col, 2.0, dashed)
+
+func _resolve_port_position(elem_id: String, port_id: String) -> Vector2:
+	if _block_nodes.has(elem_id):
+		var b: BlockNode = _block_nodes[elem_id]
+		return b.get_port_global_position(port_id) - global_position
+	return Vector2.ZERO
+
+func _draw_spline(from: Vector2, to: Vector2, col: Color, width: float, dashed: bool) -> void:
+	var dx := (to.x - from.x) * 0.5
+	var cp1 := from + Vector2(max(abs(dx), 40.0), 0)
+	var cp2 := to - Vector2(max(abs(dx), 40.0), 0)
+
+	var points: PackedVector2Array = []
+	var segments := 24
+	for i in range(segments + 1):
+		var t := float(i) / float(segments)
+		# Cubic Bézier
+		var pt := from.bezier_interpolate(cp1, cp2, to, t)
+		points.append(pt)
+
+	if dashed:
+		for i in range(0, points.size() - 1, 2):
+			draw_line(points[i], points[i + 1], col, width)
+	else:
+		draw_polyline(points, col, width, true)
+
+	# Draw arrowhead at target
+	var dir := (to - points[points.size() - 2]).normalized()
+	var perp := Vector2(-dir.y, dir.x) * 5.0
+	var a1 := to - (dir * 10.0) + perp
+	var a2 := to - (dir * 10.0) - perp
+	draw_colored_polygon(PackedVector2Array([to, a1, a2]), col)

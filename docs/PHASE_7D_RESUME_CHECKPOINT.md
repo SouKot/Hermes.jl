@@ -1,10 +1,10 @@
 # Phase 7D: Checkpoint & Session Resume Handoff
 
-**Timestamp**: 2026-09-20T21:30:00-07:00  
+**Timestamp**: 2026-09-21T10:45:00-07:00  
 **Workspace**: `/run/media/sourabh/SANDISK-2TB/antigravity/ABM`  
 **Git Branch**: `main`  
-**Current Milestone**: Phase 7D-04 Completed & Accepted (100% Tests Passing, Zero Regressions)  
-**Next Immediate Milestone**: Phase 7D-05 (Authoring Shell & Component Catalog)  
+**Current Milestone**: Phase 7D-05 Completed & Accepted (100% Tests Passing, Zero Regressions)  
+**Next Immediate Milestone**: Phase 7D-06 (Multi-Level Editing, Subgraph Drill-Down & ABM Overlay Authoring)  
 **Detailed Walkthrough**: [`docs/walkthroughs/phase_07d_scenespec_authoring_core.md`](walkthroughs/phase_07d_scenespec_authoring_core.md)
 
 ---
@@ -65,13 +65,35 @@
    - **Golden Fixture Grounding**:
      [`godot/fixtures/scenespec/hierarchical_subgraph.json`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/fixtures/scenespec/hierarchical_subgraph.json) with compound stations, multi-floor levels, relative transforms, and cross-level boundary connections.
 
+6. **Phase 7D-05 (Authoring Shell & Component Catalog)**:
+   - **Strictly Two-View Top Bar Architecture**:
+     - `[ 2D LAYOUT ]` and `[ 3D LAYOUT ]` switchable viewports with unified state ([`godot/scripts/authoring_shell.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_shell.gd)).
+     - Persistent bottom simulation transport (`PLAY`, `PAUSE`, `STEP`, `RESET`, speed slider, simulation clock).
+   - **Single Entity Block Architecture (Matching User Sketch)**:
+     - 3-part layout ([`godot/scripts/authoring_block_node.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_block_node.gd)): Left Flow Bay, Center Body ($L \times W$ in meters), Right Control/Metric/Event Bay.
+     - Port semantics: Flow In/Out (green/white), Metric Out (orange, emits telemetry), Signal In (amber/red, actuator control), Event Out (purple, logging/real-time graphs).
+     - Circular sockets with `+` buttons to add ports dynamically.
+   - **2D Unified CAD Canvas** ([`godot/scripts/authoring_2d_canvas.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_2d_canvas.gd)):
+     - Architectural floor lines, active simulation blocks at world $(X, Y)$, Bézier connection splines, interactive wire drag-and-drop.
+   - **Procedural PBR 3D Factory** ([`godot/scripts/authoring_mesh_factory.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_mesh_factory.gd) & [`authoring_3d_viewport.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_3d_viewport.gd)):
+     - Belt conveyors with support legs anchored to floor ($Z=0$), leveling feet, and variable elevation incline ($Z_1$ to $Z_2$).
+     - Workstations/servers with aluminum frames, stainless table ($Z=0.8\text{ m}$), overhead gantry, and 3-color emissive Andon beacon towers.
+     - Queue accumulation beds and hazard-striped floor buffer pads.
+     - 3D SubViewport with directional lighting, concrete floor grid, and orbit camera navigation.
+   - **Document Lifecycle & Component Catalog** ([`godot/scripts/authoring_catalog.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_catalog.gd) & [`authoring_document_store.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_document_store.gd)):
+     - Palette of DES/ABM primitives (`conveyor`, `queue`, `server`, `source`, `sink`).
+     - Real-time dirty tracking (`*`), full Undo/Redo stack, and atomic `.tmp` file saving.
+   - **Diagnostics & Live Runtime Integration**:
+     - Diagnostics panel ([`godot/scripts/authoring_diagnostics_panel.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_diagnostics_panel.gd)) with click-to-focus and one-click fixes.
+     - [`godot/scripts/main.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/main.gd) boots `AuthoringShell` as root UI while maintaining background WebSocket connectivity to the Julia simulation runtime.
+
 ---
 
 ## 2. Test Verification & Evidence
 
 All automated test suites are passing with 100% success:
 
-1. **Master Phase 7D Acceptance Suite (11/11 Steps Passing)**:
+1. **Master Phase 7D Acceptance Suite (12/12 Steps Passing)**:
    ```bash
    bash run_phase7d_roundtrip_acceptance.sh
    ```
@@ -86,6 +108,7 @@ All automated test suites are passing with 100% success:
    - Step 9: Godot Headless SceneSpec Extensions & Metadata Suite (**All 7 test suites passed**)
    - Step 10: Julia Subgraph Expansion & Spatial Layout Suite (**95/95 passed**)
    - Step 11: Godot Headless Subgraph Expansion & Spatial Layout Smoke (**All 8 test suites passed**)
+   - Step 12: Godot Headless Authoring Shell & Two-View Smoke (**All 7 test suites passed**)
 
 2. **Full Julia Master Test Suite**:
    ```bash
