@@ -74,11 +74,14 @@
      - Port semantics: Flow In/Out (green/white), Metric Out (orange, emits telemetry), Signal In (amber/red, actuator control).
      - Circular sockets with `[+]` (add port) and `[-]` (remove last port via strict LIFO policy) buttons on all 4 columns.
      - Core primary ports (`flow_in`, `flow_out`) protected from deletion below 1.
+     - Editable Physical Dimensions: Inspector `SpinBox` inputs for Length (X), Width (Y), Height (Z), and Elevations (Z1, Z2), plus direct-manipulation bottom-right canvas resize handle on selected blocks.
    - **Multi-Modal Connection Removal & Disconnect**:
      - Click connection spline to select (glowing cyan `#00d2ff`) + press `Delete` / `Backspace` key.
      - Right-click directly on spline to delete.
      - Right-click port socket to disconnect all attached wires without deleting the port.
      - Inspector panel lists active connections for selected entity with individual `[✕]` delete buttons, and displays selected connection details with `[Delete Connection]` button.
+   - **Simulation Transport & Paused Startup**:
+     - GUI and backend fixture start strictly in a paused/stopped state at `t = 0.00 s`. Clock only advances when user clicks `PLAY` or `STEP`.
    - **2D Unified CAD Canvas** ([`godot/scripts/authoring_2d_canvas.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_2d_canvas.gd)):
      - Architectural floor lines, active simulation blocks at world $(X, Y)$, Bézier connection splines, interactive wire drag-and-drop.
      - Dedicated `_wires_layer` with `z_index = 10` ensuring connection wires render above blocks with no occlusion.
