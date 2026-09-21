@@ -211,6 +211,18 @@ func test_procedural_mesh_factory_server_and_queue() -> void:
 	_assert(queue_3d != null, "Queue 3D node created")
 	_assert(queue_3d.get_child_count() >= 3, "Queue has accumulation bed, legs, and floor hazard pad")
 
+	# Source (Infeed hopper with legs, chute, and green beacon)
+	var src_elem := cat.create_element_instance("source", "source_01", Vector2(0, 0))
+	var src_3d: Node3D = MeshFactory.create_3d_node_for_element(src_elem)
+	_assert(src_3d != null, "Source 3D node created")
+	_assert(src_3d.get_child_count() >= 6, "Source has support legs, green hopper, discharge chute, and beacon")
+
+	# Sink (Discharge collection bin with staging pad and steel rim)
+	var snk_elem := cat.create_element_instance("sink", "sink_01", Vector2(30, 0))
+	var snk_3d: Node3D = MeshFactory.create_3d_node_for_element(snk_elem)
+	_assert(snk_3d != null, "Sink 3D node created")
+	_assert(snk_3d.get_child_count() >= 3, "Sink has staging pad, collection bin, and rim guard")
+
 func test_2d_canvas_and_port_wiring() -> void:
 	_tests_run += 1
 	print("\n[Suite 6: 2D Canvas & Port-to-Port Wiring]")
@@ -444,3 +456,22 @@ func test_authoring_shell_two_view_switching_and_transport() -> void:
 				if sub is SpinBox:
 					spinbox_count += 1
 	_assert(spinbox_count >= 5, "Inspector contains editable SpinBoxes for Length, Width, Height, Elev Start, Elev End")
+
+	# Test 3D Viewport synchronization & camera auto-framing
+	var vp: Viewport3D = shell._viewport_3d
+	_assert(vp._entities_root.get_child_count() == 1, "3D Viewport synchronized with active document elements")
+	_assert(vp._camera.position.y > 5.0, "3D Camera is elevated above the floor (Y > 5.0m)")
+
+	# Add another element and verify auto-framing around the cluster
+	var c2 := shell.catalog.create_element_instance("conveyor", "conv_far", Vector2(40, 20))
+	shell.doc_store.add_element(c2)
+	vp.frame_scene()
+	_assert(vp._entities_root.get_child_count() == 2, "3D Viewport contains both elements")
+	_assert(vp._cam_pivot.position.x > 10.0, "Camera pivot centered around element cluster in X")
+	_assert(vp._cam_pivot.position.z < 0.0, "Camera pivot centered around element cluster in Godot -Z")
+	_assert(vp._camera.position.y >= 10.0, "Camera elevated sufficiently to frame multi-element scene")
+
+	# Test camera reset default
+	vp._reset_camera_default()
+	_assert(abs(vp._cam_pivot.position.x - 15.0) < 0.1, "Camera reset restores default pivot X=15.0")
+	_assert(vp._camera.position.y > 5.0, "Reset camera elevated above floor")

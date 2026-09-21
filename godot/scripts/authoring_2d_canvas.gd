@@ -137,6 +137,7 @@ func _on_block_moved(elem_id: String, new_pos: Vector2) -> void:
 		if doc_store != null:
 			doc_store.is_dirty = true
 			doc_store.validate()
+			doc_store.document_modified.emit()
 	_redraw_all()
 
 func _on_port_drag_started(elem_id: String, port_id: String, port_kind: String, is_output: bool, start_pos: Vector2) -> void:

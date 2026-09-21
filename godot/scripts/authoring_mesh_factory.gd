@@ -13,6 +13,8 @@ static var _mat_floor_stripe: StandardMaterial3D
 static var _mat_beacon_green: StandardMaterial3D
 static var _mat_beacon_yellow: StandardMaterial3D
 static var _mat_beacon_red: StandardMaterial3D
+static var _mat_source_accent: StandardMaterial3D
+static var _mat_sink_accent: StandardMaterial3D
 
 static func _ensure_materials() -> void:
 	if _mat_steel != null:
@@ -61,6 +63,18 @@ static func _ensure_materials() -> void:
 	_mat_beacon_red.emission = Color("#e74c3c")
 	_mat_beacon_red.emission_energy_multiplier = 0.5 # dim when inactive
 
+	# Source Infeed Accent (Powder-coat Green)
+	_mat_source_accent = StandardMaterial3D.new()
+	_mat_source_accent.albedo_color = Color("#27ae60")
+	_mat_source_accent.metallic = 0.4
+	_mat_source_accent.roughness = 0.35
+
+	# Sink Collection Bin Accent (Industrial Purple)
+	_mat_sink_accent = StandardMaterial3D.new()
+	_mat_sink_accent.albedo_color = Color("#8e44ad")
+	_mat_sink_accent.metallic = 0.4
+	_mat_sink_accent.roughness = 0.35
+
 static func create_3d_node_for_element(elem: SceneTypes.SceneElement) -> Node3D:
 	_ensure_materials()
 	var root := Node3D.new()
@@ -73,6 +87,10 @@ static func create_3d_node_for_element(elem: SceneTypes.SceneElement) -> Node3D:
 			_build_server(root, elem)
 		"queue":
 			_build_queue(root, elem)
+		"source":
+			_build_source(root, elem)
+		"sink":
+			_build_sink(root, elem)
 		_:
 			_build_generic_box(root, elem)
 
@@ -293,8 +311,100 @@ static func _build_queue(root: Node3D, elem: SceneTypes.SceneElement) -> void:
 	pad.position = Vector3(length * 0.5, 0.005, 0)
 	root.add_child(pad)
 
+static func _build_source(root: Node3D, elem: SceneTypes.SceneElement) -> void:
+	var dims := get_dims(elem, Vector3(2.5, 2.0, 2.0))
+	var length: float = dims.x
+	var width: float = dims.y
+	var total_h: float = max(dims.z, 1.8)
+	var stand_h: float = 0.9
+
+	# 1. Base Support Stand (4 legs with leveling feet)
+	for dx in [0.15, length - 0.15]:
+		for dz in [-(width * 0.5) + 0.15, (width * 0.5) - 0.15]:
+			var leg := MeshInstance3D.new()
+			var lm := BoxMesh.new()
+			lm.size = Vector3(0.08, stand_h, 0.08)
+			lm.material = _mat_steel
+			leg.mesh = lm
+			leg.position = Vector3(dx, stand_h * 0.5, dz)
+			root.add_child(leg)
+
+	# 2. Infeed Bulk Hopper Funnel / Upper Bin (Powder-coat Green)
+	var hopper_mesh := BoxMesh.new()
+	var hopper_h: float = total_h - stand_h
+	hopper_mesh.size = Vector3(length * 0.9, hopper_h, width * 0.9)
+	hopper_mesh.material = _mat_source_accent
+	var hopper_inst := MeshInstance3D.new()
+	hopper_inst.mesh = hopper_mesh
+	hopper_inst.position = Vector3(length * 0.5, stand_h + hopper_h * 0.5, 0)
+	root.add_child(hopper_inst)
+
+	# 3. Sloped Discharge Chute at infeed outlet (feeding forward into line)
+	var chute_mesh := BoxMesh.new()
+	chute_mesh.size = Vector3(length * 0.4, 0.06, width * 0.6)
+	chute_mesh.material = _mat_table
+	var chute_inst := MeshInstance3D.new()
+	chute_inst.mesh = chute_mesh
+	chute_inst.position = Vector3(length * 0.85, stand_h + 0.1, 0)
+	chute_inst.rotation.z = -0.3 # tilted down towards conveyor
+	root.add_child(chute_inst)
+
+	# 4. Status Beacon Light on Hopper Top
+	var beacon_base := MeshInstance3D.new()
+	var bm := CylinderMesh.new()
+	bm.top_radius = 0.04
+	bm.bottom_radius = 0.04
+	bm.height = 0.12
+	bm.material = _mat_steel
+	beacon_base.mesh = bm
+	beacon_base.position = Vector3(0.25, total_h + 0.06, -(width * 0.5) + 0.25)
+	root.add_child(beacon_base)
+
+	var beacon_lamp := MeshInstance3D.new()
+	var lm := CylinderMesh.new()
+	lm.top_radius = 0.04
+	lm.bottom_radius = 0.04
+	lm.height = 0.1
+	lm.material = _mat_beacon_green
+	beacon_lamp.mesh = lm
+	beacon_lamp.position = Vector3(0.25, total_h + 0.17, -(width * 0.5) + 0.25)
+	root.add_child(beacon_lamp)
+
+static func _build_sink(root: Node3D, elem: SceneTypes.SceneElement) -> void:
+	var dims := get_dims(elem, Vector3(2.5, 2.0, 1.2))
+	var length: float = dims.x
+	var width: float = dims.y
+	var bin_h: float = max(dims.z, 1.0)
+
+	# 1. Floor Hazard Staging Pad
+	var pad := MeshInstance3D.new()
+	var pm := BoxMesh.new()
+	pm.size = Vector3(length + 0.4, 0.01, width + 0.4)
+	pm.material = _mat_floor_stripe
+	pad.mesh = pm
+	pad.position = Vector3(length * 0.5, 0.005, 0)
+	root.add_child(pad)
+
+	# 2. Deep Industrial Collection Bin (Purple Body)
+	var bin_mesh := BoxMesh.new()
+	bin_mesh.size = Vector3(length * 0.9, bin_h * 0.85, width * 0.9)
+	bin_mesh.material = _mat_sink_accent
+	var bin_inst := MeshInstance3D.new()
+	bin_inst.mesh = bin_mesh
+	bin_inst.position = Vector3(length * 0.5, bin_h * 0.85 * 0.5, 0)
+	root.add_child(bin_inst)
+
+	# 3. Steel Rim & Bumper Guard Rails
+	var rim_mesh := BoxMesh.new()
+	rim_mesh.size = Vector3(length * 0.95, 0.06, width * 0.95)
+	rim_mesh.material = _mat_steel
+	var rim_inst := MeshInstance3D.new()
+	rim_inst.mesh = rim_mesh
+	rim_inst.position = Vector3(length * 0.5, bin_h * 0.85, 0)
+	root.add_child(rim_inst)
+
 static func _build_generic_box(root: Node3D, elem: SceneTypes.SceneElement) -> void:
-	var dims := _get_dims(elem, Vector3(2.0, 1.5, 1.0))
+	var dims := get_dims(elem, Vector3(2.0, 1.5, 1.0))
 	var mesh := BoxMesh.new()
 	mesh.size = Vector3(dims.x, dims.z, dims.y)
 	mesh.material = _mat_steel
@@ -303,10 +413,13 @@ static func _build_generic_box(root: Node3D, elem: SceneTypes.SceneElement) -> v
 	inst.position = Vector3(dims.x * 0.5, dims.z * 0.5, 0)
 	root.add_child(inst)
 
-static func _get_dims(elem: SceneTypes.SceneElement, default_v: Vector3) -> Vector3:
+static func get_dims(elem: SceneTypes.SceneElement, default_v: Vector3) -> Vector3:
 	if elem != null and elem.geometry.has("dimensions"):
 		var d = elem.geometry["dimensions"]
 		if d is Array and d.size() >= 3:
 			return Vector3(float(d[0]), float(d[1]), float(d[2]))
 	return default_v
+
+static func _get_dims(elem: SceneTypes.SceneElement, default_v: Vector3) -> Vector3:
+	return get_dims(elem, default_v)
 

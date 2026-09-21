@@ -365,6 +365,9 @@ func switch_view(mode: ViewMode) -> void:
 	_canvas_2d.visible = (current_view == ViewMode.VIEW_2D)
 	_viewport_3d.visible = (current_view == ViewMode.VIEW_3D)
 	_update_view_toggle_ui()
+	if current_view == ViewMode.VIEW_3D and _viewport_3d != null:
+		_viewport_3d.rebuild_3d_scene()
+		_viewport_3d.frame_scene()
 
 func _update_view_toggle_ui() -> void:
 	if _btn_view_2d == null or _btn_view_3d == null:
