@@ -214,6 +214,17 @@ func update_element_geometry(elem_id: String, new_dims: Vector3, elev_start: flo
 	document_modified.emit()
 	return true
 
+func update_element_position(elem_id: String, new_pos: Vector3) -> bool:
+	var elem := get_element(elem_id)
+	if elem == null:
+		return false
+	_record_undo()
+	elem.transform.position = Vector3(new_pos.x, new_pos.y, max(0.0, new_pos.z))
+	elem.editor.graph_position = Vector2(new_pos.x * 20.0, new_pos.y * 20.0)
+	validate()
+	document_modified.emit()
+	return true
+
 func add_connection(conn: SceneTypes.SceneConnection) -> void:
 	_record_undo()
 	active_document.connections.append(conn)

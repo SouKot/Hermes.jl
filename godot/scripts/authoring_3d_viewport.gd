@@ -164,11 +164,13 @@ func rebuild_3d_scene() -> void:
 		_entities_root.add_child(node_3d)
 
 		# Position in 3D: SceneSpec X, Y, Z maps to Godot 3D (X, Z, -Y)
+		# Top-Left Datum: px is Left, py is Top. Model local Z is centered [-W/2, +W/2],
+		# so placing at -py - (dims.y * 0.5) aligns the top edge exactly at -py.
 		var px: float = float(elem.transform.position[0])
 		var py: float = float(elem.transform.position[1])
 		var pz: float = float(elem.transform.position[2])
-		# Godot 3D coordinate system: X East, Y Up, Z South
-		node_3d.position = Vector3(px, pz, -py)
+		var dims: Vector3 = MeshFactory.get_dims(elem, Vector3(2.0, 1.5, 1.0))
+		node_3d.position = Vector3(px, pz, -py - (dims.y * 0.5))
 
 func frame_scene() -> void:
 	_ensure_setup()
@@ -192,12 +194,13 @@ func frame_scene() -> void:
 		var px: float = float(elem.transform.position[0])
 		var py: float = float(elem.transform.position[1])
 		var dims: Vector3 = MeshFactory.get_dims(elem, Vector3(2.0, 1.5, 1.0))
-		var gz: float = -py
+		var gz_top: float = -py
+		var gz_bot: float = -py - dims.y
 
 		min_x = min(min_x, px)
 		max_x = max(max_x, px + dims.x)
-		min_z = min(min_z, gz - dims.y * 0.5)
-		max_z = max(max_z, gz + dims.y * 0.5)
+		min_z = min(min_z, gz_bot)
+		max_z = max(max_z, gz_top)
 
 	if min_x > max_x or min_z > max_z:
 		_reset_camera_default()

@@ -47,6 +47,9 @@ var _tree_container: VBoxContainer
 # Right Dock
 var _inspector_container: VBoxContainer
 var _diagnostics_panel: DiagnosticsPanel
+var _insp_spin_px: SpinBox
+var _insp_spin_py: SpinBox
+var _insp_spin_pz: SpinBox
 
 # Transport
 var _btn_play: Button
@@ -450,6 +453,33 @@ func _populate_inspector() -> void:
 	_add_inspector_field("ID", elem.id)
 	_add_inspector_field("Kind", elem.kind.capitalize())
 
+	# Position (Editable, Top-Left Datum)
+	var pos_sep := HSeparator.new()
+	_inspector_container.add_child(pos_sep)
+	var pos_lbl := Label.new()
+	pos_lbl.text = "POSITION (m) [Top-Left Datum]"
+	pos_lbl.add_theme_font_size_override("font_size", 10)
+	pos_lbl.add_theme_color_override("font_color", MUTED)
+	_inspector_container.add_child(pos_lbl)
+
+	var cur_px: float = float(elem.transform.position.x)
+	var cur_py: float = float(elem.transform.position.y)
+	var cur_pz: float = float(elem.transform.position.z)
+	var eid := elem.id
+
+	_insp_spin_px = _add_inspector_spinbox("X (Left)", cur_px, -200.0, 200.0, 0.1, func(v: float):
+		cur_px = v
+		doc_store.update_element_position(eid, Vector3(cur_px, cur_py, cur_pz))
+	)
+	_insp_spin_py = _add_inspector_spinbox("Y (Top)", cur_py, -200.0, 200.0, 0.1, func(v: float):
+		cur_py = v
+		doc_store.update_element_position(eid, Vector3(cur_px, cur_py, cur_pz))
+	)
+	_insp_spin_pz = _add_inspector_spinbox("Z (Floor)", cur_pz, 0.0, 50.0, 0.1, func(v: float):
+		cur_pz = v
+		doc_store.update_element_position(eid, Vector3(cur_px, cur_py, cur_pz))
+	)
+
 	# Physical Dimensions (Editable)
 	var dims_sep := HSeparator.new()
 	_inspector_container.add_child(dims_sep)
@@ -465,7 +495,6 @@ func _populate_inspector() -> void:
 	var cur_hgt: float = float(dims[2]) if (dims is Array and dims.size() >= 3) else 0.8
 	var z_s: float = float(elem.geometry.get("elevation_start", 0.8))
 	var z_e: float = float(elem.geometry.get("elevation_end", z_s))
-	var eid := elem.id
 
 	_add_inspector_spinbox("Length (X)", cur_len, 0.5, 100.0, 0.1, func(v: float):
 		cur_len = v
@@ -613,11 +642,23 @@ func _on_document_modified() -> void:
 	_diagnostics_panel.update_diagnostics(doc_store.last_diagnostics, doc_store.is_document_valid)
 	if _viewport_3d != null:
 		_viewport_3d.rebuild_3d_scene()
+	if doc_store != null and not doc_store.selected_id.is_empty() and doc_store.selected_type == "element":
+		var sel_elem := doc_store.get_element(doc_store.selected_id)
+		if sel_elem != null:
+			if _insp_spin_px != null and is_instance_valid(_insp_spin_px) and not _insp_spin_px.has_focus():
+				_insp_spin_px.set_value_no_signal(sel_elem.transform.position.x)
+			if _insp_spin_py != null and is_instance_valid(_insp_spin_py) and not _insp_spin_py.has_focus():
+				_insp_spin_py.set_value_no_signal(sel_elem.transform.position.y)
+			if _insp_spin_pz != null and is_instance_valid(_insp_spin_pz) and not _insp_spin_pz.has_focus():
+				_insp_spin_pz.set_value_no_signal(sel_elem.transform.position.z)
 
 func _on_document_saved(_path: String) -> void:
 	_update_title()
 
 func _on_selection_changed(_id_val: String, _type_val: String) -> void:
+	_insp_spin_px = null
+	_insp_spin_py = null
+	_insp_spin_pz = null
 	_populate_inspector()
 
 func _on_diagnostics_updated(diagnostics: Array, is_valid: bool) -> void:

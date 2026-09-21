@@ -97,6 +97,18 @@ func test_document_store_lifecycle() -> void:
 	_assert(did_redo, "Redo succeeded")
 	_assert(store.active_document.elements.size() == 2, "Redo restored second element addition")
 
+	# Test update_element_position and undo
+	store.update_element_position("c1", Vector3(18.5, 12.0, 0.0))
+	var c1_updated := store.get_element("c1")
+	_assert(c1_updated.transform.position == Vector3(18.5, 12.0, 0.0), "Element position updated in store")
+	_assert(c1_updated.editor.graph_position == Vector2(370.0, 240.0), "Element graph position synchronized (20px per meter)")
+	store.undo()
+	var c1_undone := store.get_element("c1")
+	_assert(c1_undone.transform.position == Vector3(10.0, 10.0, 0.8), "Undo restored previous element position")
+	store.redo()
+	var c1_redone := store.get_element("c1")
+	_assert(c1_redone.transform.position == Vector3(18.5, 12.0, 0.0), "Redo restored updated element position")
+
 	# Test Save & Load atomic round-trip
 	var tmp_path := "user://test_7d05_save.json"
 	var save_ok := store.save_to_file(tmp_path)
@@ -455,7 +467,18 @@ func test_authoring_shell_two_view_switching_and_transport() -> void:
 			for sub in child.get_children():
 				if sub is SpinBox:
 					spinbox_count += 1
-	_assert(spinbox_count >= 5, "Inspector contains editable SpinBoxes for Length, Width, Height, Elev Start, Elev End")
+	_assert(spinbox_count >= 8, "Inspector contains editable SpinBoxes for Position (X,Y,Z), Dimensions (L,W,H), and Elevation (Z1,Z2)")
+	_assert(shell._insp_spin_px != null and shell._insp_spin_py != null and shell._insp_spin_pz != null, "Position SpinBox references initialized")
+
+	# Test Position SpinBox change updates element and 2D canvas
+	shell._insp_spin_px.value = 15.0
+	shell._insp_spin_px.value_changed.emit(15.0)
+	_assert(test_elem.transform.position.x == 15.0, "Changing X SpinBox updates element transform.position.x")
+	_assert(test_elem.editor.graph_position.x == 300.0, "Changing X SpinBox updates graph_position (15m * 20px/m = 300px)")
+
+	# Test 2D block move syncs to inspector
+	shell._canvas_2d._on_block_moved("test_c", Vector2(400, 200))
+	_assert(abs(shell._insp_spin_px.value - (400.0 - shell._canvas_2d.pan_offset.x) / (shell._canvas_2d.zoom_level * 20.0)) < 0.05, "Moving block on 2D canvas syncs to Inspector X SpinBox")
 
 	# Test 3D Viewport synchronization & camera auto-framing
 	var vp: Viewport3D = shell._viewport_3d

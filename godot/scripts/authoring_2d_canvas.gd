@@ -114,6 +114,7 @@ func _on_document_reloaded(_doc: SceneTypes.SceneDocument) -> void:
 func _on_document_modified() -> void:
 	for b in _block_nodes.values():
 		b.refresh_from_element()
+	_update_blocks_transform()
 	_redraw_all()
 
 func _on_selection_changed(sel_id: String, _sel_type: String) -> void:
