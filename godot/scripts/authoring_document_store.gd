@@ -231,3 +231,99 @@ func add_port_to_element(elem_id: String, port: SceneTypes.ScenePort) -> bool:
 	validate()
 	document_modified.emit()
 	return true
+
+func remove_last_port_from_element(elem_id: String, bay_action: String) -> bool:
+	var elem := get_element(elem_id)
+	if elem == null or active_document == null:
+		return false
+
+	var removed_port_id := ""
+	match bay_action:
+		"flow_in":
+			var flow_ins: Array = []
+			for p in elem.input_ports:
+				if p.kind == "flow":
+					flow_ins.append(p)
+			if flow_ins.size() <= 1:
+				return false # Protect core primary flow_in
+			var target_port: SceneTypes.ScenePort = flow_ins[-1]
+			removed_port_id = target_port.id
+			elem.input_ports.erase(target_port)
+
+		"flow_out":
+			var flow_outs: Array = []
+			for p in elem.output_ports:
+				if p.kind == "flow":
+					flow_outs.append(p)
+			if flow_outs.size() <= 1:
+				return false # Protect core primary flow_out
+			var target_port: SceneTypes.ScenePort = flow_outs[-1]
+			removed_port_id = target_port.id
+			elem.output_ports.erase(target_port)
+
+		"signal_in":
+			var sig_ins: Array = []
+			for p in elem.input_ports:
+				if p.kind in ["signal", "control"]:
+					sig_ins.append(p)
+			if sig_ins.is_empty():
+				return false
+			var target_port: SceneTypes.ScenePort = sig_ins[-1]
+			removed_port_id = target_port.id
+			elem.input_ports.erase(target_port)
+
+		"metric_out":
+			if not elem.metric_ports.is_empty():
+				var target_port: SceneTypes.ScenePort = elem.metric_ports[-1]
+				removed_port_id = target_port.id
+				elem.metric_ports.pop_back()
+			else:
+				var met_outs: Array = []
+				for p in elem.output_ports:
+					if p.kind == "metric":
+						met_outs.append(p)
+				if met_outs.is_empty():
+					return false
+				var target_port: SceneTypes.ScenePort = met_outs[-1]
+				removed_port_id = target_port.id
+				elem.output_ports.erase(target_port)
+
+	if removed_port_id.is_empty():
+		return false
+
+	_record_undo()
+
+	# Cascade delete any connections referencing the removed port
+	for i in range(active_document.connections.size() - 1, -1, -1):
+		var c: SceneTypes.SceneConnection = active_document.connections[i]
+		if (c.source_element == elem_id and c.source_port == removed_port_id) or \
+		   (c.target_element == elem_id and c.target_port == removed_port_id):
+			active_document.connections.remove_at(i)
+			if selected_id == c.id:
+				clear_selection()
+
+	validate()
+	document_modified.emit()
+	return true
+
+func disconnect_port(elem_id: String, port_id: String) -> int:
+	if active_document == null:
+		return 0
+
+	var removed_count := 0
+	for i in range(active_document.connections.size() - 1, -1, -1):
+		var c: SceneTypes.SceneConnection = active_document.connections[i]
+		if (c.source_element == elem_id and c.source_port == port_id) or \
+		   (c.target_element == elem_id and c.target_port == port_id):
+			if removed_count == 0:
+				_record_undo()
+			active_document.connections.remove_at(i)
+			if selected_id == c.id:
+				clear_selection()
+			removed_count += 1
+
+	if removed_count > 0:
+		validate()
+		document_modified.emit()
+
+	return removed_count

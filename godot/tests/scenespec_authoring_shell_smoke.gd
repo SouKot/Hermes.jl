@@ -136,18 +136,26 @@ func test_authoring_block_node_three_part_layout() -> void:
 	var met_pos: Vector2 = block._port_sockets["occupancy"]["pos"]
 	_assert(abs(met_pos.x - (block.size.x - 16.0)) < 1.0, "Metric Out socket resolved on Right Bay Column 2 (MET)")
 
-	# Hit test add buttons for all 4 columns
-	var hit_flow_in := block._hit_test_add_button(Vector2(10.0, block.size.y - 10.0))
-	_assert(hit_flow_in == "flow_in", "Left Bay Column 1 bottom button triggers Add Flow In")
+	# Hit test add and remove buttons for all 4 columns
+	var hit_flow_in_add := block._hit_test_add_button(Vector2(8.0, block.size.y - 10.0))
+	var hit_flow_in_rem := block._hit_test_remove_button(Vector2(22.0, block.size.y - 10.0))
+	_assert(hit_flow_in_add == "flow_in", "Left Bay Column 1 bottom button triggers Add Flow In")
+	_assert(hit_flow_in_rem == "flow_in", "Left Bay Column 1 bottom button triggers Remove Flow In")
 
-	var hit_flow_out := block._hit_test_add_button(Vector2(40.0, block.size.y - 10.0))
-	_assert(hit_flow_out == "flow_out", "Left Bay Column 2 bottom button triggers Add Flow Out")
+	var hit_flow_out_add := block._hit_test_add_button(Vector2(38.0, block.size.y - 10.0))
+	var hit_flow_out_rem := block._hit_test_remove_button(Vector2(52.0, block.size.y - 10.0))
+	_assert(hit_flow_out_add == "flow_out", "Left Bay Column 2 bottom button triggers Add Flow Out")
+	_assert(hit_flow_out_rem == "flow_out", "Left Bay Column 2 bottom button triggers Remove Flow Out")
 
-	var hit_sig_in := block._hit_test_add_button(Vector2(block.size.x - 45.0, block.size.y - 10.0))
-	_assert(hit_sig_in == "signal_in", "Right Bay Column 1 bottom button triggers Add Signal In")
+	var hit_sig_in_add := block._hit_test_add_button(Vector2(block.size.x - 55.0, block.size.y - 10.0))
+	var hit_sig_in_rem := block._hit_test_remove_button(Vector2(block.size.x - 41.0, block.size.y - 10.0))
+	_assert(hit_sig_in_add == "signal_in", "Right Bay Column 1 bottom button triggers Add Signal In")
+	_assert(hit_sig_in_rem == "signal_in", "Right Bay Column 1 bottom button triggers Remove Signal In")
 
-	var hit_met_out := block._hit_test_add_button(Vector2(block.size.x - 15.0, block.size.y - 10.0))
-	_assert(hit_met_out == "metric_out", "Right Bay Column 2 bottom button triggers Add Metric Out")
+	var hit_met_out_add := block._hit_test_add_button(Vector2(block.size.x - 24.0, block.size.y - 10.0))
+	var hit_met_out_rem := block._hit_test_remove_button(Vector2(block.size.x - 9.0, block.size.y - 10.0))
+	_assert(hit_met_out_add == "metric_out", "Right Bay Column 2 bottom button triggers Add Metric Out")
+	_assert(hit_met_out_rem == "metric_out", "Right Bay Column 2 bottom button triggers Remove Metric Out")
 
 func test_procedural_mesh_factory_conveyor_elevation_and_legs() -> void:
 	_tests_run += 1
@@ -306,6 +314,78 @@ func test_2d_canvas_and_port_wiring() -> void:
 	_assert(canvas._wire_hovered_port == "flow_in", "Hover detection resolves target socket ID")
 	_assert(canvas._wire_is_compatible, "Hover detection validates compatibility")
 	canvas._cancel_wire_drag()
+
+	# Test LIFO Port Removal (Delete Last Port)
+	while canvas._count_ports(c1.input_ports, "flow") > 1:
+		store.remove_last_port_from_element("c1", "flow_in")
+	var prev_flow_in_cnt := canvas._count_ports(c1.input_ports, "flow")
+	_assert(prev_flow_in_cnt == 1, "Baseline flow_in count is 1")
+	canvas._on_add_port_requested("c1", "flow_in")
+	_assert(canvas._count_ports(c1.input_ports, "flow") == 2, "Appended flow_in port via [+]")
+	canvas._on_remove_port_requested("c1", "flow_in")
+	_assert(canvas._count_ports(c1.input_ports, "flow") == 1, "Removed last flow_in port via [-]")
+	# Safety guard: attempt to remove core primary port below 1
+	var rem_res := store.remove_last_port_from_element("c1", "flow_in")
+	_assert(not rem_res, "Core primary flow_in port is protected from deletion")
+	_assert(canvas._count_ports(c1.input_ports, "flow") == 1, "Primary flow_in port preserved")
+
+	# Test Cascade Connection Deletion on Port Removal
+	canvas._on_add_port_requested("s1", "flow_in")
+	var new_s1_port: String = s1.input_ports[-1].id
+	canvas._wire_source_elem = "c1"
+	canvas._wire_source_port = "flow_out"
+	canvas._wire_source_kind = "flow"
+	canvas._wire_source_is_output = true
+	canvas._wire_hovered_elem = "s1"
+	canvas._wire_hovered_port = new_s1_port
+	canvas._wire_is_compatible = true
+	canvas._is_dragging_wire = true
+	canvas._finish_wire_drag()
+	var pre_del_conn_count := store.active_document.connections.size()
+	# Now remove the port from s1
+	canvas._on_remove_port_requested("s1", "flow_in")
+	_assert(store.active_document.connections.size() < pre_del_conn_count, "Connection attached to removed port was cascade-deleted")
+
+	# Test Spline Hit Testing & Selection
+	store.active_document.connections.clear()
+	var test_conn := SceneTypes.SceneConnection.new()
+	test_conn.id = "c1_flow_out__s1_flow_in"
+	test_conn.source_element = "c1"
+	test_conn.source_port = "flow_out"
+	test_conn.target_element = "s1"
+	test_conn.target_port = "flow_in"
+	test_conn.link_type = "flow"
+	store.add_connection(test_conn)
+
+	var p1 := canvas._resolve_port_position("c1", "flow_out")
+	var p2 := canvas._resolve_port_position("s1", "flow_in")
+	var mid_pt := (p1 + p2) * 0.5
+	var hit_conn_id := canvas._hit_test_connection(mid_pt)
+	_assert(hit_conn_id == test_conn.id, "Connection spline hit-tested successfully at midpoint")
+
+	# Test Wire Deletion via Keyboard [DELETE]
+	store.select(test_conn.id, "connection")
+	_assert(store.selected_id == test_conn.id and store.selected_type == "connection", "Connection selected")
+	var del_key_event := InputEventKey.new()
+	del_key_event.pressed = true
+	del_key_event.keycode = KEY_DELETE
+	canvas._input(del_key_event)
+	_assert(store.active_document.connections.is_empty(), "Selected connection deleted via KEY_DELETE")
+
+	# Test Port Disconnect (Without Deleting Port)
+	var test_conn2 := SceneTypes.SceneConnection.new()
+	test_conn2.id = "c1_flow_out__s1_flow_in_2"
+	test_conn2.source_element = "c1"
+	test_conn2.source_port = "flow_out"
+	test_conn2.target_element = "s1"
+	test_conn2.target_port = "flow_in"
+	test_conn2.link_type = "flow"
+	store.add_connection(test_conn2)
+	_assert(store.active_document.connections.size() == 1, "Connection added for disconnect test")
+	var disc_cnt := store.disconnect_port("c1", "flow_out")
+	_assert(disc_cnt == 1, "disconnect_port removed 1 attached connection")
+	_assert(store.active_document.connections.is_empty(), "Connection unlinked from port")
+	_assert(c1.output_ports.size() >= 1, "Port itself remained intact after disconnect")
 
 func test_authoring_shell_two_view_switching_and_transport() -> void:
 	_tests_run += 1

@@ -95,6 +95,8 @@ func rebuild_blocks() -> void:
 		b.block_moved.connect(_on_block_moved)
 		b.port_drag_started.connect(_on_port_drag_started)
 		b.add_port_requested.connect(_on_add_port_requested)
+		b.remove_port_requested.connect(_on_remove_port_requested)
+		b.disconnect_port_requested.connect(_on_disconnect_port_requested)
 
 	move_child(_wires_layer, -1)
 	_redraw_all()
@@ -142,6 +144,26 @@ func _on_port_drag_started(elem_id: String, port_id: String, port_kind: String, 
 	_redraw_all()
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventKey:
+		var ik := event as InputEventKey
+		if ik.pressed:
+			if ik.keycode == KEY_ESCAPE:
+				if _is_dragging_wire:
+					_cancel_wire_drag()
+					if is_inside_tree() and get_viewport() != null:
+						get_viewport().set_input_as_handled()
+				elif doc_store != null and doc_store.selected_type == "connection":
+					doc_store.clear_selection()
+					_redraw_all()
+					if is_inside_tree() and get_viewport() != null:
+						get_viewport().set_input_as_handled()
+			elif ik.keycode in [KEY_DELETE, KEY_BACKSPACE]:
+				if doc_store != null and doc_store.selected_type == "connection" and not doc_store.selected_id.is_empty():
+					doc_store.remove_connection(doc_store.selected_id)
+					_redraw_all()
+					if is_inside_tree() and get_viewport() != null:
+						get_viewport().set_input_as_handled()
+
 	if not _is_dragging_wire:
 		return
 
@@ -160,13 +182,6 @@ func _input(event: InputEvent) -> void:
 			if is_inside_tree() and get_viewport() != null:
 				get_viewport().set_input_as_handled()
 		elif mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
-			_cancel_wire_drag()
-			if is_inside_tree() and get_viewport() != null:
-				get_viewport().set_input_as_handled()
-
-	elif event is InputEventKey:
-		var ik := event as InputEventKey
-		if ik.pressed and ik.keycode == KEY_ESCAPE:
 			_cancel_wire_drag()
 			if is_inside_tree() and get_viewport() != null:
 				get_viewport().set_input_as_handled()
@@ -311,6 +326,20 @@ func _on_add_port_requested(elem_id: String, bay_action: String) -> void:
 	doc_store.validate()
 	rebuild_blocks()
 
+func _on_remove_port_requested(elem_id: String, bay_action: String) -> void:
+	if doc_store == null:
+		return
+	var ok := doc_store.remove_last_port_from_element(elem_id, bay_action)
+	if ok:
+		rebuild_blocks()
+
+func _on_disconnect_port_requested(elem_id: String, port_id: String) -> void:
+	if doc_store == null:
+		return
+	var count := doc_store.disconnect_port(elem_id, port_id)
+	if count > 0:
+		_redraw_all()
+
 func _count_ports(ports_arr: Array, kind: String) -> int:
 	var c := 0
 	for p in ports_arr:
@@ -321,7 +350,29 @@ func _count_ports(ports_arr: Array, kind: String) -> int:
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
-		if mb.button_index == MOUSE_BUTTON_MIDDLE:
+		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
+			var hit_conn := _hit_test_connection(mb.position)
+			if not hit_conn.is_empty():
+				if doc_store != null:
+					doc_store.select(hit_conn, "connection")
+				_redraw_all()
+				accept_event()
+				return
+			else:
+				if doc_store != null and doc_store.selected_type == "connection":
+					doc_store.clear_selection()
+					_redraw_all()
+
+		elif mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
+			var hit_conn := _hit_test_connection(mb.position)
+			if not hit_conn.is_empty():
+				if doc_store != null:
+					doc_store.remove_connection(hit_conn)
+				_redraw_all()
+				accept_event()
+				return
+
+		elif mb.button_index == MOUSE_BUTTON_MIDDLE:
 			if mb.pressed:
 				_panning = true
 				_pan_start = mb.position - pan_offset
@@ -411,13 +462,59 @@ func _draw_connections() -> void:
 	if doc_store == null or doc_store.active_document == null or _wires_layer == null:
 		return
 
+	var sel_conn_id := doc_store.selected_id if (doc_store != null and doc_store.selected_type == "connection") else ""
+
 	for conn in doc_store.active_document.connections:
 		var p1 := _resolve_port_position(conn.source_element, conn.source_port)
 		var p2 := _resolve_port_position(conn.target_element, conn.target_port)
 		if p1 != Vector2.ZERO and p2 != Vector2.ZERO:
-			var col := FLOW_WIRE_COLOR if conn.link_type == "flow" else SIGNAL_WIRE_COLOR
-			var dashed: bool = (conn.link_type != "flow")
-			_draw_spline(_wires_layer, p1, p2, col, 2.0, dashed)
+			var is_conn_sel: bool = (str(conn.id) == sel_conn_id)
+			if is_conn_sel:
+				# Highlight selected connection with cyan glow and bright spline
+				_draw_spline(_wires_layer, p1, p2, Color(0.0, 0.82, 1.0, 0.45), 6.0, false)
+				_draw_spline(_wires_layer, p1, p2, Color("#00d2ff"), 2.5, false)
+			else:
+				var col := FLOW_WIRE_COLOR if conn.link_type == "flow" else SIGNAL_WIRE_COLOR
+				var dashed: bool = (conn.link_type != "flow")
+				_draw_spline(_wires_layer, p1, p2, col, 2.0, dashed)
+
+func _hit_test_connection(canvas_mouse: Vector2) -> String:
+	if doc_store == null or doc_store.active_document == null:
+		return ""
+
+	var best_conn_id := ""
+	var best_dist := 10.0
+
+	for conn in doc_store.active_document.connections:
+		var p1 := _resolve_port_position(conn.source_element, conn.source_port)
+		var p2 := _resolve_port_position(conn.target_element, conn.target_port)
+		if p1 == Vector2.ZERO or p2 == Vector2.ZERO:
+			continue
+
+		var dx := (p2.x - p1.x) * 0.5
+		var cp1 := p1 + Vector2(max(abs(dx), 40.0), 0)
+		var cp2 := p2 - Vector2(max(abs(dx), 40.0), 0)
+
+		var prev_pt := p1
+		var segments := 16
+		for i in range(1, segments + 1):
+			var t := float(i) / float(segments)
+			var cur_pt := p1.bezier_interpolate(cp1, cp2, p2, t)
+			var d := _dist_to_segment(canvas_mouse, prev_pt, cur_pt)
+			if d < best_dist:
+				best_dist = d
+				best_conn_id = conn.id
+			prev_pt = cur_pt
+
+	return best_conn_id
+
+func _dist_to_segment(p: Vector2, a: Vector2, b: Vector2) -> float:
+	var l2: float = a.distance_squared_to(b)
+	if l2 == 0.0:
+		return p.distance_to(a)
+	var t: float = clamp((p - a).dot(b - a) / l2, 0.0, 1.0)
+	var proj: Vector2 = a + (b - a) * t
+	return p.distance_to(proj)
 
 func _resolve_port_position(elem_id: String, port_id: String) -> Vector2:
 	if _block_nodes.has(elem_id):

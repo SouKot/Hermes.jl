@@ -406,12 +406,39 @@ func _populate_inspector() -> void:
 
 	if doc_store == null or doc_store.selected_id.is_empty():
 		var empty_lbl := Label.new()
-		empty_lbl.text = "No entity selected.\nClick an element in 2D to inspect."
+		empty_lbl.text = "No selection.\nClick an entity block or connection wire to inspect."
 		empty_lbl.add_theme_font_size_override("font_size", 11)
 		empty_lbl.add_theme_color_override("font_color", MUTED)
 		_inspector_container.add_child(empty_lbl)
 		return
 
+	# 1. Connection Selected
+	if doc_store.selected_type == "connection":
+		var conn: SceneTypes.SceneConnection = null
+		if doc_store.active_document != null:
+			for c in doc_store.active_document.connections:
+				if c.id == doc_store.selected_id:
+					conn = c
+					break
+		if conn != null:
+			_add_inspector_field("Type", "Connection (%s)" % conn.link_type.capitalize())
+			_add_inspector_field("ID", conn.id)
+			_add_inspector_field("Source", "%s . %s" % [conn.source_element, conn.source_port])
+			_add_inspector_field("Target", "%s . %s" % [conn.target_element, conn.target_port])
+
+			var del_conn_btn := Button.new()
+			del_conn_btn.text = "Delete Connection"
+			del_conn_btn.add_theme_color_override("font_color", Color("#e74c3c"))
+			var cid := conn.id
+			del_conn_btn.pressed.connect(func():
+				doc_store.remove_connection(cid)
+				_canvas_2d._redraw_all()
+				_populate_inspector()
+			)
+			_inspector_container.add_child(del_conn_btn)
+		return
+
+	# 2. Element Selected
 	var elem := doc_store.get_element(doc_store.selected_id)
 	if elem == null:
 		return
@@ -432,6 +459,58 @@ func _populate_inspector() -> void:
 	var z_e = elem.geometry.get("elevation_end", z_s)
 	_add_inspector_field("Elev Start", "%.2f m" % float(z_s))
 	_add_inspector_field("Elev End", "%.2f m" % float(z_e))
+
+	# Active Connections for this Element
+	var conns_sep := HSeparator.new()
+	_inspector_container.add_child(conns_sep)
+
+	var conns_lbl := Label.new()
+	conns_lbl.text = "ACTIVE CONNECTIONS"
+	conns_lbl.add_theme_font_size_override("font_size", 10)
+	conns_lbl.add_theme_color_override("font_color", MUTED)
+	_inspector_container.add_child(conns_lbl)
+
+	var found_conns := false
+	if doc_store.active_document != null:
+		for c in doc_store.active_document.connections:
+			if c.source_element == elem.id or c.target_element == elem.id:
+				found_conns = true
+				var row := HBoxContainer.new()
+				var lbl := Label.new()
+				lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				lbl.add_theme_font_size_override("font_size", 10)
+				var is_out: bool = (c.source_element == elem.id)
+				var col := Color("#2ecc71") if c.link_type == "flow" else Color("#f39c12")
+				if is_out:
+					lbl.text = "OUT: %s → %s.%s" % [c.source_port, c.target_element, c.target_port]
+				else:
+					lbl.text = "IN: %s ← %s.%s" % [c.target_port, c.source_element, c.source_port]
+				lbl.add_theme_color_override("font_color", col)
+				row.add_child(lbl)
+
+				var x_btn := Button.new()
+				x_btn.text = "✕"
+				x_btn.custom_minimum_size = Vector2(22, 18)
+				x_btn.add_theme_font_size_override("font_size", 10)
+				x_btn.add_theme_color_override("font_color", Color("#e74c3c"))
+				var conn_id: String = c.id
+				x_btn.pressed.connect(func():
+					doc_store.remove_connection(conn_id)
+					_canvas_2d._redraw_all()
+					_populate_inspector()
+				)
+				row.add_child(x_btn)
+				_inspector_container.add_child(row)
+
+	if not found_conns:
+		var no_conn := Label.new()
+		no_conn.text = "None"
+		no_conn.add_theme_font_size_override("font_size", 10)
+		no_conn.add_theme_color_override("font_color", MUTED)
+		_inspector_container.add_child(no_conn)
+
+	var btn_sep := HSeparator.new()
+	_inspector_container.add_child(btn_sep)
 
 	# Delete button
 	var del_btn := Button.new()

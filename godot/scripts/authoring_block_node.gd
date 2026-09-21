@@ -10,6 +10,8 @@ signal block_moved(element_id: String, new_pos: Vector2)
 signal port_drag_started(element_id: String, port_id: String, port_kind: String, is_output: bool, global_pos: Vector2)
 signal port_drag_ended(element_id: String, port_id: String)
 signal add_port_requested(element_id: String, bay_action: String) # "flow_in", "flow_out", "signal_in", "metric_out"
+signal remove_port_requested(element_id: String, bay_action: String) # "flow_in", "flow_out", "signal_in", "metric_out"
+signal disconnect_port_requested(element_id: String, port_id: String)
 
 const BG_NORMAL := Color("#121b27")
 const BG_SELECTED := Color("#17263c")
@@ -194,10 +196,13 @@ func _gui_input(event: InputEvent) -> void:
 					accept_event()
 					return
 
-				# 2. Check if clicked on a [+] button
-				var hit_add := _hit_test_add_button(mb.position)
-				if not hit_add.is_empty():
-					add_port_requested.emit(element.id, hit_add)
+				# 2. Check if clicked on a [+] or [-] button
+				var hit_btn := _hit_test_port_button(mb.position)
+				if not hit_btn.is_empty():
+					if hit_btn["action"] == "add":
+						add_port_requested.emit(element.id, hit_btn["bay"])
+					else:
+						remove_port_requested.emit(element.id, hit_btn["bay"])
 					accept_event()
 					return
 
@@ -210,6 +215,14 @@ func _gui_input(event: InputEvent) -> void:
 				if _dragging:
 					_dragging = false
 					accept_event()
+
+		elif mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
+			# Right-click on a port socket -> Disconnect attached wire(s)
+			var hit_port := _hit_test_port(mb.position)
+			if not hit_port.is_empty():
+				disconnect_port_requested.emit(element.id, hit_port)
+				accept_event()
+				return
 
 	elif event is InputEventMouseMotion and _dragging:
 		var mm := event as InputEventMouseMotion
@@ -228,38 +241,73 @@ func _hit_test_port(local_pos: Vector2) -> String:
 			best_id = port_id
 	return best_id
 
-func _hit_test_add_button(local_pos: Vector2) -> String:
+func _hit_test_port_button(local_pos: Vector2) -> Dictionary:
 	var btn_h := 16.0
 	var btn_y := size.y - btn_h - 4.0
+	if local_pos.y < btn_y or local_pos.y > btn_y + btn_h:
+		return {}
 
-	# Left Bay (Flow In / Flow Out)
-	if Rect2(4.0, btn_y, 26.0, btn_h).has_point(local_pos):
-		return "flow_in"
-	if Rect2(34.0, btn_y, 26.0, btn_h).has_point(local_pos):
-		return "flow_out"
+	# Left Bay Col 1: Flow In ([+] and [-])
+	if Rect2(2.0, btn_y, 13.0, btn_h).has_point(local_pos):
+		return {"action": "add", "bay": "flow_in"}
+	if Rect2(16.0, btn_y, 13.0, btn_h).has_point(local_pos):
+		return {"action": "remove", "bay": "flow_in"}
 
-	# Right Bay (Signal In / Metric Out)
-	if Rect2(size.x - 60.0, btn_y, 26.0, btn_h).has_point(local_pos):
-		return "signal_in"
-	if Rect2(size.x - 30.0, btn_y, 26.0, btn_h).has_point(local_pos):
-		return "metric_out"
+	# Left Bay Col 2: Flow Out ([+] and [-])
+	if Rect2(32.0, btn_y, 13.0, btn_h).has_point(local_pos):
+		return {"action": "add", "bay": "flow_out"}
+	if Rect2(46.0, btn_y, 13.0, btn_h).has_point(local_pos):
+		return {"action": "remove", "bay": "flow_out"}
 
+	# Right Bay Col 1: Signal In ([+] and [-])
+	if Rect2(size.x - 62.0, btn_y, 13.0, btn_h).has_point(local_pos):
+		return {"action": "add", "bay": "signal_in"}
+	if Rect2(size.x - 48.0, btn_y, 13.0, btn_h).has_point(local_pos):
+		return {"action": "remove", "bay": "signal_in"}
+
+	# Right Bay Col 2: Metric Out ([+] and [-])
+	if Rect2(size.x - 30.0, btn_y, 13.0, btn_h).has_point(local_pos):
+		return {"action": "add", "bay": "metric_out"}
+	if Rect2(size.x - 16.0, btn_y, 13.0, btn_h).has_point(local_pos):
+		return {"action": "remove", "bay": "metric_out"}
+
+	return {}
+
+func _hit_test_add_button(local_pos: Vector2) -> String:
+	var hit := _hit_test_port_button(local_pos)
+	if hit.get("action", "") == "add":
+		return hit.get("bay", "")
+	return ""
+
+func _hit_test_remove_button(local_pos: Vector2) -> String:
+	var hit := _hit_test_port_button(local_pos)
+	if hit.get("action", "") == "remove":
+		return hit.get("bay", "")
 	return ""
 
 func _get_tooltip(at_position: Vector2) -> String:
+	var hit_btn := _hit_test_port_button(at_position)
+	if not hit_btn.is_empty():
+		var action_str := "Add" if hit_btn["action"] == "add" else "Remove last"
+		var bay_str := str(hit_btn["bay"]).replace("_", " ").capitalize()
+		return "%s %s port" % [action_str, bay_str]
+
 	var hit_port := _hit_test_port(at_position)
 	if not hit_port.is_empty():
 		var p_info: Dictionary = _port_sockets.get(hit_port, {})
 		var dir_str: String = "Output" if p_info.get("is_output", false) else "Input"
 		var kind_str: String = str(p_info.get("kind", "")).capitalize()
 		var p_name: String = str(p_info.get("name", hit_port))
+		var base_tip := ""
 		if p_info.get("kind", "") == "flow":
-			return "Flow %s: %s\nID: %s\n(Drag to connect to %s)" % [dir_str, p_name, hit_port, "Flow In" if p_info.get("is_output", false) else "Flow Out"]
+			base_tip = "Flow %s: %s\nID: %s\n(Drag to connect to %s)" % [dir_str, p_name, hit_port, "Flow In" if p_info.get("is_output", false) else "Flow Out"]
 		elif p_info.get("kind", "") == "metric":
-			return "Metric Output: %s\nID: %s\n(Connect to Signal In)" % [p_name, hit_port]
+			base_tip = "Metric Output: %s\nID: %s\n(Connect to Signal In)" % [p_name, hit_port]
 		elif p_info.get("kind", "") == "signal":
-			return "Signal Input: %s\nID: %s\n(Receives Metric Signal)" % [p_name, hit_port]
-		return "%s %s: %s\nID: %s" % [kind_str, dir_str, p_name, hit_port]
+			base_tip = "Signal Input: %s\nID: %s\n(Receives Metric Signal)" % [p_name, hit_port]
+		else:
+			base_tip = "%s %s: %s\nID: %s" % [kind_str, dir_str, p_name, hit_port]
+		return base_tip + "\n(Right-click to disconnect wires)"
 	return ""
 
 func _draw() -> void:
@@ -331,30 +379,30 @@ func _draw() -> void:
 		# Inner socket core (White for Output emitter, Solid color for Input target)
 		draw_circle(p_pos, 3.5, Color.WHITE if is_out else p_col)
 
-	# 6. Bottom Add Buttons
+	# 6. Bottom Port Buttons ([+] and [-])
 	var btn_h := 16.0
 	var btn_y := size.y - btn_h - 4.0
+	var col_btn_sub := Color("#e74c3c")
 
-	# Left Bay: [+ IN] button
-	var btn_in_rect := Rect2(4.0, btn_y, 24.0, btn_h)
-	draw_rect(btn_in_rect, Color("#172333"), true)
-	draw_rect(btn_in_rect, BORDER_NORMAL, false, 1.0)
-	draw_string(ThemeDB.fallback_font, Vector2(btn_in_rect.position.x + 8.0, btn_in_rect.position.y + 12.0), "+", HORIZONTAL_ALIGNMENT_CENTER, -1, 12, Color("#2ecc71"))
+	# Left Bay: Col 1 Flow In [+] and [-]
+	_draw_port_btn_pair(Rect2(2.0, btn_y, 13.0, btn_h), Rect2(16.0, btn_y, 13.0, btn_h), Color("#2ecc71"), col_btn_sub)
 
-	# Left Bay: [+ OUT] button
-	var btn_out_rect := Rect2(32.0, btn_y, 24.0, btn_h)
-	draw_rect(btn_out_rect, Color("#172333"), true)
-	draw_rect(btn_out_rect, BORDER_NORMAL, false, 1.0)
-	draw_string(ThemeDB.fallback_font, Vector2(btn_out_rect.position.x + 8.0, btn_out_rect.position.y + 12.0), "+", HORIZONTAL_ALIGNMENT_CENTER, -1, 12, Color("#a8d5ba"))
+	# Left Bay: Col 2 Flow Out [+] and [-]
+	_draw_port_btn_pair(Rect2(32.0, btn_y, 13.0, btn_h), Rect2(46.0, btn_y, 13.0, btn_h), Color("#a8d5ba"), col_btn_sub)
 
-	# Right Bay: [+ SIG] button
-	var btn_sig_rect := Rect2(size.x - 60.0, btn_y, 24.0, btn_h)
-	draw_rect(btn_sig_rect, Color("#172333"), true)
-	draw_rect(btn_sig_rect, BORDER_NORMAL, false, 1.0)
-	draw_string(ThemeDB.fallback_font, Vector2(btn_sig_rect.position.x + 8.0, btn_sig_rect.position.y + 12.0), "+", HORIZONTAL_ALIGNMENT_CENTER, -1, 12, COLOR_SIGNAL)
+	# Right Bay: Col 1 Signal In [+] and [-]
+	_draw_port_btn_pair(Rect2(size.x - 62.0, btn_y, 13.0, btn_h), Rect2(size.x - 48.0, btn_y, 13.0, btn_h), COLOR_SIGNAL, col_btn_sub)
 
-	# Right Bay: [+ MET] button
-	var btn_met_rect := Rect2(size.x - 32.0, btn_y, 24.0, btn_h)
-	draw_rect(btn_met_rect, Color("#172333"), true)
-	draw_rect(btn_met_rect, BORDER_NORMAL, false, 1.0)
-	draw_string(ThemeDB.fallback_font, Vector2(btn_met_rect.position.x + 8.0, btn_met_rect.position.y + 12.0), "+", HORIZONTAL_ALIGNMENT_CENTER, -1, 12, COLOR_METRIC)
+	# Right Bay: Col 2 Metric Out [+] and [-]
+	_draw_port_btn_pair(Rect2(size.x - 30.0, btn_y, 13.0, btn_h), Rect2(size.x - 16.0, btn_y, 13.0, btn_h), COLOR_METRIC, col_btn_sub)
+
+func _draw_port_btn_pair(r_add: Rect2, r_sub: Rect2, add_col: Color, sub_col: Color) -> void:
+	# Add button [+]
+	draw_rect(r_add, Color("#172333"), true)
+	draw_rect(r_add, BORDER_NORMAL, false, 1.0)
+	draw_string(ThemeDB.fallback_font, Vector2(r_add.position.x + 3.0, r_add.position.y + 12.0), "+", HORIZONTAL_ALIGNMENT_CENTER, -1, 11, add_col)
+
+	# Remove button [-]
+	draw_rect(r_sub, Color("#172333"), true)
+	draw_rect(r_sub, BORDER_NORMAL, false, 1.0)
+	draw_string(ThemeDB.fallback_font, Vector2(r_sub.position.x + 3.0, r_sub.position.y + 11.0), "−", HORIZONTAL_ALIGNMENT_CENTER, -1, 11, sub_col)
