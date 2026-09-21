@@ -1,10 +1,10 @@
 # Phase 7D: Checkpoint & Session Resume Handoff
 
-**Timestamp**: 2026-09-20T01:45:00-07:00  
+**Timestamp**: 2026-09-20T18:00:00-07:00  
 **Workspace**: `/run/media/sourabh/SANDISK-2TB/antigravity/ABM`  
 **Git Branch**: `main`  
-**Current Milestone**: Phase 7D-02 Completed & Accepted (100% Tests Passing, Zero Regressions)  
-**Next Immediate Milestone**: Phase 7D-03 (Dynamic Extension Preservation & Custom Metadata API)
+**Current Milestone**: Phase 7D-03 Completed & Accepted (100% Tests Passing, Zero Regressions)  
+**Next Immediate Milestone**: Phase 7D-04 (Hierarchical Subgraph Expansion & Multi-Level Layout Engine)
 
 ---
 
@@ -40,6 +40,18 @@
    - **Valid Fixtures Verification**:
      All 6 valid golden fixtures (`minimal_des.json`, `minimal_abm.json`, `minimal_hybrid.json`, `two_level_spatial.json`, `missing_library.json`, `future_fields.json`) pass validation with 0 errors.
 
+4. **Phase 7D-03 (Dynamic Extension Preservation & Custom Metadata API)**:
+   - **Julia Metadata & Extensions API** ([`packages/GodotBridge/src/protocol/scenespec_extensions.jl`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/packages/GodotBridge/src/protocol/scenespec_extensions.jl)):
+     `get_extension`, `set_extension!`, `has_extension`, `delete_extension!`, `list_extension_keys`, `get_extension_path`, `set_extension_path!`, `get_namespace`, `set_namespace!`, `has_namespace`, `delete_namespace!`, `merge_extensions!`, `copy_extensions`.
+   - **Godot `SceneExtensible` Hierarchy** ([`godot/scripts/scenespec_types.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/scenespec_types.gd)):
+     `SceneExtensible` base class inherited by `SceneEditorMeta`, `ScenePort`, `SceneLevel`, `SceneConnection`, `SceneElement`, `SceneDocument`.
+   - **Dual Resolution & Deep Paths**:
+     Transparent access to direct top-level unknown keys and nested `extensions` dictionaries; path navigation with `.` and `/` delimiters; intermediate dictionary auto-creation.
+   - **Extension Governance Rules**:
+     Enforced in both Julia and Godot: `EXT_001_INVALID_KEY` (character set validation) and `EXT_002_RESERVED_KEY_CONFLICT` (prevents collision with core schema keys).
+   - **Lossless MessagePack Round-Trip**:
+     100% binary preservation verified across round-trips with zero schema pollution.
+
 ---
 
 ## 2. Test Verification & Evidence
@@ -57,12 +69,14 @@ All automated test suites are passing with 100% success:
    - Step 5: Godot Headless Typed Domain Classes Suite (**7/7 fixtures + deep cloning + extensions + normalization passed**)
    - Step 6: Julia SceneSpec Semantic Validation Suite (**86/86 passed**)
    - Step 7: Godot Headless SimVizSceneValidator Suite (**All 9 validation test cases passed**)
+   - Step 8: Julia SceneSpec Extensions & Metadata Suite (**61/61 passed**)
+   - Step 9: Godot Headless SceneSpec Extensions & Metadata Suite (**All 7 test suites passed**)
 
 2. **Full Julia Regression Suite**:
    ```bash
    /home/sourabh/.juliaup/bin/julia --project=packages/GodotBridge packages/GodotBridge/test/runtests.jl
    ```
-   - **377/377 passed** (Zero regressions across protocol, extraction, worker pools, adaptive updates, dirty tracking, full snapshot, SIMD profiling, and all Phase 7D suites).
+   - **438/438 passed** (Zero regressions across protocol, extraction, worker pools, adaptive updates, dirty tracking, full snapshot, SIMD profiling, and all Phase 7D suites).
 
 3. **Phase 7C Interop Launcher**:
    ```bash
@@ -72,17 +86,15 @@ All automated test suites are passing with 100% success:
 
 ---
 
-## 3. Plan for Next Phase: Phase 7D-03 (Dynamic Extension Preservation & Custom Metadata API)
+## 3. Plan for Next Milestone: Phase 7D-04 (Hierarchical Subgraph Expansion & Multi-Level Layout Engine)
 
-Phase 7D-03 will build upon the completed typed models and validation engine to provide dedicated high-level APIs for manipulating domain extensions and custom metadata without touching core types:
+Phase 7D-04 will focus on hierarchical subgraphs (templates, reusable modules, and compound nodes) and multi-level spatial layouts:
 
-1. **Julia Metadata API**:
-   - `get_extension(obj, key, default=nothing)`
-   - `set_extension!(obj, key, value)`
-   - `has_extension(obj, key)`
-   - Namespaced extension support (e.g. `vendor:analytics`, `rendering:pbr`).
-2. **Godot Metadata API**:
-   - Equivalent methods on `SimVizSceneTypes` classes for typed access to `extensions`.
-3. **Extension Validation Rules**:
-   - Optional schema validation for registered extensions.
-   - Preservation during partial updates and cloning.
+1. **Hierarchical Subgraph Model & Expansion**:
+   - Flattening and expanding `subgraphs` during compilation into flat simulation graphs with namespaced IDs (e.g. `subgraph_01::server_01`).
+   - Boundary port mapping (`input_ports`, `output_ports` on subgraphs mapping to internal element ports).
+2. **Multi-Level Layout Engine**:
+   - Spatial projection and elevation resolution across multiple levels ($Z = \text{elevation} + \text{offset}$).
+   - Vertical connector routing (stairs, elevators, ramps) between discrete levels.
+3. **Cross-Boundary Verification**:
+   - Dedicated round-trip and validation tests in both Julia and Godot.

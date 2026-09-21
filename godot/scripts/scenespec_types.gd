@@ -34,14 +34,196 @@ class SceneTransform extends RefCounted:
 		return c
 
 # ============================================================================
+# SceneExtensible
+# ============================================================================
+class SceneExtensible extends RefCounted:
+	var extensions: Dictionary = {}
+
+	func has_extension(key: String) -> bool:
+		if extensions.has(key):
+			return true
+		if extensions.has("extensions") and extensions["extensions"] is Dictionary:
+			return extensions["extensions"].has(key)
+		return false
+
+	func get_extension(key: String, default_val: Variant = null) -> Variant:
+		if extensions.has(key):
+			return extensions[key]
+		if extensions.has("extensions") and extensions["extensions"] is Dictionary:
+			var sub: Dictionary = extensions["extensions"]
+			if sub.has(key):
+				return sub[key]
+		return default_val
+
+	func set_extension(key: String, value: Variant, in_nested_block: bool = false) -> void:
+		if in_nested_block:
+			if not extensions.has("extensions") or not (extensions["extensions"] is Dictionary):
+				extensions["extensions"] = {}
+			extensions["extensions"][key] = value
+		else:
+			if not extensions.has(key) and extensions.has("extensions") and (extensions["extensions"] is Dictionary) and extensions["extensions"].has(key):
+				extensions["extensions"][key] = value
+			else:
+				extensions[key] = value
+
+	func delete_extension(key: String) -> Variant:
+		if extensions.has(key):
+			var val = extensions[key]
+			extensions.erase(key)
+			return val
+		if extensions.has("extensions") and extensions["extensions"] is Dictionary:
+			var sub: Dictionary = extensions["extensions"]
+			if sub.has(key):
+				var val = sub[key]
+				sub.erase(key)
+				if sub.is_empty():
+					extensions.erase("extensions")
+				return val
+		return null
+
+	func list_extensions() -> Array:
+		var s := {}
+		for k in extensions.keys():
+			if str(k) != "extensions":
+				s[str(k)] = true
+		if extensions.has("extensions") and extensions["extensions"] is Dictionary:
+			for k in extensions["extensions"].keys():
+				s[str(k)] = true
+		var res: Array = s.keys()
+		res.sort()
+		return res
+
+	func get_extension_path(path: String, default_val: Variant = null) -> Variant:
+		var raw_tokens = path.split(".", false)
+		var tokens: Array = []
+		for tok in raw_tokens:
+			for sub in tok.split("/", false):
+				var st := sub.strip_edges()
+				if not st.is_empty():
+					tokens.append(st)
+		if tokens.is_empty():
+			return default_val
+
+		var first_tok: String = tokens[0]
+		var curr: Variant = get_extension(first_tok, null)
+		var start_idx := 1
+		if curr == null:
+			if first_tok == "extensions" and tokens.size() > 1:
+				curr = extensions.get("extensions", null)
+				start_idx = 1
+			else:
+				return default_val
+		else:
+			start_idx = 1
+
+		for i in range(start_idx, tokens.size()):
+			if curr == null:
+				return default_val
+			var tok: String = tokens[i]
+			if curr is Dictionary:
+				if curr.has(tok):
+					curr = curr[tok]
+				else:
+					return default_val
+			elif curr is Array:
+				if tok.is_valid_int():
+					var idx := tok.to_int()
+					if idx >= 0 and idx < curr.size():
+						curr = curr[idx]
+					else:
+						return default_val
+				else:
+					return default_val
+			else:
+				return default_val
+		return curr
+
+	func set_extension_path(path: String, value: Variant) -> void:
+		var raw_tokens = path.split(".", false)
+		var tokens: Array = []
+		for tok in raw_tokens:
+			for sub in tok.split("/", false):
+				var st := sub.strip_edges()
+				if not st.is_empty():
+					tokens.append(st)
+		if tokens.is_empty():
+			return
+
+		if tokens.size() == 1:
+			set_extension(tokens[0], value)
+			return
+
+		var start_idx := 1
+		var curr: Dictionary
+		var first_tok: String = tokens[0]
+		if first_tok == "extensions":
+			if not extensions.has("extensions") or not (extensions["extensions"] is Dictionary):
+				extensions["extensions"] = {}
+			curr = extensions["extensions"]
+			start_idx = 1
+		else:
+			if extensions.has(first_tok) and extensions[first_tok] is Dictionary:
+				curr = extensions[first_tok]
+			elif extensions.has("extensions") and extensions["extensions"] is Dictionary and extensions["extensions"].has(first_tok) and extensions["extensions"][first_tok] is Dictionary:
+				curr = extensions["extensions"][first_tok]
+			else:
+				curr = {}
+				extensions[first_tok] = curr
+			start_idx = 1
+
+		for i in range(start_idx, tokens.size() - 1):
+			var tok: String = tokens[i]
+			if not curr.has(tok) or not (curr[tok] is Dictionary):
+				curr[tok] = {}
+			curr = curr[tok]
+
+		var leaf_tok: String = tokens[tokens.size() - 1]
+		curr[leaf_tok] = value
+
+	func get_namespace(ns: String) -> Dictionary:
+		var val = get_extension(ns, null)
+		if val is Dictionary:
+			return val.duplicate(true)
+		return {}
+
+	func set_namespace(ns: String, data: Dictionary) -> void:
+		set_extension(ns, data.duplicate(true), true)
+
+	func has_namespace(ns: String) -> bool:
+		var val = get_extension(ns, null)
+		return val is Dictionary
+
+	func delete_namespace(ns: String) -> Variant:
+		return delete_extension(ns)
+
+	func merge_extensions(data: Dictionary) -> void:
+		_deep_merge_dict(extensions, data)
+
+	static func _deep_merge_dict(dest: Dictionary, src: Dictionary) -> void:
+		for k in src.keys():
+			var sk := str(k)
+			var v = src[k]
+			var target_dict: Dictionary = dest
+			if not dest.has(sk) and dest.has("extensions") and (dest["extensions"] is Dictionary) and dest["extensions"].has(sk):
+				target_dict = dest["extensions"]
+
+			if target_dict.has(sk) and target_dict[sk] is Dictionary and v is Dictionary:
+				_deep_merge_dict(target_dict[sk], v)
+			elif v is Dictionary:
+				target_dict[sk] = v.duplicate(true)
+			elif v is Array:
+				target_dict[sk] = v.duplicate(true)
+			else:
+				target_dict[sk] = v
+
+# ============================================================================
 # SceneEditorMeta
 # ============================================================================
-class SceneEditorMeta extends RefCounted:
+class SceneEditorMeta extends SceneExtensible:
 	var graph_position: Vector2 = Vector2.ZERO
 	var collapsed: bool = false
 	var color: String = ""
 	var notes: String = ""
-	var extensions: Dictionary = {}
 
 	static func from_dict(d: Dictionary) -> SceneEditorMeta:
 		var ed := SceneEditorMeta.new()
@@ -89,7 +271,7 @@ class SceneEditorMeta extends RefCounted:
 # ============================================================================
 # ScenePort
 # ============================================================================
-class ScenePort extends RefCounted:
+class ScenePort extends SceneExtensible:
 	var id: String = ""
 	var name: String = ""
 	var direction: String = "input"
@@ -99,7 +281,6 @@ class ScenePort extends RefCounted:
 	var required: bool = true
 	var unit: String = ""
 	var description: String = ""
-	var extensions: Dictionary = {}
 
 	static func from_dict(d: Dictionary) -> ScenePort:
 		var p := ScenePort.new()
@@ -161,13 +342,12 @@ class ScenePort extends RefCounted:
 # ============================================================================
 # SceneLevel
 # ============================================================================
-class SceneLevel extends RefCounted:
+class SceneLevel extends SceneExtensible:
 	var id: String = ""
 	var name: String = ""
 	var elevation: float = 0.0
 	var default_height: float = 3.0
 	var visible: bool = true
-	var extensions: Dictionary = {}
 
 	static func from_dict(d: Dictionary) -> SceneLevel:
 		var l := SceneLevel.new()
@@ -214,7 +394,7 @@ class SceneLevel extends RefCounted:
 # ============================================================================
 # SceneConnection
 # ============================================================================
-class SceneConnection extends RefCounted:
+class SceneConnection extends SceneExtensible:
 	var id: String = ""
 	var source_element: String = ""
 	var source_port: String = ""
@@ -226,7 +406,6 @@ class SceneConnection extends RefCounted:
 	var condition: Variant = null
 	var latency: Variant = null
 	var capacity: Variant = null
-	var extensions: Dictionary = {}
 
 	static func from_dict(d: Dictionary) -> SceneConnection:
 		var c := SceneConnection.new()
@@ -295,7 +474,7 @@ class SceneConnection extends RefCounted:
 # ============================================================================
 # SceneElement
 # ============================================================================
-class SceneElement extends RefCounted:
+class SceneElement extends SceneExtensible:
 	var id: String = ""
 	var name: String = ""
 	var kind: String = ""
@@ -311,7 +490,6 @@ class SceneElement extends RefCounted:
 	var metric_ports: Array = []
 	var vertical_extent: Variant = null
 	var visual: Variant = null
-	var extensions: Dictionary = {}
 
 	static func from_dict(d: Dictionary) -> SceneElement:
 		var elem := SceneElement.new()
@@ -421,7 +599,7 @@ class SceneElement extends RefCounted:
 # ============================================================================
 # SceneDocument
 # ============================================================================
-class SceneDocument extends RefCounted:
+class SceneDocument extends SceneExtensible:
 	var spec_version: String = "1.0.0"
 	var scene: Dictionary = {}
 	var simulation: Dictionary = {}
@@ -432,7 +610,6 @@ class SceneDocument extends RefCounted:
 	var subgraphs: Array = []
 	var overlays: Array = []
 	var validation_metadata: Dictionary = {}
-	var extensions: Dictionary = {}
 
 	static func from_dict(d: Dictionary) -> SceneDocument:
 		var doc := SceneDocument.new()
@@ -516,4 +693,87 @@ class SceneDocument extends RefCounted:
 		c.validation_metadata = validation_metadata.duplicate(true)
 		c.extensions = extensions.duplicate(true)
 		return c
+
+# ============================================================================
+# Static Extension & Metadata Helpers
+# ============================================================================
+static func get_extension(obj: Variant, key: String, default_val: Variant = null) -> Variant:
+	if obj == null:
+		return default_val
+	if obj is SceneExtensible:
+		return obj.get_extension(key, default_val)
+	if obj is Dictionary:
+		if obj.has(key):
+			return obj[key]
+		if obj.has("extensions") and obj["extensions"] is Dictionary and obj["extensions"].has(key):
+			return obj["extensions"][key]
+	return default_val
+
+static func set_extension(obj: Variant, key: String, value: Variant) -> void:
+	if obj == null:
+		return
+	if obj is SceneExtensible:
+		obj.set_extension(key, value)
+	elif obj is Dictionary:
+		obj[key] = value
+
+static func has_extension(obj: Variant, key: String) -> bool:
+	if obj == null:
+		return false
+	if obj is SceneExtensible:
+		return obj.has_extension(key)
+	if obj is Dictionary:
+		if obj.has(key):
+			return true
+		if obj.has("extensions") and obj["extensions"] is Dictionary:
+			return obj["extensions"].has(key)
+	return false
+
+static func delete_extension(obj: Variant, key: String) -> Variant:
+	if obj == null:
+		return null
+	if obj is SceneExtensible:
+		return obj.delete_extension(key)
+	if obj is Dictionary:
+		if obj.has(key):
+			var val = obj[key]
+			obj.erase(key)
+			return val
+		if obj.has("extensions") and obj["extensions"] is Dictionary and obj["extensions"].has(key):
+			var val = obj["extensions"][key]
+			obj["extensions"].erase(key)
+			return val
+	return null
+
+static func get_extension_path(obj: Variant, path: String, default_val: Variant = null) -> Variant:
+	if obj == null:
+		return default_val
+	if obj is SceneExtensible:
+		return obj.get_extension_path(path, default_val)
+	if obj is Dictionary:
+		var dummy := SceneExtensible.new()
+		dummy.extensions = obj
+		return dummy.get_extension_path(path, default_val)
+	return default_val
+
+static func set_extension_path(obj: Variant, path: String, value: Variant) -> void:
+	if obj == null:
+		return
+	if obj is SceneExtensible:
+		obj.set_extension_path(path, value)
+	elif obj is Dictionary:
+		var dummy := SceneExtensible.new()
+		dummy.extensions = obj
+		dummy.set_extension_path(path, value)
+
+static func list_extensions(obj: Variant) -> Array:
+	if obj == null:
+		return []
+	if obj is SceneExtensible:
+		return obj.list_extensions()
+	if obj is Dictionary:
+		var dummy := SceneExtensible.new()
+		dummy.extensions = obj
+		return dummy.list_extensions()
+	return []
 

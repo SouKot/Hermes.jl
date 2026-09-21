@@ -28,6 +28,7 @@ include("protocol/scenespec.jl")
 include("protocol/scenespec_types.jl")
 include("protocol/scenespec_normalization.jl")
 include("protocol/scenespec_validator.jl")
+include("protocol/scenespec_extensions.jl")
 include("protocol/serialization.jl")
 include("protocol/direct_delta.jl")
 include("protocol/debug.jl")
@@ -78,6 +79,10 @@ export PortRecord, ElementRecord, ConnectionRecord, SubgraphRecord, DiagnosticRe
 export ValidationMetadataRecord, OverlayRecord, TypedSceneSpec
 export to_typed_scenespec, to_payload, parse_typed_scenespec, migrate_scenespec
 export validate_scenespec, apply_validation!, is_scene_valid
+export get_extension, set_extension!, has_extension, delete_extension!, list_extensions
+export get_extension_path, set_extension_path!
+export get_namespace, set_namespace!, has_namespace, delete_namespace!
+export merge_extensions!, copy_extensions
 export create_hello, create_ack, create_error
 export encode_messagepack, decode_messagepack
 export MessagePackWorkspace, encode_messagepack!

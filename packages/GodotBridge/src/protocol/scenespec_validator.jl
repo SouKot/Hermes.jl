@@ -38,6 +38,9 @@ function validate_scenespec(spec::TypedSceneSpec; strict::Bool=false, check_requ
     # 5. ABM Configuration Rules
     _validate_abm_config!(diagnostics, spec)
 
+    # 6. Extension Governance Rules
+    _validate_extensions!(diagnostics, spec)
+
     # Count errors vs warnings
     error_count = count(d -> d.severity == :error, diagnostics)
     is_valid = error_count == 0
@@ -650,5 +653,113 @@ function _validate_abm_config!(
             "ABM is enabled but simulation.mode is set to '$(spec.simulation.mode)'",
             "Change simulation.mode to 'abm_only' or 'hybrid'"
         ))
+    end
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. Extension Governance Rules
+# ─────────────────────────────────────────────────────────────────────────────
+
+const RESERVED_DOCUMENT_KEYS = Set{String}([
+    "spec_version", "scene", "simulation", "abm_config", "spatial",
+    "elements", "connections", "subgraphs", "overlays", "validation_metadata"
+])
+
+const RESERVED_ELEMENT_KEYS = Set{String}([
+    "id", "name", "kind", "library", "library_version", "level_id",
+    "transform", "geometry", "editor", "properties", "input_ports",
+    "output_ports", "metric_ports", "vertical_extent", "visual"
+])
+
+const RESERVED_PORT_KEYS = Set{String}([
+    "id", "name", "direction", "kind", "data_type", "cardinality",
+    "required", "unit", "description"
+])
+
+const RESERVED_CONNECTION_KEYS = Set{String}([
+    "id", "source_element", "source_port", "target_element", "target_port",
+    "link_type", "enabled", "ordering", "condition", "latency", "capacity"
+])
+
+const RESERVED_LEVEL_KEYS = Set{String}([
+    "id", "name", "elevation", "default_height", "visible"
+])
+
+const VALID_EXTENSION_KEY_REGEX = r"^[a-zA-Z0-9_\-:/.]+$"
+
+function _check_dict_keys!(diagnostics::Vector{DiagnosticRecord}, ext::AbstractDict, object_kind::String, object_id::String, path_prefix::String, reserved::Set{String})
+    for (k, v) in ext
+        sk = string(k)
+        if sk == "extensions"
+            if v isa AbstractDict
+                _check_dict_keys!(diagnostics, v, object_kind, object_id, isempty(path_prefix) ? "extensions" : "$(path_prefix).extensions", Set{String}())
+            end
+            continue
+        end
+
+        prop_path = isempty(path_prefix) ? sk : "$(path_prefix).$(sk)"
+
+        # EXT_001_INVALID_KEY: key format
+        if isempty(sk) || !occursin(VALID_EXTENSION_KEY_REGEX, sk)
+            push!(diagnostics, DiagnosticRecord(
+                "EXT_001_INVALID_KEY",
+                :error,
+                object_kind,
+                object_id,
+                prop_path,
+                "Invalid extension key '$(sk)' on $(object_kind) '$(object_id)'",
+                "Use alphanumeric, underscore, hyphen, colon, or dot characters without spaces"
+            ))
+        end
+
+        # EXT_002_RESERVED_KEY_CONFLICT: collision with schema
+        if sk in reserved
+            push!(diagnostics, DiagnosticRecord(
+                "EXT_002_RESERVED_KEY_CONFLICT",
+                :error,
+                object_kind,
+                object_id,
+                prop_path,
+                "Extension key '$(sk)' conflicts with reserved core schema field on $(object_kind) '$(object_id)'",
+                "Rename extension key or nest under a vendor namespace"
+            ))
+        end
+
+        # If v is a nested dictionary, validate its keys recursively
+        if v isa AbstractDict
+            _check_dict_keys!(diagnostics, v, object_kind, object_id, prop_path, Set{String}())
+        end
+    end
+end
+
+function _validate_extensions!(diagnostics::Vector{DiagnosticRecord}, spec::TypedSceneSpec)
+    # 1. Document level extensions
+    _check_dict_keys!(diagnostics, spec.extensions, "document", spec.scene.id, "extensions", RESERVED_DOCUMENT_KEYS)
+    _check_dict_keys!(diagnostics, spec.scene.extensions, "scene", spec.scene.id, "scene.extensions", Set{String}())
+    _check_dict_keys!(diagnostics, spec.simulation.extensions, "simulation", "simulation", "simulation.extensions", Set{String}())
+    if spec.spatial !== nothing
+        _check_dict_keys!(diagnostics, spec.spatial.extensions, "spatial", "spatial", "spatial.extensions", Set{String}())
+        for lvl in spec.spatial.levels
+            _check_dict_keys!(diagnostics, lvl.extensions, "level", lvl.id, "spatial.levels[$(lvl.id)].extensions", RESERVED_LEVEL_KEYS)
+        end
+    end
+
+    # 2. Elements & Ports
+    for elem in spec.elements
+        _check_dict_keys!(diagnostics, elem.extensions, "element", elem.id, "elements[$(elem.id)].extensions", RESERVED_ELEMENT_KEYS)
+        for p in elem.input_ports
+            _check_dict_keys!(diagnostics, p.extensions, "port", p.id, "elements[$(elem.id)].input_ports[$(p.id)].extensions", RESERVED_PORT_KEYS)
+        end
+        for p in elem.output_ports
+            _check_dict_keys!(diagnostics, p.extensions, "port", p.id, "elements[$(elem.id)].output_ports[$(p.id)].extensions", RESERVED_PORT_KEYS)
+        end
+        for p in elem.metric_ports
+            _check_dict_keys!(diagnostics, p.extensions, "port", p.id, "elements[$(elem.id)].metric_ports[$(p.id)].extensions", RESERVED_PORT_KEYS)
+        end
+    end
+
+    # 3. Connections
+    for conn in spec.connections
+        _check_dict_keys!(diagnostics, conn.extensions, "connection", conn.id, "connections[$(conn.id)].extensions", RESERVED_CONNECTION_KEYS)
     end
 end

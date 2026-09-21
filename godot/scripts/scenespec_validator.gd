@@ -49,6 +49,9 @@ func validate_document(doc: RefCounted, strict: bool = false, check_required: Va
 	# 5. ABM Config Rules
 	_validate_abm_config(doc, diagnostics)
 
+	# 6. Extension Governance Rules
+	_validate_extensions(doc, diagnostics)
+
 	var error_count := 0
 	for d in diagnostics:
 		if d.get("severity", "") == "error":
@@ -605,4 +608,123 @@ func _validate_abm_config(doc: RefCounted, diagnostics: Array) -> void:
 			"message": "ABM is enabled but simulation.mode is set to '%s'" % mode,
 			"suggested_fix": "Change simulation.mode to 'abm_only' or 'hybrid'"
 		})
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. Extension Governance Rules
+# ─────────────────────────────────────────────────────────────────────────────
+
+const RESERVED_DOCUMENT_KEYS := [
+	"spec_version", "scene", "simulation", "abm_config", "spatial",
+	"elements", "connections", "subgraphs", "overlays", "validation_metadata"
+]
+
+const RESERVED_ELEMENT_KEYS := [
+	"id", "name", "kind", "library", "library_version", "level_id",
+	"transform", "geometry", "editor", "properties", "input_ports",
+	"output_ports", "metric_ports", "vertical_extent", "visual"
+]
+
+const RESERVED_PORT_KEYS := [
+	"id", "name", "direction", "kind", "data_type", "cardinality",
+	"required", "unit", "description"
+]
+
+const RESERVED_CONNECTION_KEYS := [
+	"id", "source_element", "source_port", "target_element", "target_port",
+	"link_type", "enabled", "ordering", "condition", "latency", "capacity"
+]
+
+const RESERVED_LEVEL_KEYS := [
+	"id", "name", "elevation", "default_height", "visible"
+]
+
+static var _ext_key_regex: RegEx = null
+
+static func _get_ext_key_regex() -> RegEx:
+	if _ext_key_regex == null:
+		_ext_key_regex = RegEx.new()
+		_ext_key_regex.compile("^[a-zA-Z0-9_\\-:/.]+$")
+	return _ext_key_regex
+
+func _check_dict_keys(diagnostics: Array, ext: Variant, object_kind: String, object_id: String, path_prefix: String, reserved: Array) -> void:
+	if not (ext is Dictionary):
+		return
+	var dict: Dictionary = ext
+	for k in dict.keys():
+		var sk := str(k)
+		var v = dict[k]
+		if sk == "extensions":
+			if v is Dictionary:
+				_check_dict_keys(diagnostics, v, object_kind, object_id, "extensions" if path_prefix.is_empty() else "%s.extensions" % path_prefix, [])
+			continue
+
+		var prop_path := sk if path_prefix.is_empty() else "%s.%s" % [path_prefix, sk]
+
+		# EXT_001_INVALID_KEY
+		if sk.is_empty() or _get_ext_key_regex().search(sk) == null:
+			diagnostics.append({
+				"rule_id": "EXT_001_INVALID_KEY",
+				"severity": "error",
+				"object_kind": object_kind,
+				"object_id": object_id,
+				"property_path": prop_path,
+				"message": "Invalid extension key '%s' on %s '%s'" % [sk, object_kind, object_id],
+				"suggested_fix": "Use alphanumeric, underscore, hyphen, colon, or dot characters without spaces"
+			})
+
+		# EXT_002_RESERVED_KEY_CONFLICT
+		if sk in reserved:
+			diagnostics.append({
+				"rule_id": "EXT_002_RESERVED_KEY_CONFLICT",
+				"severity": "error",
+				"object_kind": object_kind,
+				"object_id": object_id,
+				"property_path": prop_path,
+				"message": "Extension key '%s' conflicts with reserved core schema field on %s '%s'" % [sk, object_kind, object_id],
+				"suggested_fix": "Rename extension key or nest under a vendor namespace"
+			})
+
+		if v is Dictionary:
+			_check_dict_keys(diagnostics, v, object_kind, object_id, prop_path, [])
+
+func _validate_extensions(doc: RefCounted, diagnostics: Array) -> void:
+	var doc_id: String = ""
+	var scene_val = _prop(doc, "scene")
+	if scene_val != null:
+		doc_id = str(_prop(scene_val, "id", ""))
+
+	_check_dict_keys(diagnostics, _prop(doc, "extensions"), "document", doc_id, "extensions", RESERVED_DOCUMENT_KEYS)
+	if scene_val != null:
+		_check_dict_keys(diagnostics, _prop(scene_val, "extensions"), "scene", doc_id, "scene.extensions", [])
+
+	var sim_val = _prop(doc, "simulation")
+	if sim_val != null:
+		_check_dict_keys(diagnostics, _prop(sim_val, "extensions"), "simulation", "simulation", "simulation.extensions", [])
+
+	var sp_val = _prop(doc, "spatial")
+	if sp_val != null:
+		_check_dict_keys(diagnostics, _prop(sp_val, "extensions"), "spatial", "spatial", "spatial.extensions", [])
+		var lvls_val = _prop(sp_val, "levels", [])
+		if lvls_val is Array:
+			for lvl in lvls_val:
+				var lid: String = str(_prop(lvl, "id", ""))
+				_check_dict_keys(diagnostics, _prop(lvl, "extensions"), "level", lid, "spatial.levels[%s].extensions" % lid, RESERVED_LEVEL_KEYS)
+
+	var elems_val = _prop(doc, "elements", [])
+	if elems_val is Array:
+		for elem in elems_val:
+			var eid: String = str(_prop(elem, "id", ""))
+			_check_dict_keys(diagnostics, _prop(elem, "extensions"), "element", eid, "elements[%s].extensions" % eid, RESERVED_ELEMENT_KEYS)
+			for p_group in ["input_ports", "output_ports", "metric_ports"]:
+				var ports_val = _prop(elem, p_group, [])
+				if ports_val is Array:
+					for p in ports_val:
+						var pid: String = str(_prop(p, "id", ""))
+						_check_dict_keys(diagnostics, _prop(p, "extensions"), "port", pid, "elements[%s].%s[%s].extensions" % [eid, p_group, pid], RESERVED_PORT_KEYS)
+
+	var conns_val = _prop(doc, "connections", [])
+	if conns_val is Array:
+		for conn in conns_val:
+			var cid: String = str(_prop(conn, "id", ""))
+			_check_dict_keys(diagnostics, _prop(conn, "extensions"), "connection", cid, "connections[%s].extensions" % cid, RESERVED_CONNECTION_KEYS)
 
