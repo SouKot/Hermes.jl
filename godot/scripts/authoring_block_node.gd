@@ -12,6 +12,8 @@ signal port_drag_ended(element_id: String, port_id: String)
 signal add_port_requested(element_id: String, bay_action: String) # "flow_in", "flow_out", "signal_in", "metric_out"
 signal remove_port_requested(element_id: String, bay_action: String) # "flow_in", "flow_out", "signal_in", "metric_out"
 signal disconnect_port_requested(element_id: String, port_id: String)
+signal element_resized(element_id: String, new_dims: Vector3)
+signal element_resize_committed(element_id: String, new_dims: Vector3)
 
 const BG_NORMAL := Color("#121b27")
 const BG_SELECTED := Color("#17263c")
@@ -34,6 +36,9 @@ var is_selected: bool = false
 var hovered_port_id: String = ""
 var _dragging: bool = false
 var _drag_offset: Vector2 = Vector2.ZERO
+var _resizing: bool = false
+var _resize_start_mouse: Vector2 = Vector2.ZERO
+var _resize_start_dims: Vector3 = Vector3.ZERO
 
 var _port_sockets: Dictionary = {} # port_id -> { "pos": Vector2, "kind": String, "is_output": bool, "dir": String, "name": String }
 
@@ -43,6 +48,9 @@ func _init(p_elem: SceneTypes.SceneElement = null) -> void:
 	custom_minimum_size = Vector2(260, 96)
 
 func _ready() -> void:
+	refresh_from_element()
+
+func refresh_from_element() -> void:
 	_recalculate_size()
 	calculate_sockets()
 	queue_redraw()
@@ -206,13 +214,25 @@ func _gui_input(event: InputEvent) -> void:
 					accept_event()
 					return
 
-				# 3. Center body clicked -> drag block
+				# 3. Check if clicked on resize handle (when selected)
+				if is_selected and _hit_test_resize_handle(mb.position):
+					_resizing = true
+					_resize_start_mouse = mb.position
+					_resize_start_dims = _get_physical_dimensions()
+					accept_event()
+					return
+
+				# 4. Center body clicked -> drag block
 				_dragging = true
 				_drag_offset = mb.position
 				block_selected.emit(element.id)
 				accept_event()
 			else:
-				if _dragging:
+				if _resizing:
+					_resizing = false
+					element_resize_committed.emit(element.id, _get_physical_dimensions())
+					accept_event()
+				elif _dragging:
 					_dragging = false
 					accept_event()
 
@@ -224,11 +244,31 @@ func _gui_input(event: InputEvent) -> void:
 				accept_event()
 				return
 
-	elif event is InputEventMouseMotion and _dragging:
+	elif event is InputEventMouseMotion:
 		var mm := event as InputEventMouseMotion
-		position += mm.position - _drag_offset
-		block_moved.emit(element.id, position)
-		accept_event()
+		if _resizing:
+			var dx := mm.position.x - _resize_start_mouse.x
+			var dy := mm.position.y - _resize_start_mouse.y
+			var new_len: float = max(1.0, snapped(_resize_start_dims.x + (dx / 20.0), 0.1))
+			var new_wid: float = max(0.5, snapped(_resize_start_dims.y + (dy / 20.0), 0.1))
+			if element != null and element.geometry.has("dimensions"):
+				element.geometry["dimensions"][0] = new_len
+				element.geometry["dimensions"][1] = new_wid
+			refresh_from_element()
+			element_resized.emit(element.id, Vector3(new_len, new_wid, _resize_start_dims.z))
+			accept_event()
+		elif _dragging:
+			position += mm.position - _drag_offset
+			block_moved.emit(element.id, position)
+			accept_event()
+		else:
+			if is_selected and _hit_test_resize_handle(mm.position):
+				mouse_default_cursor_shape = Control.CURSOR_FDIAGSIZE
+			else:
+				mouse_default_cursor_shape = Control.CURSOR_ARROW
+
+func _hit_test_resize_handle(local_pos: Vector2) -> bool:
+	return Rect2(size.x - 20.0, size.y - 20.0, 20.0, 20.0).has_point(local_pos)
 
 func _hit_test_port(local_pos: Vector2) -> String:
 	var best_id := ""
@@ -395,6 +435,13 @@ func _draw() -> void:
 
 	# Right Bay: Col 2 Metric Out [+] and [-]
 	_draw_port_btn_pair(Rect2(size.x - 30.0, btn_y, 13.0, btn_h), Rect2(size.x - 16.0, btn_y, 13.0, btn_h), COLOR_METRIC, col_btn_sub)
+
+	# 7. Draw resize grip handle at bottom-right when selected
+	if is_selected:
+		var grip_col := BORDER_SELECTED
+		draw_line(Vector2(size.x - 14, size.y - 4), Vector2(size.x - 4, size.y - 14), grip_col, 1.5)
+		draw_line(Vector2(size.x - 9, size.y - 4), Vector2(size.x - 4, size.y - 9), grip_col, 1.5)
+		draw_line(Vector2(size.x - 4, size.y - 4), Vector2(size.x - 4, size.y - 4), grip_col, 1.5)
 
 func _draw_port_btn_pair(r_add: Rect2, r_sub: Rect2, add_col: Color, sub_col: Color) -> void:
 	# Add button [+]

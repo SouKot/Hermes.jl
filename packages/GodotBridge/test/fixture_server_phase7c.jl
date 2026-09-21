@@ -5,27 +5,28 @@ server = GodotBridgeServer(host="127.0.0.1", port=PORT, snapshot_rate_hz=30, deb
 snapshot_delay_ms = try parse(Int, get(ENV, "SIMVIZ_SNAPSHOT_DELAY_MS", "0")) catch; 0 end
 drop_every = try parse(Int, get(ENV, "SIMVIZ_DROP_EVERY", "0")) catch; 0 end
 snapshot_sequence = Ref(0)
-simulation_time_ref = Ref(12.5)
+simulation_time_ref = Ref(0.0)
 clock_speed_ref = Ref(1.0)
-paused_ref = Ref(false)
+paused_ref = Ref(true)
 
 register_handler!(server, "command", function(message)
     command_type = String(message.payload.command_type)
-    if command_type == "play"
+    action = String(get(message.payload.command, "action", command_type))
+    if command_type == "play" || action == "play"
         paused_ref[] = false
-    elseif command_type == "pause"
+    elseif command_type == "pause" || action == "pause"
         paused_ref[] = true
-    elseif command_type == "step"
+    elseif command_type == "step" || action == "step"
         paused_ref[] = true
         simulation_time_ref[] += 0.1
-    elseif command_type == "reset"
+    elseif command_type == "reset" || action == "reset"
         paused_ref[] = true
         simulation_time_ref[] = 0.0
-    elseif command_type == "set_clock_speed"
+    elseif command_type == "set_clock_speed" || action == "set_clock_speed"
         requested_speed = get(message.payload.command, "speed", 1.0)
         clock_speed_ref[] = clamp(Float64(requested_speed), 0.25, 4.0)
     end
-    if command_type == "step" || command_type == "reset" || command_type == "pause" || command_type == "set_clock_speed"
+    if command_type == "step" || action == "step" || command_type == "reset" || action == "reset" || command_type == "pause" || action == "pause" || command_type == "set_clock_speed" || action == "set_clock_speed" || command_type == "play" || action == "play"
         if server.is_running && !isempty(server.clients)
             broadcast_snapshot(server, make_snapshot(simulation_time_ref[]))
         end

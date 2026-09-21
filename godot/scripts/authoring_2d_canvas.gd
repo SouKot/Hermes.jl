@@ -97,6 +97,13 @@ func rebuild_blocks() -> void:
 		b.add_port_requested.connect(_on_add_port_requested)
 		b.remove_port_requested.connect(_on_remove_port_requested)
 		b.disconnect_port_requested.connect(_on_disconnect_port_requested)
+		b.element_resized.connect(func(_eid: String, _dims: Vector3):
+			_redraw_all()
+		)
+		b.element_resize_committed.connect(func(eid: String, dims: Vector3):
+			if doc_store != null:
+				doc_store.update_element_geometry(eid, dims)
+		)
 
 	move_child(_wires_layer, -1)
 	_redraw_all()
@@ -105,6 +112,8 @@ func _on_document_reloaded(_doc: SceneTypes.SceneDocument) -> void:
 	rebuild_blocks()
 
 func _on_document_modified() -> void:
+	for b in _block_nodes.values():
+		b.refresh_from_element()
 	_redraw_all()
 
 func _on_selection_changed(sel_id: String, _sel_type: String) -> void:

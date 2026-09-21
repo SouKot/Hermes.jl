@@ -453,6 +453,16 @@ func _on_state_published(state: Dictionary) -> void:
     entity_count = state.get("entities_by_id", {}).size()
     if state.has("scene_id") and str(state.scene_id) != "":
         scene_name = str(state.scene_id)
+    if state.has("simulation_state"):
+        var sim_st: String = str(state.simulation_state).to_lower()
+        if sim_st == "running":
+            running = true
+            if authoring_shell != null:
+                authoring_shell.is_sim_running = true
+        elif sim_st in ["paused", "stopped"]:
+            running = false
+            if authoring_shell != null:
+                authoring_shell.is_sim_running = false
     if state.has("simulation_time"):
         simulation_time = float(state.simulation_time)
         if simulation_label != null:

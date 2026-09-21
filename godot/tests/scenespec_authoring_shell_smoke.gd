@@ -157,6 +157,18 @@ func test_authoring_block_node_three_part_layout() -> void:
 	_assert(hit_met_out_add == "metric_out", "Right Bay Column 2 bottom button triggers Add Metric Out")
 	_assert(hit_met_out_rem == "metric_out", "Right Bay Column 2 bottom button triggers Remove Metric Out")
 
+	# Test resize handle hit test & dynamic size expansion
+	block.set_selected(true)
+	_assert(block._hit_test_resize_handle(Vector2(block.size.x - 5.0, block.size.y - 5.0)), "Resize handle hit test passes at bottom-right corner")
+	_assert(not block._hit_test_resize_handle(Vector2(20.0, 20.0)), "Resize handle does not hit test away from corner")
+
+	var prev_w: float = block.size.x
+	elem.geometry["dimensions"] = [12.0, 1.8, 1.0]
+	block.refresh_from_element()
+	_assert(block.size.x > prev_w, "Block width dynamically expanded on dimension update")
+	var updated_dims := block._get_physical_dimensions()
+	_assert(abs(updated_dims.x - 12.0) < 0.01 and abs(updated_dims.y - 1.8) < 0.01, "Physical dimensions updated accurately")
+
 func test_procedural_mesh_factory_conveyor_elevation_and_legs() -> void:
 	_tests_run += 1
 	print("\n[Suite 4: Procedural PBR 3D Factory - Conveyor with Variable Elevation & Legs]")
@@ -419,3 +431,16 @@ func test_authoring_shell_two_view_switching_and_transport() -> void:
 
 	shell._btn_reset.pressed.emit()
 	_assert(shell.sim_time == 0.0, "Reset button rewinds simulation clock to 0.0s")
+
+	# Test Inspector Editable SpinBoxes for selected element
+	var test_elem := shell.catalog.create_element_instance("conveyor", "test_c", Vector2(0, 0))
+	shell.doc_store.add_element(test_elem)
+	shell.doc_store.select("test_c", "element")
+	shell._populate_inspector()
+	var spinbox_count := 0
+	for child in shell._inspector_container.get_children():
+		if child is HBoxContainer:
+			for sub in child.get_children():
+				if sub is SpinBox:
+					spinbox_count += 1
+	_assert(spinbox_count >= 5, "Inspector contains editable SpinBoxes for Length, Width, Height, Elev Start, Elev End")

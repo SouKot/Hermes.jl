@@ -445,20 +445,55 @@ func _populate_inspector() -> void:
 
 	# Name / ID
 	_add_inspector_field("ID", elem.id)
-	_add_inspector_field("Kind", elem.kind)
+	_add_inspector_field("Kind", elem.kind.capitalize())
 
-	# Dimensions
-	var dims = elem.geometry.get("dimensions", [0, 0, 0])
-	if dims is Array and dims.size() >= 3:
-		_add_inspector_field("Length (X)", "%.2f m" % float(dims[0]))
-		_add_inspector_field("Width (Y)", "%.2f m" % float(dims[1]))
-		_add_inspector_field("Height (Z)", "%.2f m" % float(dims[2]))
+	# Physical Dimensions (Editable)
+	var dims_sep := HSeparator.new()
+	_inspector_container.add_child(dims_sep)
+	var dims_lbl := Label.new()
+	dims_lbl.text = "PHYSICAL DIMENSIONS (m)"
+	dims_lbl.add_theme_font_size_override("font_size", 10)
+	dims_lbl.add_theme_color_override("font_color", MUTED)
+	_inspector_container.add_child(dims_lbl)
 
-	# Elevation
-	var z_s = elem.geometry.get("elevation_start", 0.8)
-	var z_e = elem.geometry.get("elevation_end", z_s)
-	_add_inspector_field("Elev Start", "%.2f m" % float(z_s))
-	_add_inspector_field("Elev End", "%.2f m" % float(z_e))
+	var dims = elem.geometry.get("dimensions", [4.0, 2.0, 0.8])
+	var cur_len: float = float(dims[0]) if (dims is Array and dims.size() >= 1) else 4.0
+	var cur_wid: float = float(dims[1]) if (dims is Array and dims.size() >= 2) else 2.0
+	var cur_hgt: float = float(dims[2]) if (dims is Array and dims.size() >= 3) else 0.8
+	var z_s: float = float(elem.geometry.get("elevation_start", 0.8))
+	var z_e: float = float(elem.geometry.get("elevation_end", z_s))
+	var eid := elem.id
+
+	_add_inspector_spinbox("Length (X)", cur_len, 0.5, 100.0, 0.1, func(v: float):
+		cur_len = v
+		doc_store.update_element_geometry(eid, Vector3(cur_len, cur_wid, cur_hgt), z_s, z_e)
+	)
+	_add_inspector_spinbox("Width (Y)", cur_wid, 0.2, 50.0, 0.1, func(v: float):
+		cur_wid = v
+		doc_store.update_element_geometry(eid, Vector3(cur_len, cur_wid, cur_hgt), z_s, z_e)
+	)
+	_add_inspector_spinbox("Height (Z)", cur_hgt, 0.1, 20.0, 0.05, func(v: float):
+		cur_hgt = v
+		doc_store.update_element_geometry(eid, Vector3(cur_len, cur_wid, cur_hgt), z_s, z_e)
+	)
+
+	# Elevation (Editable)
+	var elev_sep := HSeparator.new()
+	_inspector_container.add_child(elev_sep)
+	var elev_lbl := Label.new()
+	elev_lbl.text = "ELEVATION (m)"
+	elev_lbl.add_theme_font_size_override("font_size", 10)
+	elev_lbl.add_theme_color_override("font_color", MUTED)
+	_inspector_container.add_child(elev_lbl)
+
+	_add_inspector_spinbox("Elev Start (Z1)", z_s, 0.0, 50.0, 0.1, func(v: float):
+		z_s = v
+		doc_store.update_element_geometry(eid, Vector3(cur_len, cur_wid, cur_hgt), z_s, z_e)
+	)
+	_add_inspector_spinbox("Elev End (Z2)", z_e, 0.0, 50.0, 0.1, func(v: float):
+		z_e = v
+		doc_store.update_element_geometry(eid, Vector3(cur_len, cur_wid, cur_hgt), z_s, z_e)
+	)
 
 	# Active Connections for this Element
 	var conns_sep := HSeparator.new()
@@ -539,6 +574,31 @@ func _add_inspector_field(label_txt: String, val_txt: String) -> void:
 	row.add_child(v)
 	_inspector_container.add_child(row)
 
+func _add_inspector_spinbox(label_txt: String, initial_val: float, min_val: float, max_val: float, step_val: float, on_changed: Callable) -> SpinBox:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	var l := Label.new()
+	l.text = label_txt
+	l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	l.add_theme_font_size_override("font_size", 11)
+	l.add_theme_color_override("font_color", MUTED)
+	row.add_child(l)
+
+	var sb := SpinBox.new()
+	sb.min_value = min_val
+	sb.max_value = max_val
+	sb.step = step_val
+	sb.value = initial_val
+	sb.custom_minimum_size = Vector2(86, 26)
+	sb.alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	var le := sb.get_line_edit()
+	if le != null:
+		le.add_theme_font_size_override("font_size", 11)
+	sb.value_changed.connect(on_changed)
+	row.add_child(sb)
+	_inspector_container.add_child(row)
+	return sb
+
 func _on_document_loaded(doc: SceneTypes.SceneDocument) -> void:
 	_update_title()
 	_diagnostics_panel.update_diagnostics(doc_store.last_diagnostics, doc_store.is_document_valid)
@@ -548,6 +608,8 @@ func _on_document_loaded(doc: SceneTypes.SceneDocument) -> void:
 func _on_document_modified() -> void:
 	_update_title()
 	_diagnostics_panel.update_diagnostics(doc_store.last_diagnostics, doc_store.is_document_valid)
+	if _viewport_3d != null:
+		_viewport_3d.rebuild_3d_scene()
 
 func _on_document_saved(_path: String) -> void:
 	_update_title()

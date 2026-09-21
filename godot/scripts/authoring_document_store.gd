@@ -200,6 +200,20 @@ func get_element(elem_id: String) -> SceneTypes.SceneElement:
 			return elem
 	return null
 
+func update_element_geometry(elem_id: String, new_dims: Vector3, elev_start: float = -999.0, elev_end: float = -999.0) -> bool:
+	var elem := get_element(elem_id)
+	if elem == null:
+		return false
+	_record_undo()
+	elem.geometry["dimensions"] = [max(0.1, new_dims.x), max(0.1, new_dims.y), max(0.05, new_dims.z)]
+	if elev_start > -900.0:
+		elem.geometry["elevation_start"] = max(0.0, elev_start)
+	if elev_end > -900.0:
+		elem.geometry["elevation_end"] = max(0.0, elev_end)
+	validate()
+	document_modified.emit()
+	return true
+
 func add_connection(conn: SceneTypes.SceneConnection) -> void:
 	_record_undo()
 	active_document.connections.append(conn)
