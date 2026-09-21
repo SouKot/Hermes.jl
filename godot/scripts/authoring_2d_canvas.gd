@@ -39,13 +39,30 @@ var _wire_current_mouse: Vector2 = Vector2.ZERO
 var _wire_hovered_elem: String = ""
 var _wire_hovered_port: String = ""
 var _wire_is_compatible: bool = false
+var _wires_layer: Control = null
+
+func _ensure_wires_layer() -> void:
+	if _wires_layer == null:
+		_wires_layer = Control.new()
+		_wires_layer.name = "WiresOverlay"
+		_wires_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_wires_layer.z_index = 10
+		_wires_layer.draw.connect(_on_wires_layer_draw)
+		add_child(_wires_layer)
+
+func _redraw_all() -> void:
+	queue_redraw()
+	if _wires_layer != null and is_instance_valid(_wires_layer):
+		_wires_layer.queue_redraw()
 
 func _init(p_store: DocumentStore = null) -> void:
 	doc_store = p_store
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	clip_contents = true
+	_ensure_wires_layer()
 
 func _ready() -> void:
+	_ensure_wires_layer()
 	if doc_store != null:
 		doc_store.document_loaded.connect(_on_document_reloaded)
 		doc_store.document_modified.connect(_on_document_modified)
@@ -53,12 +70,15 @@ func _ready() -> void:
 		rebuild_blocks()
 
 func rebuild_blocks() -> void:
+	_ensure_wires_layer()
 	for child in get_children():
+		if child == _wires_layer:
+			continue
 		child.queue_free()
 	_block_nodes.clear()
 
 	if doc_store == null or doc_store.active_document == null:
-		queue_redraw()
+		_redraw_all()
 		return
 
 	for elem in doc_store.active_document.elements:
@@ -76,18 +96,19 @@ func rebuild_blocks() -> void:
 		b.port_drag_started.connect(_on_port_drag_started)
 		b.add_port_requested.connect(_on_add_port_requested)
 
-	queue_redraw()
+	move_child(_wires_layer, -1)
+	_redraw_all()
 
 func _on_document_reloaded(_doc: SceneTypes.SceneDocument) -> void:
 	rebuild_blocks()
 
 func _on_document_modified() -> void:
-	queue_redraw()
+	_redraw_all()
 
 func _on_selection_changed(sel_id: String, _sel_type: String) -> void:
 	for id_val in _block_nodes.keys():
 		_block_nodes[id_val].set_selected(id_val == sel_id)
-	queue_redraw()
+	_redraw_all()
 
 func _on_block_selected(elem_id: String) -> void:
 	if doc_store != null:
@@ -105,20 +126,20 @@ func _on_block_moved(elem_id: String, new_pos: Vector2) -> void:
 		if doc_store != null:
 			doc_store.is_dirty = true
 			doc_store.validate()
-	queue_redraw()
+	_redraw_all()
 
-func _on_port_drag_started(elem_id: String, port_id: String, port_kind: String, is_output: bool, global_pos: Vector2) -> void:
+func _on_port_drag_started(elem_id: String, port_id: String, port_kind: String, is_output: bool, start_pos: Vector2) -> void:
 	_is_dragging_wire = true
 	_wire_source_elem = elem_id
 	_wire_source_port = port_id
 	_wire_source_kind = port_kind
 	_wire_source_is_output = is_output
-	_wire_source_pos = global_pos - global_position
+	_wire_source_pos = start_pos
 	_wire_current_mouse = _wire_source_pos
 	_wire_hovered_elem = ""
 	_wire_hovered_port = ""
 	_wire_is_compatible = false
-	queue_redraw()
+	_redraw_all()
 
 func _input(event: InputEvent) -> void:
 	if not _is_dragging_wire:
@@ -128,7 +149,7 @@ func _input(event: InputEvent) -> void:
 		var mm := event as InputEventMouseMotion
 		_wire_current_mouse = get_local_mouse_position() if is_inside_tree() else mm.position
 		_update_wire_hover()
-		queue_redraw()
+		_redraw_all()
 		if is_inside_tree() and get_viewport() != null:
 			get_viewport().set_input_as_handled()
 
@@ -151,7 +172,7 @@ func _input(event: InputEvent) -> void:
 				get_viewport().set_input_as_handled()
 
 func _update_wire_hover() -> void:
-	var mouse_gpos := get_global_mouse_position() if is_inside_tree() else global_position + _wire_current_mouse
+	var canvas_mouse := get_local_mouse_position() if is_inside_tree() else _wire_current_mouse
 	var prev_hover_elem := _wire_hovered_elem
 	var prev_hover_port := _wire_hovered_port
 
@@ -163,7 +184,7 @@ func _update_wire_hover() -> void:
 		if eid == _wire_source_elem:
 			continue
 		var b: BlockNode = _block_nodes[eid]
-		var lpos: Vector2 = b.to_local(mouse_gpos)
+		var lpos: Vector2 = canvas_mouse - b.position
 		var hit_pid: String = b._hit_test_port(lpos)
 		if not hit_pid.is_empty():
 			var p_info: Dictionary = b.get_port_info(hit_pid)
@@ -184,13 +205,13 @@ func _update_wire_hover() -> void:
 			_wire_hovered_elem = eid
 			_wire_hovered_port = hit_pid
 			# Snap endpoint to target socket center
-			_wire_current_mouse = b.get_port_global_position(hit_pid) - global_position
+			_wire_current_mouse = b.position + b.get_port_local_position(hit_pid)
 			break
 
 	# Update visual port hover halo on block nodes
 	if prev_hover_elem != _wire_hovered_elem or prev_hover_port != _wire_hovered_port:
-		if _block_nodes.has(prev_hover_elem):
-			_block_nodes[prev_hover_elem].set_hovered_port("")
+		for b in _block_nodes.values():
+			b.set_hovered_port("")
 		if _block_nodes.has(_wire_hovered_elem):
 			_block_nodes[_wire_hovered_elem].set_hovered_port(_wire_hovered_port)
 
@@ -203,13 +224,13 @@ func _finish_wire_drag() -> void:
 	_cancel_wire_drag()
 
 func _cancel_wire_drag() -> void:
-	if _block_nodes.has(_wire_hovered_elem):
-		_block_nodes[_wire_hovered_elem].set_hovered_port("")
+	for b in _block_nodes.values():
+		b.set_hovered_port("")
 	_is_dragging_wire = false
 	_wire_hovered_elem = ""
 	_wire_hovered_port = ""
 	_wire_is_compatible = false
-	queue_redraw()
+	_redraw_all()
 
 func _create_connection(src_e: String, src_p: String, src_kind: String, src_is_out: bool, tgt_e: String, tgt_p: String) -> void:
 	var from_elem := src_e
@@ -242,7 +263,7 @@ func _create_connection(src_e: String, src_p: String, src_kind: String, src_is_o
 		doc_store.add_connection(conn)
 		connection_created.emit(conn)
 
-	queue_redraw()
+	_redraw_all()
 
 func _on_add_port_requested(elem_id: String, bay_action: String) -> void:
 	if doc_store == null:
@@ -320,7 +341,7 @@ func _gui_input(event: InputEvent) -> void:
 		if _panning:
 			pan_offset = mm.position - _pan_start
 			_update_blocks_transform()
-			queue_redraw()
+			_redraw_all()
 			accept_event()
 
 func _adjust_zoom(factor: float, pivot: Vector2) -> void:
@@ -328,7 +349,7 @@ func _adjust_zoom(factor: float, pivot: Vector2) -> void:
 	zoom_level = clamp(zoom_level * factor, 0.2, 4.0)
 	pan_offset = pivot - (pivot - pan_offset) * (zoom_level / old_zoom)
 	_update_blocks_transform()
-	queue_redraw()
+	_redraw_all()
 
 func _update_blocks_transform() -> void:
 	if doc_store == null or doc_store.active_document == null:
@@ -347,17 +368,21 @@ func _draw() -> void:
 	# 2. CAD Floorplan Grid & Architectural Walls
 	_draw_cad_background()
 
-	# 3. Connection Splines between Ports
+func _on_wires_layer_draw() -> void:
+	if _wires_layer == null:
+		return
+
+	# 1. Connection Splines between Ports (Rendered on top of all blocks)
 	_draw_connections()
 
-	# 4. Live Drag Wire
+	# 2. Live Drag Wire (Rendered on top of all blocks)
 	if _is_dragging_wire:
 		var wire_col := FLOW_WIRE_COLOR
 		if not _wire_hovered_elem.is_empty():
 			wire_col = (FLOW_WIRE_COLOR if _wire_source_kind == "flow" else SIGNAL_WIRE_COLOR) if _wire_is_compatible else INCOMPATIBLE_WIRE_COLOR
 		else:
 			wire_col = FLOW_WIRE_COLOR if _wire_source_kind == "flow" else SIGNAL_WIRE_COLOR
-		_draw_spline(_wire_source_pos, _wire_current_mouse, wire_col, 2.5, false)
+		_draw_spline(_wires_layer, _wire_source_pos, _wire_current_mouse, wire_col, 2.5, false)
 
 func _draw_cad_background() -> void:
 	var grid_size := 40.0 * zoom_level
@@ -383,7 +408,7 @@ func _draw_cad_background() -> void:
 	draw_string(ThemeDB.fallback_font, r2.position + Vector2(10, 20), "CAD ZONE: MAIN PROCESSING & INSPECTION", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, ROOM_LABEL_COLOR)
 
 func _draw_connections() -> void:
-	if doc_store == null or doc_store.active_document == null:
+	if doc_store == null or doc_store.active_document == null or _wires_layer == null:
 		return
 
 	for conn in doc_store.active_document.connections:
@@ -392,15 +417,15 @@ func _draw_connections() -> void:
 		if p1 != Vector2.ZERO and p2 != Vector2.ZERO:
 			var col := FLOW_WIRE_COLOR if conn.link_type == "flow" else SIGNAL_WIRE_COLOR
 			var dashed: bool = (conn.link_type != "flow")
-			_draw_spline(p1, p2, col, 2.0, dashed)
+			_draw_spline(_wires_layer, p1, p2, col, 2.0, dashed)
 
 func _resolve_port_position(elem_id: String, port_id: String) -> Vector2:
 	if _block_nodes.has(elem_id):
 		var b: BlockNode = _block_nodes[elem_id]
-		return b.get_port_global_position(port_id) - global_position
+		return b.position + b.get_port_local_position(port_id)
 	return Vector2.ZERO
 
-func _draw_spline(from: Vector2, to: Vector2, col: Color, width: float, dashed: bool) -> void:
+func _draw_spline(target: CanvasItem, from: Vector2, to: Vector2, col: Color, width: float, dashed: bool) -> void:
 	var dx := (to.x - from.x) * 0.5
 	var cp1 := from + Vector2(max(abs(dx), 40.0), 0)
 	var cp2 := to - Vector2(max(abs(dx), 40.0), 0)
@@ -414,9 +439,9 @@ func _draw_spline(from: Vector2, to: Vector2, col: Color, width: float, dashed: 
 
 	if dashed:
 		for i in range(0, points.size() - 1, 2):
-			draw_line(points[i], points[i + 1], col, width)
+			target.draw_line(points[i], points[i + 1], col, width)
 	else:
-		draw_polyline(points, col, width, true)
+		target.draw_polyline(points, col, width, true)
 
 	# Draw arrowhead at target
 	if points.size() >= 2:
@@ -424,4 +449,4 @@ func _draw_spline(from: Vector2, to: Vector2, col: Color, width: float, dashed: 
 		var perp := Vector2(-dir.y, dir.x) * 5.0
 		var a1 := to - (dir * 10.0) + perp
 		var a2 := to - (dir * 10.0) - perp
-		draw_colored_polygon(PackedVector2Array([to, a1, a2]), col)
+		target.draw_colored_polygon(PackedVector2Array([to, a1, a2]), col)

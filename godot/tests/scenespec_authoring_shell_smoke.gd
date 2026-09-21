@@ -263,6 +263,50 @@ func test_2d_canvas_and_port_wiring() -> void:
 	canvas._cancel_wire_drag()
 	_assert(not canvas._is_dragging_wire, "Wire drag cancelled")
 
+	# Test Overlay Layer planar ordering (z_index = 10, mouse_filter = IGNORE)
+	_assert(canvas._wires_layer != null, "Dedicated wires overlay layer exists")
+	_assert(canvas._wires_layer.z_index == 10, "Wires overlay renders at higher planar z-index (z_index=10)")
+	_assert(canvas._wires_layer.mouse_filter == Control.MOUSE_FILTER_IGNORE, "Wires overlay ignores mouse events for unobstructed clicks")
+
+	# Test reverse wire dragging: Input -> Output (s1.flow_in -> c1.flow_out_1)
+	canvas._wire_source_elem = "s1"
+	canvas._wire_source_port = "flow_in"
+	canvas._wire_source_kind = "flow"
+	canvas._wire_source_is_output = false
+	canvas._wire_hovered_elem = "c1"
+	canvas._wire_hovered_port = "flow_out_1"
+	canvas._wire_is_compatible = true
+	canvas._is_dragging_wire = true
+	canvas._finish_wire_drag()
+	var rev_conn: SceneTypes.SceneConnection = store.active_document.connections[-1]
+	_assert(rev_conn.source_element == "c1" and rev_conn.target_element == "s1", "Reverse dragged Flow In -> Flow Out normalized with source as output")
+	_assert(rev_conn.source_port == "flow_out_1" and rev_conn.target_port == "flow_in", "Normalized ports match emitter -> receiver")
+
+	# Test reverse signal dragging: Signal In -> Metric Out (c1.signal_in_1 -> s1.utilization)
+	canvas._wire_source_elem = "c1"
+	canvas._wire_source_port = "signal_in_1"
+	canvas._wire_source_kind = "signal"
+	canvas._wire_source_is_output = false
+	canvas._wire_hovered_elem = "s1"
+	canvas._wire_hovered_port = "utilization"
+	canvas._wire_is_compatible = true
+	canvas._is_dragging_wire = true
+	canvas._finish_wire_drag()
+	var rev_sig: SceneTypes.SceneConnection = store.active_document.connections[-1]
+	_assert(rev_sig.source_element == "s1" and rev_sig.target_element == "c1", "Reverse dragged Signal In -> Metric Out normalized with metric as source")
+	_assert(rev_sig.link_type == "signal", "Link type normalized as signal")
+
+	# Test _update_wire_hover directly without to_local error
+	canvas._on_port_drag_started("c1", "flow_out", "flow", true, Vector2(100, 100))
+	var s1_node: BlockNode = canvas._block_nodes["s1"]
+	var target_port_pos: Vector2 = s1_node.position + s1_node.get_port_local_position("flow_in")
+	canvas._wire_current_mouse = target_port_pos
+	canvas._update_wire_hover()
+	_assert(canvas._wire_hovered_elem == "s1", "Hover detection correctly resolves target block without to_local error")
+	_assert(canvas._wire_hovered_port == "flow_in", "Hover detection resolves target socket ID")
+	_assert(canvas._wire_is_compatible, "Hover detection validates compatibility")
+	canvas._cancel_wire_drag()
+
 func test_authoring_shell_two_view_switching_and_transport() -> void:
 	_tests_run += 1
 	print("\n[Suite 7: Authoring Shell Two-View Switching & Simulation Transport]")

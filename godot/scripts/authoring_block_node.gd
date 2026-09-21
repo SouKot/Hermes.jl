@@ -54,12 +54,20 @@ func set_hovered_port(p_id: String) -> void:
 		hovered_port_id = p_id
 		queue_redraw()
 
-func get_port_global_position(port_id: String) -> Vector2:
+func get_port_local_position(port_id: String) -> Vector2:
 	if _port_sockets.is_empty():
 		calculate_sockets()
 	if _port_sockets.has(port_id):
-		return global_position + _port_sockets[port_id]["pos"]
-	return global_position + (size * 0.5)
+		return _port_sockets[port_id]["pos"]
+	return size * 0.5
+
+func get_port_canvas_position(port_id: String) -> Vector2:
+	return position + get_port_local_position(port_id)
+
+func get_port_global_position(port_id: String) -> Vector2:
+	if is_inside_tree():
+		return global_position + get_port_local_position(port_id)
+	return get_port_canvas_position(port_id)
 
 func get_port_info(port_id: String) -> Dictionary:
 	if _port_sockets.is_empty():
@@ -181,7 +189,7 @@ func _gui_input(event: InputEvent) -> void:
 					var p_info: Dictionary = _port_sockets[hit_port]
 					port_drag_started.emit(
 						element.id, hit_port, p_info["kind"], p_info["is_output"],
-						global_position + p_info["pos"]
+						get_port_canvas_position(hit_port)
 					)
 					accept_event()
 					return
@@ -210,11 +218,15 @@ func _gui_input(event: InputEvent) -> void:
 		accept_event()
 
 func _hit_test_port(local_pos: Vector2) -> String:
+	var best_id := ""
+	var best_dist := 16.0
 	for port_id in _port_sockets.keys():
 		var spos: Vector2 = _port_sockets[port_id]["pos"]
-		if local_pos.distance_to(spos) <= 14.0:
-			return port_id
-	return ""
+		var d: float = local_pos.distance_to(spos)
+		if d <= best_dist:
+			best_dist = d
+			best_id = port_id
+	return best_id
 
 func _hit_test_add_button(local_pos: Vector2) -> String:
 	var btn_h := 16.0
