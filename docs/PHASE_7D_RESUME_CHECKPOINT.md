@@ -70,11 +70,19 @@
      - `[ 2D LAYOUT ]` and `[ 3D LAYOUT ]` switchable viewports with unified state ([`godot/scripts/authoring_shell.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_shell.gd)).
      - Persistent bottom simulation transport (`PLAY`, `PAUSE`, `STEP`, `RESET`, speed slider, simulation clock).
    - **Single Entity Block Architecture (Matching User Sketch)**:
-     - 3-part layout ([`godot/scripts/authoring_block_node.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_block_node.gd)): Left Flow Bay, Center Body ($L \times W$ in meters), Right Control/Metric/Event Bay.
-     - Port semantics: Flow In/Out (green/white), Metric Out (orange, emits telemetry), Signal In (amber/red, actuator control), Event Out (purple, logging/real-time graphs).
-     - Circular sockets with `+` buttons to add ports dynamically.
+     - 3-part layout ([`godot/scripts/authoring_block_node.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_block_node.gd)): Left Flow Bay (Columns: `IN`, `OUT`), Center Body ($L \times W$ in meters), Right Control/Metric Bay (Columns: `SIG`, `MET`).
+     - Port semantics: Flow In/Out (green/white), Metric Out (orange, emits telemetry), Signal In (amber/red, actuator control).
+     - Circular sockets with `[+]` (add port) and `[-]` (remove last port via strict LIFO policy) buttons on all 4 columns.
+     - Core primary ports (`flow_in`, `flow_out`) protected from deletion below 1.
+   - **Multi-Modal Connection Removal & Disconnect**:
+     - Click connection spline to select (glowing cyan `#00d2ff`) + press `Delete` / `Backspace` key.
+     - Right-click directly on spline to delete.
+     - Right-click port socket to disconnect all attached wires without deleting the port.
+     - Inspector panel lists active connections for selected entity with individual `[✕]` delete buttons, and displays selected connection details with `[Delete Connection]` button.
    - **2D Unified CAD Canvas** ([`godot/scripts/authoring_2d_canvas.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_2d_canvas.gd)):
      - Architectural floor lines, active simulation blocks at world $(X, Y)$, Bézier connection splines, interactive wire drag-and-drop.
+     - Dedicated `_wires_layer` with `z_index = 10` ensuring connection wires render above blocks with no occlusion.
+     - Seamless bidirectional port dragging (Output $\leftrightarrow$ Input) with automatic normalization.
    - **Procedural PBR 3D Factory** ([`godot/scripts/authoring_mesh_factory.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_mesh_factory.gd) & [`authoring_3d_viewport.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_3d_viewport.gd)):
      - Belt conveyors with support legs anchored to floor ($Z=0$), leveling feet, and variable elevation incline ($Z_1$ to $Z_2$).
      - Workstations/servers with aluminum frames, stainless table ($Z=0.8\text{ m}$), overhead gantry, and 3-color emissive Andon beacon towers.
@@ -82,7 +90,7 @@
      - 3D SubViewport with directional lighting, concrete floor grid, and orbit camera navigation.
    - **Document Lifecycle & Component Catalog** ([`godot/scripts/authoring_catalog.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_catalog.gd) & [`authoring_document_store.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_document_store.gd)):
      - Palette of DES/ABM primitives (`conveyor`, `queue`, `server`, `source`, `sink`).
-     - Real-time dirty tracking (`*`), full Undo/Redo stack, and atomic `.tmp` file saving.
+     - Real-time dirty tracking (`*`), full Undo/Redo stack, cascade connection deletion on port removal, and atomic `.tmp` file saving.
    - **Diagnostics & Live Runtime Integration**:
      - Diagnostics panel ([`godot/scripts/authoring_diagnostics_panel.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_diagnostics_panel.gd)) with click-to-focus and one-click fixes.
      - [`godot/scripts/main.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/main.gd) boots `AuthoringShell` as root UI while maintaining background WebSocket connectivity to the Julia simulation runtime.
