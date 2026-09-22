@@ -111,6 +111,8 @@ func _ready() -> void:
 		doc_store.document_loaded.connect(_on_document_reloaded)
 		doc_store.document_modified.connect(_on_document_modified)
 		doc_store.selection_changed.connect(_on_selection_changed)
+		doc_store.scope_changed.connect(func(_sid, _sname): rebuild_blocks())
+		doc_store.subgraphs_modified.connect(func(): rebuild_blocks())
 		rebuild_blocks()
 
 func rebuild_blocks() -> void:
@@ -125,12 +127,12 @@ func rebuild_blocks() -> void:
 		_redraw_all()
 		return
 
-	for elem in doc_store.active_document.elements:
-		var b := BlockNode.new(elem)
+	# 1. Scoped Elements
+	for elem in doc_store.get_scoped_elements():
+		var b := BlockNode.new(elem, null)
 		add_child(b)
 		_block_nodes[elem.id] = b
 
-		# Position block on canvas from editor position or transform
 		var gx: float = elem.editor.graph_position.x if elem.editor.graph_position != Vector2.ZERO else float(elem.transform.position[0]) * 20.0
 		var gy: float = elem.editor.graph_position.y if elem.editor.graph_position != Vector2.ZERO else float(elem.transform.position[1]) * 20.0
 		b.position = pan_offset + (Vector2(gx, gy) * zoom_level)
@@ -156,6 +158,32 @@ func rebuild_blocks() -> void:
 				doc_store.update_element_geometry(eid, dims)
 		)
 
+	# 2. Scoped Subgraphs (Compound nodes)
+	for sub in doc_store.get_scoped_subgraphs():
+		var b := BlockNode.new(null, sub)
+		add_child(b)
+		_block_nodes[sub.id] = b
+
+		var gx: float = sub.editor.graph_position.x if sub.editor != null and sub.editor.graph_position != Vector2.ZERO else float(sub.transform.position.x) * 20.0
+		var gy: float = sub.editor.graph_position.y if sub.editor != null and sub.editor.graph_position != Vector2.ZERO else float(sub.transform.position.y) * 20.0
+		b.position = pan_offset + (Vector2(gx, gy) * zoom_level)
+
+		b.block_selected.connect(_on_block_selected)
+		b.block_moved.connect(_on_block_moved)
+		b.port_selected.connect(func(eid: String, pid: String):
+			if doc_store != null:
+				doc_store.select_port(eid, pid)
+		)
+		b.port_drag_started.connect(_on_port_drag_started)
+		b.subgraph_drilldown_requested.connect(func(sid: String):
+			if doc_store != null:
+				doc_store.enter_subgraph_scope(sid)
+		)
+		b.disconnect_port_requested.connect(_on_disconnect_port_requested)
+		b.floating_properties_requested.connect(func(eid: String, spos: Vector2):
+			floating_properties_requested.emit(eid, spos)
+		)
+
 	move_child(_wires_layer, -1)
 	_redraw_all()
 
@@ -168,6 +196,20 @@ func _on_document_modified() -> void:
 	_update_blocks_transform()
 	_redraw_all()
 
+func _update_blocks_transform() -> void:
+	for id_val in _block_nodes.keys():
+		var b: BlockNode = _block_nodes[id_val]
+		var gx := 0.0
+		var gy := 0.0
+		if b.element != null:
+			gx = b.element.editor.graph_position.x if b.element.editor.graph_position != Vector2.ZERO else float(b.element.transform.position[0]) * 20.0
+			gy = b.element.editor.graph_position.y if b.element.editor.graph_position != Vector2.ZERO else float(b.element.transform.position[1]) * 20.0
+		elif b.subgraph != null:
+			gx = b.subgraph.editor.graph_position.x if b.subgraph.editor != null and b.subgraph.editor.graph_position != Vector2.ZERO else float(b.subgraph.transform.position.x) * 20.0
+			gy = b.subgraph.editor.graph_position.y if b.subgraph.editor != null and b.subgraph.editor.graph_position != Vector2.ZERO else float(b.subgraph.transform.position.y) * 20.0
+		b.position = pan_offset + (Vector2(gx, gy) * zoom_level)
+		b.scale = Vector2(zoom_level, zoom_level)
+
 func _on_selection_changed(sel_id: String, _sel_type: String) -> void:
 	for id_val in _block_nodes.keys():
 		var is_primary: bool = (id_val == sel_id)
@@ -177,24 +219,25 @@ func _on_selection_changed(sel_id: String, _sel_type: String) -> void:
 
 func _on_block_selected(elem_id: String) -> void:
 	if doc_store != null:
+		var is_sub := (doc_store.get_subgraph(elem_id) != null)
+		var type_val := "subgraph" if is_sub else "element"
 		if Input.is_key_pressed(KEY_SHIFT):
 			doc_store.toggle_select_element(elem_id)
 		else:
-			doc_store.select(elem_id, "element")
+			doc_store.select(elem_id, type_val)
 	element_selected.emit(elem_id)
 
 func _on_block_moved(elem_id: String, new_pos: Vector2) -> void:
 	var elem := doc_store.get_element(elem_id)
+	var sub := doc_store.get_subgraph(elem_id) if elem == null else null
 	if elem != null:
 		var prev_x: float = float(elem.transform.position[0])
 		var prev_y: float = float(elem.transform.position[1])
 
-		# Convert canvas pixel position back to world coordinates
 		var unscaled: Vector2 = (new_pos - pan_offset) / max(zoom_level, 0.01)
 		var target_x: float = snapped(unscaled.x / 20.0, 0.05)
 		var target_y: float = snapped(unscaled.y / 20.0, 0.05)
 
-		# CAD Edge-Snapping to neighboring equipment in meters (snap threshold: 0.35m = 7px)
 		var dims := _get_elem_dims(elem)
 		var snap_dist := 0.35
 
@@ -208,14 +251,11 @@ func _on_block_moved(elem_id: String, new_pos: Vector2) -> void:
 
 				var y_overlap: bool = (target_y < oy + odims.y + 0.5) and (target_y + dims.y > oy - 0.5)
 				if y_overlap:
-					# 1. Snap Left edge to other's Right edge: target_x == ox + odims.x
 					if abs(target_x - (ox + odims.x)) < snap_dist:
 						target_x = ox + odims.x
-					# 2. Snap Right edge to other's Left edge: target_x + dims.x == ox
 					elif abs((target_x + dims.x) - ox) < snap_dist:
 						target_x = ox - dims.x
 
-					# 3. Snap Top edge alignment
 					if abs(target_y - oy) < snap_dist:
 						target_y = oy
 
@@ -229,7 +269,6 @@ func _on_block_moved(elem_id: String, new_pos: Vector2) -> void:
 		if _block_nodes.has(elem_id):
 			_block_nodes[elem_id].position = pan_offset + (elem.editor.graph_position * zoom_level)
 
-		# Batch movement for other selected elements
 		if doc_store != null and doc_store.is_element_selected(elem_id) and doc_store.selected_elements.size() > 1:
 			for other_id in doc_store.selected_elements:
 				if other_id == elem_id:
@@ -246,7 +285,21 @@ func _on_block_moved(elem_id: String, new_pos: Vector2) -> void:
 			doc_store.is_dirty = true
 			doc_store.validate()
 			doc_store.document_modified.emit()
-	_redraw_all()
+		_redraw_all()
+	elif sub != null:
+		var unscaled: Vector2 = (new_pos - pan_offset) / max(zoom_level, 0.01)
+		var target_x: float = snapped(unscaled.x / 20.0, 0.05)
+		var target_y: float = snapped(unscaled.y / 20.0, 0.05)
+		sub.transform.position.x = target_x
+		sub.transform.position.y = target_y
+		sub.editor.graph_position = Vector2(target_x * 20.0, target_y * 20.0)
+		if _block_nodes.has(elem_id):
+			_block_nodes[elem_id].position = pan_offset + (sub.editor.graph_position * zoom_level)
+		if doc_store != null:
+			doc_store.is_dirty = true
+			doc_store.validate()
+			doc_store.document_modified.emit()
+		_redraw_all()
 
 func _get_elem_dims(elem: SceneTypes.SceneElement) -> Vector3:
 	if elem != null and elem.geometry.has("dimensions"):
@@ -659,16 +712,6 @@ func frame_all() -> void:
 
 	_update_blocks_transform()
 	_redraw_all()
-
-func _update_blocks_transform() -> void:
-	if doc_store == null or doc_store.active_document == null:
-		return
-	for elem in doc_store.active_document.elements:
-		if _block_nodes.has(elem.id):
-			var b: BlockNode = _block_nodes[elem.id]
-			var gx: float = elem.editor.graph_position.x if elem.editor.graph_position != Vector2.ZERO else float(elem.transform.position[0]) * 20.0
-			var gy: float = elem.editor.graph_position.y if elem.editor.graph_position != Vector2.ZERO else float(elem.transform.position[1]) * 20.0
-			b.position = pan_offset + (Vector2(gx, gy) * zoom_level)
 
 func auto_layout_dag() -> void:
 	if doc_store != null:

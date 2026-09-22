@@ -13,6 +13,7 @@ const Inspector := preload("res://scripts/authoring_inspector.gd")
 const RuleBuilder := preload("res://scripts/authoring_rule_builder.gd")
 const FloatingInspector := preload("res://scripts/authoring_floating_inspector.gd")
 const ABMDialog := preload("res://scripts/authoring_abm_dialog.gd")
+const TemplateDialog := preload("res://scripts/authoring_template_dialog.gd")
 
 enum ViewMode { VIEW_2D, VIEW_3D }
 
@@ -45,6 +46,14 @@ var _inner_split: HSplitContainer
 var _center_container: Control
 var _canvas_2d: Canvas2D
 var _viewport_3d: Viewport3D
+var _breadcrumb_bar: PanelContainer
+var _btn_breadcrumb_root: Button
+var _lbl_breadcrumb_sep: Label
+var _lbl_breadcrumb_scope: Label
+var _btn_breadcrumb_exit: Button
+var _btn_group: Button
+var _btn_ungroup: Button
+var _btn_template: Button
 
 # Left Dock
 var _catalog_container: VBoxContainer
@@ -56,6 +65,7 @@ var _floating_inspector: FloatingInspector
 var _rule_builder: RuleBuilder
 var _diagnostics_panel: DiagnosticsPanel
 var _abm_dialog: ABMDialog
+var _template_dialog: TemplateDialog
 var _btn_abm: Button
 var _abm_status_pill: Label
 
@@ -116,6 +126,8 @@ func _connect_signals() -> void:
 	doc_store.document_saved.connect(_on_document_saved)
 	doc_store.selection_changed.connect(_on_selection_changed)
 	doc_store.diagnostics_updated.connect(_on_diagnostics_updated)
+	doc_store.scope_changed.connect(_on_scope_changed)
+	doc_store.subgraphs_modified.connect(_on_subgraphs_modified)
 	_diagnostics_panel.diagnostic_focused.connect(_on_diagnostic_focused)
 	_diagnostics_panel.fix_requested.connect(_on_diagnostic_fix_requested)
 	if _canvas_2d != null:
@@ -170,14 +182,26 @@ func _build_ui() -> void:
 	_center_container.add_theme_stylebox_override("panel", center_style)
 	_inner_split.add_child(_center_container)
 
+	var center_vbox := VBoxContainer.new()
+	center_vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	center_vbox.add_theme_constant_override("separation", 0)
+	_center_container.add_child(center_vbox)
+
+	center_vbox.add_child(_build_breadcrumb_bar())
+
+	var view_area := Control.new()
+	view_area.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	view_area.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	center_vbox.add_child(view_area)
+
 	_canvas_2d = Canvas2D.new(doc_store)
 	_canvas_2d.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_center_container.add_child(_canvas_2d)
+	view_area.add_child(_canvas_2d)
 
 	_viewport_3d = Viewport3D.new(doc_store)
 	_viewport_3d.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_viewport_3d.visible = false
-	_center_container.add_child(_viewport_3d)
+	view_area.add_child(_viewport_3d)
 
 	_inner_split.add_child(_build_right_dock())
 
@@ -209,6 +233,17 @@ func _build_ui() -> void:
 	_abm_dialog.visible = false
 	_abm_dialog.closed.connect(func(): _abm_dialog.visible = false)
 	add_child(_abm_dialog)
+
+	# 7. Floating / Modal Template Packaging Dialog
+	_template_dialog = TemplateDialog.new(doc_store)
+	_template_dialog.visible = false
+	_template_dialog.closed.connect(func(): _template_dialog.visible = false)
+	_template_dialog.template_created.connect(func(tmpl: SceneTypes.SceneSubgraph):
+		catalog.register_template_entry(tmpl)
+		_populate_catalog()
+		if _canvas_2d != null: _canvas_2d.rebuild_blocks()
+	)
+	add_child(_template_dialog)
 
 func _build_header() -> Control:
 	var panel := PanelContainer.new()
@@ -256,6 +291,26 @@ func _build_header() -> Control:
 	btn_val.text = "Validate"
 	btn_val.pressed.connect(func(): doc_store.validate())
 	row.add_child(btn_val)
+
+	row.add_child(VSeparator.new())
+
+	_btn_group = Button.new()
+	_btn_group.text = "⚏ Group"
+	_btn_group.tooltip_text = "Group selection into compound subsystem (Ctrl+G)"
+	_btn_group.pressed.connect(_on_group_clicked)
+	row.add_child(_btn_group)
+
+	_btn_ungroup = Button.new()
+	_btn_ungroup.text = "✕ Ungroup"
+	_btn_ungroup.tooltip_text = "Ungroup selected compound subsystem (Ctrl+Shift+G)"
+	_btn_ungroup.pressed.connect(_on_ungroup_clicked)
+	row.add_child(_btn_ungroup)
+
+	_btn_template = Button.new()
+	_btn_template.text = "📦 Template"
+	_btn_template.tooltip_text = "Package selected elements into reusable catalog template"
+	_btn_template.pressed.connect(_on_package_template_clicked)
+	row.add_child(_btn_template)
 
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -316,6 +371,58 @@ func _build_header() -> Control:
 	toggle_box.add_child(_btn_view_3d)
 
 	return panel
+
+func _build_breadcrumb_bar() -> Control:
+	_breadcrumb_bar = PanelContainer.new()
+	_breadcrumb_bar.custom_minimum_size.y = 28
+	var style := StyleBoxFlat.new()
+	style.bg_color = PANEL
+	style.border_color = BORDER
+	style.border_width_bottom = 1
+	_breadcrumb_bar.add_theme_stylebox_override("panel", style)
+
+	var hbox := HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", 8)
+	hbox.add_theme_constant_override("margin_left", 10)
+	hbox.add_theme_constant_override("margin_right", 10)
+	_breadcrumb_bar.add_child(hbox)
+
+	_btn_breadcrumb_root = Button.new()
+	_btn_breadcrumb_root.text = "🏠 Root (Main Scene)"
+	_btn_breadcrumb_root.flat = true
+	_btn_breadcrumb_root.add_theme_font_size_override("font_size", 11)
+	_btn_breadcrumb_root.add_theme_color_override("font_color", ACCENT)
+	_btn_breadcrumb_root.pressed.connect(func(): doc_store.exit_to_root_scope())
+	hbox.add_child(_btn_breadcrumb_root)
+
+	_lbl_breadcrumb_sep = Label.new()
+	_lbl_breadcrumb_sep.text = "›"
+	_lbl_breadcrumb_sep.add_theme_font_size_override("font_size", 12)
+	_lbl_breadcrumb_sep.add_theme_color_override("font_color", MUTED)
+	_lbl_breadcrumb_sep.visible = false
+	hbox.add_child(_lbl_breadcrumb_sep)
+
+	_lbl_breadcrumb_scope = Label.new()
+	_lbl_breadcrumb_scope.text = ""
+	_lbl_breadcrumb_scope.add_theme_font_size_override("font_size", 11)
+	_lbl_breadcrumb_scope.add_theme_color_override("font_color", TEXT)
+	_lbl_breadcrumb_scope.visible = false
+	hbox.add_child(_lbl_breadcrumb_scope)
+
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hbox.add_child(spacer)
+
+	_btn_breadcrumb_exit = Button.new()
+	_btn_breadcrumb_exit.text = "⤺ Return to Root"
+	_btn_breadcrumb_exit.flat = true
+	_btn_breadcrumb_exit.add_theme_font_size_override("font_size", 11)
+	_btn_breadcrumb_exit.add_theme_color_override("font_color", ACCENT)
+	_btn_breadcrumb_exit.visible = false
+	_btn_breadcrumb_exit.pressed.connect(func(): doc_store.exit_to_root_scope())
+	hbox.add_child(_btn_breadcrumb_exit)
+
+	return _breadcrumb_bar
 
 func _build_left_dock() -> Control:
 	var panel := PanelContainer.new()
@@ -511,6 +618,18 @@ func _populate_catalog() -> void:
 func _instantiate_catalog_item(kind: String) -> void:
 	if doc_store == null:
 		return
+	var entry := catalog.get_entry(kind)
+	if entry != null and entry.category == "Templates & Subgraphs":
+		var count := doc_store.active_document.subgraphs.size() + 1
+		var inst_name := "%s %d" % [entry.display_name, count]
+		var offset_x := float((count % 4) * 16.0) + 15.0
+		var offset_y := float((count / 4) * 10.0) + 15.0
+		var inst := doc_store.instantiate_template(kind, inst_name, Vector3(offset_x, offset_y, 0.0))
+		if inst != null:
+			_canvas_2d.rebuild_blocks()
+			_viewport_3d.rebuild_3d_scene()
+		return
+
 	var count := doc_store.active_document.elements.size() + 1
 	var id_val := "%s_%02d" % [kind, count]
 	var offset_x := float((count % 4) * 12.0) + 10.0
@@ -653,4 +772,86 @@ func update_agent_telemetry(agents: Array) -> void:
 		_canvas_2d.update_agent_telemetry(agents)
 	if _viewport_3d != null and _viewport_3d.has_method("update_agent_telemetry"):
 		_viewport_3d.update_agent_telemetry(agents)
+
+func _on_scope_changed(scope_id: String, scope_name: String) -> void:
+	if _btn_breadcrumb_root != null and _lbl_breadcrumb_sep != null and _lbl_breadcrumb_scope != null and _btn_breadcrumb_exit != null:
+		if scope_id.is_empty():
+			_btn_breadcrumb_root.text = "🏠 Root (Main Scene)"
+			_lbl_breadcrumb_sep.visible = false
+			_lbl_breadcrumb_scope.visible = false
+			_btn_breadcrumb_exit.visible = false
+		else:
+			_btn_breadcrumb_root.text = "🏠 Root"
+			_lbl_breadcrumb_sep.visible = true
+			_lbl_breadcrumb_scope.visible = true
+			_lbl_breadcrumb_scope.text = "📦 %s" % scope_name
+			_btn_breadcrumb_exit.visible = true
+	if _canvas_2d != null:
+		_canvas_2d.rebuild_blocks()
+	if _viewport_3d != null:
+		_viewport_3d.rebuild_3d_scene()
+
+func _on_subgraphs_modified() -> void:
+	if _canvas_2d != null:
+		_canvas_2d.rebuild_blocks()
+	if _viewport_3d != null:
+		_viewport_3d.rebuild_3d_scene()
+	if _inspector_panel != null:
+		_inspector_panel.refresh()
+
+func _on_group_clicked() -> void:
+	if doc_store == null:
+		return
+	var target_ids: Array = []
+	if not doc_store.selected_elements.is_empty():
+		for eid in doc_store.selected_elements:
+			target_ids.append(eid)
+	elif not doc_store.selected_id.is_empty() and doc_store.selected_type == "element":
+		target_ids.append(doc_store.selected_id)
+	if target_ids.is_empty():
+		return
+	var group_name := "Subsystem_%02d" % (doc_store.active_document.subgraphs.size() + 1)
+	doc_store.group_elements(target_ids, group_name, "compound")
+	if _canvas_2d != null: _canvas_2d.rebuild_blocks()
+	if _viewport_3d != null: _viewport_3d.rebuild_3d_scene()
+
+func _on_ungroup_clicked() -> void:
+	if doc_store == null:
+		return
+	if doc_store.selected_type == "subgraph" and not doc_store.selected_id.is_empty():
+		doc_store.ungroup(doc_store.selected_id)
+		if _canvas_2d != null: _canvas_2d.rebuild_blocks()
+		if _viewport_3d != null: _viewport_3d.rebuild_3d_scene()
+
+func _on_package_template_clicked() -> void:
+	if doc_store == null or _template_dialog == null:
+		return
+	var target_ids: Array = []
+	if not doc_store.selected_elements.is_empty():
+		for eid in doc_store.selected_elements:
+			target_ids.append(eid)
+	elif not doc_store.selected_id.is_empty() and doc_store.selected_type == "element":
+		target_ids.append(doc_store.selected_id)
+	elif doc_store.selected_type == "subgraph" and not doc_store.selected_id.is_empty():
+		target_ids.append(doc_store.selected_id)
+
+	if target_ids.is_empty():
+		return
+
+	_template_dialog.open_for_selection(target_ids)
+	var sz := _template_dialog.custom_minimum_size
+	if size.x > sz.x and size.y > sz.y:
+		_template_dialog.position = (size - sz) * 0.5
+	else:
+		_template_dialog.position = Vector2(100, 60)
+	_template_dialog.move_to_front()
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.ctrl_pressed and event.shift_pressed and event.keycode == KEY_G:
+			_on_ungroup_clicked()
+			get_viewport().set_input_as_handled()
+		elif event.ctrl_pressed and event.keycode == KEY_G:
+			_on_group_clicked()
+			get_viewport().set_input_as_handled()
 

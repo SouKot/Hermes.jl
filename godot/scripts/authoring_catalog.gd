@@ -41,7 +41,7 @@ class CatalogEntry:
 		return grouped
 
 var _entries: Dictionary = {} # kind -> CatalogEntry
-var _categories: Array = ["Material Handling", "Storage & Queues", "Processing", "I/O Boundary", "Crowd & Pedestrian", "Hybrid & Multi-Paradigm"]
+var _categories: Array = ["Material Handling", "Storage & Queues", "Processing", "I/O Boundary", "Crowd & Pedestrian", "Hybrid & Multi-Paradigm", "Templates & Subgraphs"]
 
 func _init() -> void:
 	_register_defaults()
@@ -62,6 +62,33 @@ func get_entry(kind: String) -> CatalogEntry:
 
 func get_all_entries() -> Array:
 	return _entries.values()
+
+func register_template_entry(tmpl: SceneTypes.SceneSubgraph) -> CatalogEntry:
+	var entry := CatalogEntry.new()
+	entry.kind = tmpl.id
+	entry.display_name = tmpl.name
+	entry.category = "Templates & Subgraphs"
+	entry.description = str(tmpl.get_extension("description", "Reusable sub-system template v%s" % str(tmpl.template_version)))
+	entry.color = Color("#1abc9c")
+	entry.default_dimensions = Vector3(10.0, 5.0, 2.5)
+	entry.default_elevation_start = 0.0
+	entry.default_elevation_end = 0.0
+	for ep in tmpl.exposed_ports:
+		var p_dict = {
+			"id": str(ep.get("id", ep.get("port_id", ""))),
+			"kind": str(ep.get("kind", "flow")),
+			"direction": str(ep.get("direction", "input")),
+			"cardinality": str(ep.get("cardinality", "many")),
+			"name": str(ep.get("name", ep.get("id", "")))
+		}
+		if p_dict["direction"] == "input":
+			entry.default_input_ports.append(p_dict)
+		elif p_dict["kind"] == "metric":
+			entry.default_metric_ports.append(p_dict)
+		else:
+			entry.default_output_ports.append(p_dict)
+	_entries[tmpl.id] = entry
+	return entry
 
 func _register_defaults() -> void:
 	# 1. Conveyor
@@ -474,6 +501,27 @@ func _register_defaults() -> void:
 		"gate_latency_sec": 0.5
 	}
 	_entries["hybrid_portal"] = portal
+
+	# 11. Built-in Template: Queue-Server Workcell
+	var cell := CatalogEntry.new()
+	cell.kind = "queue_server_station"
+	cell.display_name = "Queue-Server Workcell"
+	cell.category = "Templates & Subgraphs"
+	cell.description = "Pre-configured modular station with infeed buffer, processing server, and outfeed interface."
+	cell.color = Color("#1abc9c")
+	cell.default_dimensions = Vector3(8.0, 4.0, 2.0)
+	cell.default_elevation_start = 0.0
+	cell.default_elevation_end = 0.0
+	cell.default_input_ports = [
+		{"id": "flow_in", "kind": "flow", "direction": "input", "cardinality": "many", "name": "Station Infeed"}
+	]
+	cell.default_output_ports = [
+		{"id": "flow_out", "kind": "flow", "direction": "output", "cardinality": "many", "name": "Station Outfeed"}
+	]
+	cell.default_metric_ports = [
+		{"id": "throughput", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Cell Throughput"}
+	]
+	_entries["queue_server_station"] = cell
 
 func create_element_instance(kind: String, id_val: String, pos: Vector2) -> SceneTypes.SceneElement:
 	var entry := get_entry(kind)

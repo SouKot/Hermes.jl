@@ -98,6 +98,8 @@ func refresh() -> void:
 		_render_single_element(doc_store.selected_id)
 	elif doc_store.selected_type == "connection" and not doc_store.selected_id.is_empty():
 		_render_connection(doc_store.selected_id)
+	elif doc_store.selected_type == "subgraph" and not doc_store.selected_id.is_empty():
+		_render_subgraph(doc_store.selected_id)
 	else:
 		_render_empty_state("Select an entity block or port on the canvas to inspect properties.")
 
@@ -657,6 +659,8 @@ func _build_enum_editor(elem: SceneTypes.SceneElement, prop_key: String, cur_val
 	var opt := OptionButton.new()
 	opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	opt.add_theme_font_size_override("font_size", 9)
+	_container.add_child(opt)
+
 	var sel_idx := -1
 	for i in range(options.size()):
 		var item = options[i]
@@ -669,7 +673,7 @@ func _build_enum_editor(elem: SceneTypes.SceneElement, prop_key: String, cur_val
 	if opt.item_count > 0:
 		if sel_idx < 0:
 			sel_idx = 0
-		opt.select(sel_idx)
+		opt.selected = sel_idx
 
 	opt.item_selected.connect(func(idx):
 		if idx >= 0 and idx < options.size():
@@ -679,7 +683,6 @@ func _build_enum_editor(elem: SceneTypes.SceneElement, prop_key: String, cur_val
 	)
 	if is_sim_running and not is_live:
 		opt.disabled = true
-	_container.add_child(opt)
 
 func _build_bool_editor(elem: SceneTypes.SceneElement, prop_key: String, cur_val: bool, is_live: bool) -> void:
 	var chk := CheckBox.new()
@@ -815,3 +818,204 @@ class DistributionSparkline extends Control:
 		if points.size() >= 2:
 			for i in range(points.size() - 1):
 				draw_line(points[i], points[i + 1], Color("#52c7a5"), 1.2)
+
+# ============================================================================
+# Subgraph / Template Inspector
+# ============================================================================
+func _render_subgraph(sub_id: String) -> void:
+	var sub: SceneTypes.SceneSubgraph = doc_store.get_subgraph(sub_id)
+	if sub == null:
+		_render_empty_state("Subgraph '%s' not found." % sub_id)
+		return
+
+	# 1. Header Box
+	var header := VBoxContainer.new()
+	header.add_theme_constant_override("separation", 2)
+
+	var title_row := HBoxContainer.new()
+	var dot := ColorRect.new()
+	dot.custom_minimum_size = Vector2(8, 8)
+	dot.color = Color("#1abc9c") if sub.role == "compound" else Color("#9b59b6")
+	title_row.add_child(dot)
+
+	var title_lbl := Label.new()
+	title_lbl.text = sub.id
+	title_lbl.add_theme_font_size_override("font_size", 13)
+	title_lbl.add_theme_color_override("font_color", TEXT)
+	title_row.add_child(title_lbl)
+
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title_row.add_child(spacer)
+
+	var role_pill := Label.new()
+	role_pill.text = " [%s] " % sub.role.to_upper()
+	role_pill.add_theme_font_size_override("font_size", 9)
+	role_pill.add_theme_color_override("font_color", dot.color)
+	title_row.add_child(role_pill)
+
+	header.add_child(title_row)
+
+	var sub_name_lbl := Label.new()
+	sub_name_lbl.text = sub.name
+	sub_name_lbl.add_theme_font_size_override("font_size", 10)
+	sub_name_lbl.add_theme_color_override("font_color", MUTED)
+	header.add_child(sub_name_lbl)
+
+	_container.add_child(header)
+	_container.add_child(HSeparator.new())
+
+	# 2. Action Buttons (Drill Down, Detach, Ungroup)
+	var actions_box := VBoxContainer.new()
+	actions_box.add_theme_constant_override("separation", 6)
+
+	var btn_drill := Button.new()
+	btn_drill.text = "⤸ Drill Down (Edit Internals)"
+	btn_drill.add_theme_font_size_override("font_size", 10)
+	btn_drill.add_theme_color_override("font_color", ACCENT)
+	btn_drill.pressed.connect(func(): doc_store.enter_subgraph_scope(sub.id))
+	actions_box.add_child(btn_drill)
+
+	if sub.role == "compound" and sub.template_id != null:
+		var btn_detach := Button.new()
+		btn_detach.text = "✂ Detach from Template"
+		btn_detach.tooltip_text = "Convert to independent group with full parameter independence"
+		btn_detach.add_theme_font_size_override("font_size", 10)
+		btn_detach.pressed.connect(func(): doc_store.detach_subgraph(sub.id))
+		actions_box.add_child(btn_detach)
+
+	var btn_ungroup := Button.new()
+	btn_ungroup.text = "✕ Ungroup Elements"
+	btn_ungroup.tooltip_text = "Dissolve group boundary and return elements to root scope"
+	btn_ungroup.add_theme_font_size_override("font_size", 10)
+	btn_ungroup.pressed.connect(func(): doc_store.ungroup(sub.id))
+	actions_box.add_child(btn_ungroup)
+
+	_container.add_child(actions_box)
+	_container.add_child(HSeparator.new())
+
+	# 3. Hierarchy & Lineage
+	var meta_hdr := Label.new()
+	meta_hdr.text = "TEMPLATE & HIERARCHY"
+	meta_hdr.add_theme_font_size_override("font_size", 10)
+	meta_hdr.add_theme_color_override("font_color", MUTED)
+	_container.add_child(meta_hdr)
+
+	var meta_vbox := VBoxContainer.new()
+	meta_vbox.add_theme_constant_override("separation", 4)
+
+	var tmpl_str: String = "None (Independent Group)"
+	if sub.template_id != null:
+		tmpl_str = "%s (v%s)" % [str(sub.template_id), str(sub.template_version)]
+	var tmpl_lbl := Label.new()
+	tmpl_lbl.text = "Template: %s" % tmpl_str
+	tmpl_lbl.add_theme_font_size_override("font_size", 10)
+	meta_vbox.add_child(tmpl_lbl)
+
+	var count_lbl := Label.new()
+	count_lbl.text = "Members: %d Elements, %d Connections" % [sub.elements.size(), sub.connections.size()]
+	count_lbl.add_theme_font_size_override("font_size", 10)
+	meta_vbox.add_child(count_lbl)
+	_container.add_child(meta_vbox)
+
+	_container.add_child(HSeparator.new())
+
+	# 4. Transform (Position)
+	var trans_lbl := Label.new()
+	trans_lbl.text = "TRANSFORM (POSITION)"
+	trans_lbl.add_theme_font_size_override("font_size", 10)
+	trans_lbl.add_theme_color_override("font_color", MUTED)
+	_container.add_child(trans_lbl)
+
+	var pos_row := HBoxContainer.new()
+	pos_row.add_theme_constant_override("separation", 6)
+	_container.add_child(pos_row)
+
+	_create_dock_mini_spin(pos_row, "X (m)", sub.transform.position.x, -500.0, 500.0, 0.5, func(v):
+		var p := sub.transform.position
+		p.x = v
+		doc_store.set_subgraph_position(sub.id, p)
+	)
+	_create_dock_mini_spin(pos_row, "Y (m)", sub.transform.position.y, -500.0, 500.0, 0.5, func(v):
+		var p := sub.transform.position
+		p.y = v
+		doc_store.set_subgraph_position(sub.id, p)
+	)
+	_create_dock_mini_spin(pos_row, "Z (m)", sub.transform.position.z, -500.0, 500.0, 0.5, func(v):
+		var p := sub.transform.position
+		p.z = v
+		doc_store.set_subgraph_position(sub.id, p)
+	)
+
+	# 5. Boundary Ports
+	if not sub.exposed_ports.is_empty():
+		_container.add_child(HSeparator.new())
+		var ports_lbl := Label.new()
+		ports_lbl.text = "EXPOSED BOUNDARY PORTS (%d)" % sub.exposed_ports.size()
+		ports_lbl.add_theme_font_size_override("font_size", 10)
+		ports_lbl.add_theme_color_override("font_color", MUTED)
+		_container.add_child(ports_lbl)
+
+		var ports_vbox := VBoxContainer.new()
+		ports_vbox.add_theme_constant_override("separation", 3)
+		for ep in sub.exposed_ports:
+			var p_row := HBoxContainer.new()
+			var p_badge := Label.new()
+			var p_dir: String = str(ep.get("direction", "input")).to_upper()
+			var p_kind: String = str(ep.get("kind", "flow")).to_upper()
+			p_badge.text = "[%s %s]" % [p_kind, p_dir]
+			p_badge.add_theme_font_size_override("font_size", 9)
+			p_badge.add_theme_color_override("font_color", ACCENT)
+			p_row.add_child(p_badge)
+
+			var p_name_lbl := Label.new()
+			p_name_lbl.text = str(ep.get("name", ep.get("id", "")))
+			p_name_lbl.add_theme_font_size_override("font_size", 10)
+			p_row.add_child(p_name_lbl)
+
+			ports_vbox.add_child(p_row)
+		_container.add_child(ports_vbox)
+
+	# 6. Parameter Overrides
+	if not sub.parameter_overrides.is_empty() or sub.role == "compound":
+		_container.add_child(HSeparator.new())
+		var ov_lbl := Label.new()
+		ov_lbl.text = "PARAMETER OVERRIDES"
+		ov_lbl.add_theme_font_size_override("font_size", 10)
+		ov_lbl.add_theme_color_override("font_color", MUTED)
+		_container.add_child(ov_lbl)
+
+		var ov_vbox := VBoxContainer.new()
+		ov_vbox.add_theme_constant_override("separation", 4)
+		if sub.parameter_overrides.is_empty():
+			var empty_ov := Label.new()
+			empty_ov.text = "No active overrides. Default template properties used."
+			empty_ov.add_theme_font_size_override("font_size", 9)
+			empty_ov.add_theme_color_override("font_color", MUTED)
+			ov_vbox.add_child(empty_ov)
+		else:
+			for k in sub.parameter_overrides.keys():
+				var r := HBoxContainer.new()
+				var k_lbl := Label.new()
+				k_lbl.text = str(k) + ":"
+				k_lbl.add_theme_font_size_override("font_size", 10)
+				r.add_child(k_lbl)
+
+				var v_edit := LineEdit.new()
+				v_edit.text = str(sub.parameter_overrides[k])
+				v_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				v_edit.text_submitted.connect(func(new_text):
+					var val: Variant = new_text
+					if new_text.is_valid_float():
+						val = new_text.to_float()
+					elif new_text.is_valid_int():
+						val = new_text.to_int()
+					elif new_text.to_lower() == "true":
+						val = true
+					elif new_text.to_lower() == "false":
+						val = false
+					doc_store.set_subgraph_override(sub.id, str(k), val)
+				)
+				r.add_child(v_edit)
+				ov_vbox.add_child(r)
+		_container.add_child(ov_vbox)

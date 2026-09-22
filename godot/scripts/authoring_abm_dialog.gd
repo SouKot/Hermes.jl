@@ -545,6 +545,8 @@ func _on_model_selected(idx: int) -> void:
 	var keys: Array = MODEL_REGISTRY.keys()
 	if idx < 0 or idx >= keys.size():
 		return
+	if _opt_model != null and _opt_model.selected != idx:
+		_opt_model.selected = idx
 	var new_model: String = keys[idx]
 	_ensure_abm_config_struct()
 	var old_model: String = str(doc_store.active_document.abm_config.get("model_name", "SFM"))

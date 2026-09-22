@@ -612,10 +612,15 @@ class SceneSubgraph extends SceneExtensible:
 	var template_version: Variant = null
 	var level_id: Variant = null
 	var transform: SceneTransform = null
+	var editor: SceneEditorMeta = null
 	var elements: Array = []
 	var connections: Array = []
 	var exposed_ports: Array = []
 	var parameter_overrides: Dictionary = {}
+
+	func _init() -> void:
+		transform = SceneTransform.new()
+		editor = SceneEditorMeta.new()
 
 	static func from_dict(d: Dictionary) -> SceneSubgraph:
 		var s := SceneSubgraph.new()
@@ -633,6 +638,11 @@ class SceneSubgraph extends SceneExtensible:
 		else:
 			s.transform = SceneTransform.new()
 
+		if d.has("editor") and d["editor"] is Dictionary:
+			s.editor = SceneEditorMeta.from_dict(d["editor"])
+		else:
+			s.editor = null
+
 		s.elements = d.get("elements", []).duplicate(true)
 		s.connections = d.get("connections", []).duplicate(true)
 		s.exposed_ports = d.get("exposed_ports", []).duplicate(true)
@@ -640,7 +650,7 @@ class SceneSubgraph extends SceneExtensible:
 
 		for k in d.keys():
 			var sk := str(k)
-			if sk not in ["id", "name", "role", "template_id", "template_version", "level_id", "transform", "elements", "connections", "exposed_ports", "parameter_overrides"]:
+			if sk not in ["id", "name", "role", "template_id", "template_version", "level_id", "transform", "editor", "elements", "connections", "exposed_ports", "parameter_overrides"]:
 				if sk == "extensions" and d["extensions"] is Dictionary:
 					s.extensions["extensions"] = d["extensions"].duplicate(true)
 				else:
@@ -665,6 +675,8 @@ class SceneSubgraph extends SceneExtensible:
 			out["level_id"] = level_id
 		if transform != null:
 			out["transform"] = transform.to_dict()
+		if editor != null:
+			out["editor"] = editor.to_dict()
 
 		for k in extensions.keys():
 			if k == "extensions":
@@ -682,6 +694,7 @@ class SceneSubgraph extends SceneExtensible:
 		c.template_version = template_version
 		c.level_id = level_id
 		c.transform = transform.clone() if transform != null else null
+		c.editor = editor.clone() if editor != null else SceneEditorMeta.new()
 		c.elements = elements.duplicate(true)
 		c.connections = connections.duplicate(true)
 		c.exposed_ports = exposed_ports.duplicate(true)

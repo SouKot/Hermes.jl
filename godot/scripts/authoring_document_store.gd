@@ -12,14 +12,17 @@ signal document_saved(path: String)
 signal document_modified()
 signal diagnostics_updated(diagnostics: Array, is_valid: bool)
 signal selection_changed(selected_id: String, selected_type: String)
+signal scope_changed(scope_id: String, scope_name: String)
+signal subgraphs_modified()
 
 var active_document: SceneTypes.SceneDocument
 var file_path: String = ""
 var is_dirty: bool = false
 var selected_id: String = ""
-var selected_type: String = "" # "element", "connection", "level", "port", ""
+var selected_type: String = "" # "element", "connection", "level", "port", "subgraph", ""
 var selected_port_id: String = ""
 var selected_elements: Array[String] = []
+var current_scope_id: String = "" # "" denotes root scene
 
 var _undo_stack: Array = []
 var _redo_stack: Array = []
@@ -42,7 +45,14 @@ func new_document() -> void:
 	active_document.simulation = {
 		"time_unit": "seconds",
 		"warmup_time": 0.0,
-		"max_duration": 3600.0
+		"max_duration": 3600.0,
+		"mode": "des_only"
+	}
+	active_document.abm_config = {
+		"enabled": false,
+		"model_name": "SFM",
+		"parameters": {},
+		"pedestrian_profiles": []
 	}
 
 	var level := SceneTypes.SceneLevel.new()
@@ -57,11 +67,13 @@ func new_document() -> void:
 
 	file_path = ""
 	is_dirty = false
+	current_scope_id = ""
 	_undo_stack.clear()
 	_redo_stack.clear()
 	selected_id = ""
 	selected_type = ""
 	validate()
+	scope_changed.emit("", "Root")
 	document_loaded.emit(active_document)
 
 func load_from_file(path: String) -> bool:
@@ -81,11 +93,13 @@ func load_from_file(path: String) -> bool:
 	active_document = doc
 	file_path = path
 	is_dirty = false
+	current_scope_id = ""
 	_undo_stack.clear()
 	_redo_stack.clear()
 	selected_id = ""
 	selected_type = ""
 	validate()
+	scope_changed.emit("", "Root")
 	document_loaded.emit(active_document)
 	return true
 
@@ -121,11 +135,16 @@ func select(id_val: String, type_val: String = "element") -> void:
 	selected_id = id_val
 	selected_type = type_val
 	selected_port_id = ""
-	if type_val == "element" and not id_val.is_empty():
+	if (type_val == "element" or type_val == "subgraph") and not id_val.is_empty():
 		selected_elements = [id_val]
 	else:
 		selected_elements.clear()
 	selection_changed.emit(selected_id, selected_type)
+
+func get_selected_subgraph() -> SceneTypes.SceneSubgraph:
+	if selected_type != "subgraph" or selected_id.is_empty():
+		return null
+	return get_subgraph(selected_id)
 
 func select_port(elem_id: String, port_id: String) -> void:
 	selected_id = elem_id
@@ -360,6 +379,17 @@ func add_connection(conn: SceneTypes.SceneConnection) -> void:
 	active_document.connections.append(conn)
 	validate()
 	document_modified.emit()
+
+func add_connection_direct(id_val: String, src_elem: String, src_port: String, tgt_elem: String, tgt_port: String, kind: String = "flow") -> SceneTypes.SceneConnection:
+	var conn := SceneTypes.SceneConnection.new()
+	conn.id = id_val
+	conn.source_element = src_elem
+	conn.source_port = src_port
+	conn.target_element = tgt_elem
+	conn.target_port = tgt_port
+	conn.link_type = kind
+	add_connection(conn)
+	return conn
 
 func remove_connection(conn_id: String) -> void:
 	_record_undo()
@@ -632,5 +662,549 @@ func auto_layout_dag(spacing_x: float = 240.0, spacing_y: float = 120.0) -> bool
 			elem.transform.position = Vector3(gx / 20.0, gy / 20.0, elem.transform.position.z)
 
 	validate()
+	document_modified.emit()
+	return true
+
+# ============================================================================
+# Phase 7D-10: Subgraphs, Groups, Templates & Hierarchical Scopes
+# ============================================================================
+
+func enter_subgraph_scope(sub_id: String) -> bool:
+	var sub := get_subgraph(sub_id)
+	if sub == null:
+		return false
+	current_scope_id = sub_id
+	clear_selection()
+	scope_changed.emit(current_scope_id, get_current_scope_name())
+	return true
+
+func exit_to_root_scope() -> void:
+	current_scope_id = ""
+	clear_selection()
+	scope_changed.emit("", "Root")
+
+func get_current_scope_name() -> String:
+	if current_scope_id.is_empty():
+		return "Root"
+	var sub := get_subgraph(current_scope_id)
+	return sub.name if sub != null else current_scope_id
+
+func get_subgraph(sub_id: String) -> SceneTypes.SceneSubgraph:
+	if active_document == null:
+		return null
+	for s in active_document.subgraphs:
+		var sid: String = s.id if s is SceneTypes.SceneSubgraph else str(s.get("id", ""))
+		if sid == sub_id:
+			return s if s is SceneTypes.SceneSubgraph else SceneTypes.SceneSubgraph.from_dict(s)
+	return null
+
+func get_template(tmpl_id: String) -> SceneTypes.SceneSubgraph:
+	if active_document == null:
+		return null
+	for s in active_document.subgraphs:
+		var sub: SceneTypes.SceneSubgraph = s if s is SceneTypes.SceneSubgraph else SceneTypes.SceneSubgraph.from_dict(s)
+		if sub.id == tmpl_id and sub.role == "template":
+			return sub
+	if tmpl_id == "queue_server_station":
+		var built_in := SceneTypes.SceneSubgraph.new()
+		built_in.id = "queue_server_station"
+		built_in.name = "Queue-Server Workcell"
+		built_in.role = "template"
+		built_in.template_version = "1.0.0"
+		built_in.exposed_ports = [
+			{"id": "flow_in", "name": "Station Infeed", "kind": "flow", "direction": "input", "cardinality": "many", "target_element": "q_in", "target_port": "flow_in"},
+			{"id": "flow_out", "name": "Station Outfeed", "kind": "flow", "direction": "output", "cardinality": "many", "target_element": "srv_core", "target_port": "flow_out"},
+			{"id": "throughput", "name": "Cell Throughput", "kind": "metric", "direction": "output", "cardinality": "many", "target_element": "srv_core", "target_port": "utilization"}
+		]
+		built_in.set_extension("description", "Built-in modular workcell with queue buffer and processing server.")
+		active_document.subgraphs.append(built_in)
+		return built_in
+	return null
+
+func get_templates() -> Array:
+	var list: Array = []
+	if active_document == null:
+		return list
+	for s in active_document.subgraphs:
+		var sub: SceneTypes.SceneSubgraph = s if s is SceneTypes.SceneSubgraph else SceneTypes.SceneSubgraph.from_dict(s)
+		if sub.role == "template":
+			list.append(sub)
+	return list
+
+func get_scoped_elements() -> Array:
+	if active_document == null:
+		return []
+	if current_scope_id.is_empty():
+		var tmpl_elem_ids := {}
+		for s in active_document.subgraphs:
+			var sub: SceneTypes.SceneSubgraph = s if s is SceneTypes.SceneSubgraph else SceneTypes.SceneSubgraph.from_dict(s)
+			if sub.role == "template":
+				for eid in sub.elements:
+					tmpl_elem_ids[str(eid)] = true
+		var root_elems: Array = []
+		for e in active_document.elements:
+			if not tmpl_elem_ids.has(e.id):
+				root_elems.append(e)
+		return root_elems
+	else:
+		var sub := get_subgraph(current_scope_id)
+		if sub == null:
+			return []
+		var scoped: Array = []
+		var elem_set := {}
+		for eid in sub.elements:
+			elem_set[str(eid)] = true
+		for e in active_document.elements:
+			if elem_set.has(e.id):
+				scoped.append(e)
+		return scoped
+
+func get_scoped_subgraphs() -> Array:
+	if active_document == null:
+		return []
+	if current_scope_id.is_empty():
+		var list: Array = []
+		for s in active_document.subgraphs:
+			var sub: SceneTypes.SceneSubgraph = s if s is SceneTypes.SceneSubgraph else SceneTypes.SceneSubgraph.from_dict(s)
+			if sub.role in ["compound", "group"]:
+				list.append(sub)
+		return list
+	else:
+		return []
+
+func get_scoped_connections() -> Array:
+	if active_document == null:
+		return []
+	if current_scope_id.is_empty():
+		var scoped_elem_ids := {}
+		for e in get_scoped_elements():
+			scoped_elem_ids[e.id] = true
+		for s in get_scoped_subgraphs():
+			scoped_elem_ids[s.id] = true
+		var list: Array = []
+		for c in active_document.connections:
+			if scoped_elem_ids.has(c.source_element) and scoped_elem_ids.has(c.target_element):
+				list.append(c)
+		return list
+	else:
+		var sub := get_subgraph(current_scope_id)
+		if sub == null:
+			return []
+		var sub_conn_ids := {}
+		for cid in sub.connections:
+			sub_conn_ids[str(cid)] = true
+		var list: Array = []
+		for c in active_document.connections:
+			if sub_conn_ids.has(c.id):
+				list.append(c)
+		return list
+
+func add_subgraph(sub: SceneTypes.SceneSubgraph) -> void:
+	_record_undo()
+	active_document.subgraphs.append(sub)
+	validate()
+	subgraphs_modified.emit()
+	document_modified.emit()
+
+func remove_subgraph(sub_id: String) -> bool:
+	if active_document == null:
+		return false
+	var found_idx := -1
+	for i in range(active_document.subgraphs.size()):
+		var s = active_document.subgraphs[i]
+		var sid: String = s.id if s is SceneTypes.SceneSubgraph else str(s.get("id", ""))
+		if sid == sub_id:
+			found_idx = i
+			break
+	if found_idx < 0:
+		return false
+
+	_record_undo()
+	active_document.subgraphs.remove_at(found_idx)
+
+	for i in range(active_document.connections.size() - 1, -1, -1):
+		var c: SceneTypes.SceneConnection = active_document.connections[i]
+		if c.source_element == sub_id or c.target_element == sub_id:
+			active_document.connections.remove_at(i)
+
+	if selected_id == sub_id:
+		clear_selection()
+
+	validate()
+	subgraphs_modified.emit()
+	document_modified.emit()
+	return true
+
+func group_elements(elem_ids: Array, group_name: String = "", role: String = "group") -> SceneTypes.SceneSubgraph:
+	if active_document == null or elem_ids.is_empty():
+		return null
+
+	_record_undo()
+
+	var sum_x := 0.0
+	var sum_y := 0.0
+	var sum_z := 0.0
+	var valid_count := 0
+	var id_set := {}
+	for eid in elem_ids:
+		var elem := get_element(str(eid))
+		if elem != null:
+			id_set[str(eid)] = true
+			sum_x += float(elem.transform.position.x)
+			sum_y += float(elem.transform.position.y)
+			sum_z += float(elem.transform.position.z)
+			valid_count += 1
+
+	if valid_count == 0:
+		return null
+
+	var center := Vector3(sum_x / float(valid_count), sum_y / float(valid_count), sum_z / float(valid_count))
+
+	var internal_conns: Array = []
+	for c in active_document.connections:
+		if id_set.has(c.source_element) and id_set.has(c.target_element):
+			internal_conns.append(c.id)
+
+	var base_id := "group" if role == "group" else "compound"
+	var new_id := "%s_%02d" % [base_id, active_document.subgraphs.size() + 1]
+	var existing_ids := {}
+	for s in active_document.subgraphs:
+		existing_ids[s.id if s is SceneTypes.SceneSubgraph else str(s.get("id", ""))] = true
+	var counter := 1
+	while existing_ids.has(new_id):
+		counter += 1
+		new_id = "%s_%02d" % [base_id, counter]
+
+	var sub := SceneTypes.SceneSubgraph.new()
+	sub.id = new_id
+	sub.name = group_name if not group_name.is_empty() else new_id.capitalize()
+	sub.role = role
+	sub.transform.position = center
+	sub.editor.graph_position = Vector2(center.x * 20.0, center.y * 20.0)
+	sub.elements = elem_ids.duplicate()
+	sub.connections = internal_conns
+
+	if role == "compound":
+		sub.exposed_ports = _synthesize_exposed_ports(elem_ids)
+
+	active_document.subgraphs.append(sub)
+	select(sub.id, "subgraph")
+	validate()
+	subgraphs_modified.emit()
+	document_modified.emit()
+	return sub
+
+func _synthesize_exposed_ports(elem_ids: Array) -> Array:
+	var exposed: Array = []
+	for eid in elem_ids:
+		var elem := get_element(str(eid))
+		if elem == null:
+			continue
+		for p in elem.input_ports:
+			if p.kind == "flow":
+				var exp_id := "%s_%s" % [elem.id, p.id]
+				exposed.append({
+					"id": exp_id,
+					"name": "%s %s" % [elem.name, p.name],
+					"kind": p.kind,
+					"direction": "input",
+					"data_type": p.data_type,
+					"cardinality": p.cardinality,
+					"target_element": elem.id,
+					"target_port": p.id
+				})
+		for p in elem.output_ports:
+			if p.kind == "flow":
+				var exp_id := "%s_%s" % [elem.id, p.id]
+				exposed.append({
+					"id": exp_id,
+					"name": "%s %s" % [elem.name, p.name],
+					"kind": p.kind,
+					"direction": "output",
+					"data_type": p.data_type,
+					"cardinality": p.cardinality,
+					"target_element": elem.id,
+					"target_port": p.id
+				})
+		for p in elem.metric_ports:
+			var exp_id := "%s_%s" % [elem.id, p.id]
+			exposed.append({
+				"id": exp_id,
+				"name": "%s %s" % [elem.name, p.name],
+				"kind": "metric",
+				"direction": "output",
+				"data_type": p.data_type,
+				"cardinality": p.cardinality,
+				"target_element": elem.id,
+				"target_port": p.id
+			})
+	return exposed
+
+func ungroup(subgraph_id: String) -> bool:
+	var sub := get_subgraph(subgraph_id)
+	if sub == null or active_document == null:
+		return false
+
+	_record_undo()
+
+	for i in range(active_document.subgraphs.size() - 1, -1, -1):
+		var s = active_document.subgraphs[i]
+		var sid: String = s.id if s is SceneTypes.SceneSubgraph else str(s.get("id", ""))
+		if sid == subgraph_id:
+			active_document.subgraphs.remove_at(i)
+			break
+
+	var port_map := {}
+	for ep in sub.exposed_ports:
+		var pid: String = str(ep.get("id", ep.get("port_id", "")))
+		var telem: String = str(ep.get("target_element", ep.get("internal_element_id", "")))
+		var tport: String = str(ep.get("target_port", ep.get("internal_port_id", "")))
+		if not pid.is_empty() and not telem.is_empty() and not tport.is_empty():
+			port_map[pid] = { "elem": telem, "port": tport }
+
+	for conn in active_document.connections:
+		if conn.source_element == subgraph_id and port_map.has(conn.source_port):
+			conn.source_element = port_map[conn.source_port]["elem"]
+			conn.source_port = port_map[conn.source_port]["port"]
+		if conn.target_element == subgraph_id and port_map.has(conn.target_port):
+			conn.target_element = port_map[conn.target_port]["elem"]
+			conn.target_port = port_map[conn.target_port]["port"]
+
+	clear_selection()
+	validate()
+	subgraphs_modified.emit()
+	document_modified.emit()
+	return true
+
+func package_as_template(target_ids: Array, tmpl_id: String, tmpl_name: String, version: String = "1.0.0", description: String = "") -> SceneTypes.SceneSubgraph:
+	if active_document == null or target_ids.is_empty():
+		return null
+
+	_record_undo()
+
+	var elem_ids: Array = []
+	var internal_conn_ids: Array = []
+	var exposed_ports: Array = []
+
+	if target_ids.size() == 1 and get_subgraph(str(target_ids[0])) != null:
+		var src_sub := get_subgraph(str(target_ids[0]))
+		elem_ids = src_sub.elements.duplicate(true)
+		internal_conn_ids = src_sub.connections.duplicate(true)
+		exposed_ports = src_sub.exposed_ports.duplicate(true)
+	else:
+		elem_ids = target_ids.duplicate(true)
+		var id_set := {}
+		for eid in elem_ids:
+			id_set[str(eid)] = true
+		for c in active_document.connections:
+			if id_set.has(c.source_element) and id_set.has(c.target_element):
+				internal_conn_ids.append(c.id)
+		exposed_ports = _synthesize_exposed_ports(elem_ids)
+
+	var tmpl := SceneTypes.SceneSubgraph.new()
+	tmpl.id = tmpl_id
+	tmpl.name = tmpl_name
+	tmpl.role = "template"
+	tmpl.template_version = version
+	tmpl.elements = elem_ids
+	tmpl.connections = internal_conn_ids
+	tmpl.exposed_ports = exposed_ports
+	if not description.is_empty():
+		tmpl.set_extension("description", description)
+
+	var replaced := false
+	for i in range(active_document.subgraphs.size()):
+		var s = active_document.subgraphs[i]
+		var sid: String = s.id if s is SceneTypes.SceneSubgraph else str(s.get("id", ""))
+		if sid == tmpl_id:
+			active_document.subgraphs[i] = tmpl
+			replaced = true
+			break
+	if not replaced:
+		active_document.subgraphs.append(tmpl)
+
+	validate()
+	subgraphs_modified.emit()
+	document_modified.emit()
+	return tmpl
+
+func instantiate_template(template_id: String, instance_name: String = "", world_pos: Vector3 = Vector3.ZERO, overrides: Dictionary = {}) -> SceneTypes.SceneSubgraph:
+	if active_document == null:
+		return null
+
+	var tmpl := get_template(template_id)
+	if tmpl == null:
+		return null
+
+	_record_undo()
+
+	var base_id := instance_name.to_snake_case() if not instance_name.is_empty() else template_id.replace("tpl_", "")
+	if base_id.is_empty():
+		base_id = "station"
+	var new_id := base_id
+	var counter := 1
+	var existing_ids := {}
+	for s in active_document.subgraphs:
+		var sid: String = s.id if s is SceneTypes.SceneSubgraph else str(s.get("id", ""))
+		existing_ids[sid] = true
+	for e in active_document.elements:
+		existing_ids[e.id] = true
+
+	while existing_ids.has(new_id):
+		counter += 1
+		new_id = "%s_%02d" % [base_id, counter]
+
+	var inst := SceneTypes.SceneSubgraph.new()
+	inst.id = new_id
+	inst.name = instance_name if not instance_name.is_empty() else new_id.capitalize()
+	inst.role = "compound"
+	inst.template_id = template_id
+	inst.template_version = tmpl.template_version
+	inst.transform.position = world_pos
+	inst.editor.graph_position = Vector2(world_pos.x * 20.0, world_pos.y * 20.0)
+	inst.exposed_ports = tmpl.exposed_ports.duplicate(true)
+	inst.parameter_overrides = overrides.duplicate(true)
+	inst.elements = []
+	inst.connections = []
+
+	active_document.subgraphs.append(inst)
+	select(inst.id, "subgraph")
+	validate()
+	subgraphs_modified.emit()
+	document_modified.emit()
+	return inst
+
+func detach_subgraph(subgraph_id: String) -> bool:
+	var sub := get_subgraph(subgraph_id)
+	if sub == null or sub.role != "compound" or sub.template_id == null or active_document == null:
+		return false
+
+	var tmpl := get_template(str(sub.template_id))
+	if tmpl == null:
+		return false
+
+	_record_undo()
+
+	var elem_map := {}
+	var created_elem_ids: Array = []
+	for proto_id in tmpl.elements:
+		var proto_elem := get_element(str(proto_id))
+		if proto_elem == null:
+			continue
+		var clone: SceneTypes.SceneElement = proto_elem.clone()
+		var new_eid := "%s_%s" % [subgraph_id, proto_elem.id.replace("tpl_", "")]
+		clone.id = new_eid
+		clone.name = "%s %s" % [sub.name, proto_elem.name]
+		clone.transform.position = sub.transform.position + proto_elem.transform.position
+		clone.editor.graph_position = Vector2(clone.transform.position.x * 20.0, clone.transform.position.y * 20.0)
+
+		for key in sub.parameter_overrides.keys():
+			var sk := str(key)
+			if sk.begins_with(proto_elem.id + "."):
+				var prop_name := sk.substr(proto_elem.id.length() + 1)
+				clone.properties[prop_name] = sub.parameter_overrides[key]
+			elif sk == proto_elem.id and sub.parameter_overrides[key] is Dictionary:
+				for p in sub.parameter_overrides[key].keys():
+					clone.properties[p] = sub.parameter_overrides[key][p]
+
+		active_document.elements.append(clone)
+		created_elem_ids.append(new_eid)
+		elem_map[proto_elem.id] = new_eid
+
+	for conn_id in tmpl.connections:
+		var target_conn: SceneTypes.SceneConnection = null
+		for c in active_document.connections:
+			if c.id == str(conn_id):
+				target_conn = c
+				break
+		if target_conn != null and elem_map.has(target_conn.source_element) and elem_map.has(target_conn.target_element):
+			var conn_clone: SceneTypes.SceneConnection = target_conn.clone()
+			conn_clone.id = "%s_%s" % [subgraph_id, target_conn.id.replace("tpl_", "")]
+			conn_clone.source_element = elem_map[target_conn.source_element]
+			conn_clone.target_element = elem_map[target_conn.target_element]
+			active_document.connections.append(conn_clone)
+
+	for ep in sub.exposed_ports:
+		var pid: String = str(ep.get("id", ep.get("port_id", "")))
+		var telem: String = str(ep.get("target_element", ep.get("internal_element_id", "")))
+		var tport: String = str(ep.get("target_port", ep.get("internal_port_id", "")))
+		if elem_map.has(telem):
+			var actual_eid: String = elem_map[telem]
+			for conn in active_document.connections:
+				if conn.source_element == subgraph_id and conn.source_port == pid:
+					conn.source_element = actual_eid
+					conn.source_port = tport
+				if conn.target_element == subgraph_id and conn.target_port == pid:
+					conn.target_element = actual_eid
+					conn.target_port = tport
+
+	sub.role = "group"
+	sub.template_id = null
+	sub.template_version = null
+	sub.elements = created_elem_ids
+	sub.exposed_ports = []
+	sub.parameter_overrides = {}
+
+	select(sub.id, "subgraph")
+	validate()
+	subgraphs_modified.emit()
+	document_modified.emit()
+	return true
+
+func set_subgraph_position(sub_id: String, new_pos: Vector3) -> bool:
+	var sub := get_subgraph(sub_id)
+	if sub == null:
+		return false
+	_record_undo()
+	sub.transform.position = new_pos
+	sub.editor.graph_position = Vector2(new_pos.x * 20.0, new_pos.y * 20.0)
+	validate()
+	subgraphs_modified.emit()
+	document_modified.emit()
+	return true
+
+func set_subgraph_override(sub_id: String, target_elem_id: String, prop_key: String = "", value: Variant = null) -> bool:
+	var sub := get_subgraph(sub_id)
+	if sub == null:
+		return false
+	_record_undo()
+	var full_key := target_elem_id
+	if not prop_key.is_empty():
+		full_key = "%s.%s" % [target_elem_id, prop_key]
+	sub.parameter_overrides[full_key] = value
+	validate()
+	subgraphs_modified.emit()
+	document_modified.emit()
+	return true
+
+func expose_subgraph_port(sub_id: String, port_def: Dictionary) -> bool:
+	var sub := get_subgraph(sub_id)
+	if sub == null:
+		return false
+	_record_undo()
+	sub.exposed_ports.append(port_def.duplicate(true))
+	validate()
+	subgraphs_modified.emit()
+	document_modified.emit()
+	return true
+
+func remove_subgraph_port(sub_id: String, port_id: String) -> bool:
+	var sub := get_subgraph(sub_id)
+	if sub == null:
+		return false
+	_record_undo()
+	for i in range(sub.exposed_ports.size() - 1, -1, -1):
+		var ep: Dictionary = sub.exposed_ports[i]
+		if ep.get("id", ep.get("port_id", "")) == port_id:
+			sub.exposed_ports.remove_at(i)
+			break
+	for i in range(active_document.connections.size() - 1, -1, -1):
+		var c: SceneTypes.SceneConnection = active_document.connections[i]
+		if (c.source_element == sub_id and c.source_port == port_id) or \
+		   (c.target_element == sub_id and c.target_port == port_id):
+			active_document.connections.remove_at(i)
+
+	validate()
+	subgraphs_modified.emit()
 	document_modified.emit()
 	return true

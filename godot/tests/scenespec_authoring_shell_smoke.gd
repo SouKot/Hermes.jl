@@ -56,9 +56,14 @@ func _init() -> void:
 	test_catalog_crowd_and_hybrid_primitives()
 	test_agent_telemetry_2d_and_3d_visualization()
 
+	# Phase 7D-10 Groups, Templates, and Compound Subgraphs Suites
+	test_subgraph_grouping_and_scope_navigation()
+	test_versioned_template_packaging_and_instantiation()
+	test_compound_boundary_ports_and_detach_policy()
+
 	print("============================================================")
 	if _failures == 0:
-		print("● ALL %d TEST SUITES PASSED CLEANLY (Phase 7D-07, 7D-08, 7D-09 Verified)" % _tests_run)
+		print("● ALL %d TEST SUITES PASSED CLEANLY (Phase 7D-07 through 7D-10 Verified)" % _tests_run)
 		print("============================================================")
 		quit(0)
 	else:
@@ -1414,6 +1419,213 @@ func test_agent_telemetry_2d_and_3d_visualization() -> void:
 	# Disable follow camera
 	shell._viewport_3d.set_follow_camera(false)
 	_assert(not shell._viewport_3d.is_following_agent, "Follow-camera mode disabled cleanly")
+
+	shell.free()
+
+func test_subgraph_grouping_and_scope_navigation() -> void:
+	_tests_run += 1
+	print("\n[Suite 26: Subgraphs, Groups, Breadcrumb Bar & Scoped Canvas Views]")
+	var shell := AuthoringShell.new()
+	shell._ready()
+
+	var cat: Catalog = shell.catalog
+	var store: DocumentStore = shell.doc_store
+
+	# Add three elements to document
+	var e1 := cat.create_element_instance("conveyor", "conv_in", Vector2(10, 10))
+	var e2 := cat.create_element_instance("server", "srv_main", Vector2(30, 10))
+	var e3 := cat.create_element_instance("queue", "q_out", Vector2(50, 10))
+	store.add_element(e1)
+	store.add_element(e2)
+	store.add_element(e3)
+
+	# Connect e1 to e2, and e2 to e3
+	store.add_connection_direct("c1", "conv_in", "flow_out", "srv_main", "flow_in")
+	store.add_connection_direct("c2", "srv_main", "flow_out", "q_out", "flow_in")
+
+	_assert(store.get_scoped_elements().size() == 3, "Root scope initially displays all 3 elements")
+	_assert(store.get_scoped_connections().size() == 2, "Root scope initially displays both connections")
+
+	# Group e1 and e2 into a group subsystem
+	var grp: SceneTypes.SceneSubgraph = store.group_elements(["conv_in", "srv_main"], "Cell Alpha", "group")
+	_assert(grp != null, "group_elements successfully created group subgraph")
+	_assert(grp.id.begins_with("group_"), "Group subgraph assigned valid group ID")
+	_assert(grp.name == "Cell Alpha", "Group subgraph retained specified name")
+	_assert(grp.elements.size() == 2, "Group subgraph contains 2 member elements")
+	_assert(grp.connections.size() == 1, "Group subgraph identified 1 internal connection")
+	_assert(store.selected_id == grp.id, "Group subgraph selected upon creation")
+
+	# Verify Breadcrumb initially at root
+	_assert(shell._btn_breadcrumb_root.text.contains("Root"), "Breadcrumb displays 'Root' at top-level")
+	_assert(not shell._lbl_breadcrumb_scope.visible, "Breadcrumb scope label hidden at root level")
+
+	# Enter group scope (drill-down)
+	store.enter_subgraph_scope(grp.id)
+	_assert(store.current_scope_id == grp.id, "Document store entered group scope")
+	_assert(store.get_current_scope_name() == "Cell Alpha", "Current scope name matches group name")
+	_assert(store.get_scoped_elements().size() == 2, "Scoped element query returns only the 2 group elements")
+	_assert(store.get_scoped_connections().size() == 1, "Scoped connection query returns only internal connection")
+	_assert(shell._lbl_breadcrumb_scope.visible, "Breadcrumb scope label visible when inside subsystem")
+	_assert(shell._lbl_breadcrumb_scope.text.contains("Cell Alpha"), "Breadcrumb scope label displays 'Cell Alpha'")
+	_assert(shell._btn_breadcrumb_exit.visible, "Return to root button visible when inside subsystem")
+
+	# Exit to root scope
+	store.exit_to_root_scope()
+	_assert(store.current_scope_id.is_empty(), "Returned to root scope")
+	_assert(store.get_current_scope_name() == "Root", "Current scope name is 'Root'")
+	_assert(store.get_scoped_elements().size() == 3, "Root scope query returns all root elements")
+	_assert(not shell._lbl_breadcrumb_scope.visible, "Breadcrumb scope label hidden after exiting to root")
+
+	# Ungroup
+	var ungroup_res: bool = store.ungroup(grp.id)
+	_assert(ungroup_res, "Ungroup operation succeeded")
+	_assert(store.get_subgraph(grp.id) == null, "Group subgraph removed from document")
+	_assert(store.active_document.elements.size() == 3, "All original elements preserved after ungroup")
+
+	shell.free()
+
+func test_versioned_template_packaging_and_instantiation() -> void:
+	_tests_run += 1
+	print("\n[Suite 27: Versioned Template Packaging & Deterministic Instantiation]")
+	var shell := AuthoringShell.new()
+	shell._ready()
+
+	var cat: Catalog = shell.catalog
+	var store: DocumentStore = shell.doc_store
+
+	# Add queue and server
+	var q := cat.create_element_instance("queue", "q_cell", Vector2(10, 10))
+	var s := cat.create_element_instance("server", "srv_cell", Vector2(25, 10))
+	store.add_element(q)
+	store.add_element(s)
+	store.add_connection_direct("c_int", "q_cell", "flow_out", "srv_cell", "flow_in")
+
+	# Package as template
+	var tmpl: SceneTypes.SceneSubgraph = store.package_as_template(
+		["q_cell", "srv_cell"],
+		"tpl_assembly_station",
+		"Assembly Station",
+		"1.2.0",
+		"Automated robotic assembly workcell"
+	)
+	_assert(tmpl != null, "package_as_template created template subgraph")
+	_assert(tmpl.role == "template", "Template subgraph assigned role 'template'")
+	_assert(tmpl.template_version == "1.2.0", "Template version recorded as '1.2.0'")
+	_assert(store.get_template("tpl_assembly_station") != null, "get_template retrieves created template")
+	_assert(tmpl.exposed_ports.size() >= 2, "Synthesized exposed boundary ports for template")
+
+	# Register into catalog
+	var cat_entry := cat.register_template_entry(tmpl)
+	_assert(cat_entry != null, "Catalog registered template entry")
+	_assert(cat_entry.category == "Templates & Subgraphs", "Template assigned to 'Templates & Subgraphs' category")
+
+	# Instantiate template (Instance 1)
+	var inst1: SceneTypes.SceneSubgraph = store.instantiate_template(
+		"tpl_assembly_station",
+		"Station Alpha",
+		Vector3(15.0, 5.0, 0.0)
+	)
+	_assert(inst1 != null, "Template instantiated successfully")
+	_assert(inst1.id == "station_alpha", "Instance 1 assigned snake_case ID 'station_alpha'")
+	_assert(inst1.role == "compound", "Instance 1 assigned role 'compound'")
+	_assert(inst1.template_id == "tpl_assembly_station", "Instance 1 references template ID")
+	_assert(inst1.template_version == "1.2.0", "Instance 1 inherits template version '1.2.0'")
+	_assert(inst1.exposed_ports.size() == tmpl.exposed_ports.size(), "Instance 1 copied exposed ports from template")
+
+	# Instantiate template (Instance 2 - verify deterministic collision avoidance)
+	var inst2: SceneTypes.SceneSubgraph = store.instantiate_template(
+		"tpl_assembly_station",
+		"Station Alpha",
+		Vector3(35.0, 5.0, 0.0)
+	)
+	_assert(inst2 != null, "Second template instance created")
+	_assert(inst2.id == "station_alpha_02", "Collision avoidance renamed second instance to 'station_alpha_02'")
+	_assert(inst2.id != inst1.id, "Instance IDs are strictly distinct")
+
+	# Built-in template instantiation
+	var builtin_inst: SceneTypes.SceneSubgraph = store.instantiate_template(
+		"queue_server_station",
+		"Cell Beta",
+		Vector3(55.0, 5.0, 0.0)
+	)
+	_assert(builtin_inst != null, "Built-in queue_server_station instantiated successfully")
+	_assert(builtin_inst.role == "compound", "Built-in instance is a compound subgraph")
+	_assert(builtin_inst.exposed_ports.size() >= 2, "Built-in instance has exposed ports")
+
+	shell.free()
+
+func test_compound_boundary_ports_and_detach_policy() -> void:
+	_tests_run += 1
+	print("\n[Suite 28: Compound Boundary Ports, Overrides & Detach Policy]")
+	var shell := AuthoringShell.new()
+	shell._ready()
+
+	var cat: Catalog = shell.catalog
+	var store: DocumentStore = shell.doc_store
+
+	# Create template proto elements
+	var proto_q := cat.create_element_instance("queue", "tpl_q", Vector2(0, 0))
+	var proto_srv := cat.create_element_instance("server", "tpl_srv", Vector2(20, 0))
+	store.add_element(proto_q)
+	store.add_element(proto_srv)
+	store.add_connection_direct("c_proto", "tpl_q", "flow_out", "tpl_srv", "flow_in")
+
+	var tmpl := store.package_as_template(["tpl_q", "tpl_srv"], "tpl_pack_line", "Pack Line", "1.0.0")
+	_assert(tmpl != null, "Pack Line template packaged")
+
+	# Instantiate compound workcell
+	var comp: SceneTypes.SceneSubgraph = store.instantiate_template("tpl_pack_line", "Workcell A", Vector3(20, 10, 0))
+	_assert(comp != null, "Compound workcell instantiated")
+
+	# Add external infeed conveyor
+	var infeed := cat.create_element_instance("conveyor", "infeed_belt", Vector2(5, 10))
+	store.add_element(infeed)
+
+	# Connect external infeed to compound's exposed flow_in port
+	var exp_in_id: String = ""
+	var exp_out_id: String = ""
+	for ep in comp.exposed_ports:
+		var dir_str: String = str(ep.get("direction", ""))
+		if dir_str == "input" and exp_in_id.is_empty():
+			exp_in_id = str(ep.get("id", ep.get("port_id", "")))
+		elif dir_str == "output" and exp_out_id.is_empty():
+			exp_out_id = str(ep.get("id", ep.get("port_id", "")))
+
+	_assert(not exp_in_id.is_empty(), "Compound has exposed input port")
+	_assert(not exp_out_id.is_empty(), "Compound has exposed output port")
+
+	var c_ext = store.add_connection_direct("c_infeed_to_comp", "infeed_belt", "flow_out", comp.id, exp_in_id)
+	_assert(c_ext != null, "Connected external conveyor to compound exposed input socket")
+
+	# Set parameter override on compound
+	store.set_subgraph_override(comp.id, "tpl_srv", "service_time", 4.5)
+	_assert(comp.parameter_overrides.has("tpl_srv.service_time"), "Parameter override recorded on compound")
+	_assert(comp.parameter_overrides["tpl_srv.service_time"] == 4.5, "Override value is 4.5s")
+
+	# Test Detach Subgraph (Template Detach Policy)
+	var detach_res = store.detach_subgraph(comp.id)
+	_assert(detach_res, "detach_subgraph succeeded")
+	_assert(comp.role == "group", "Detached subgraph role converted to 'group'")
+	_assert(comp.template_id == null, "Detached subgraph cleared template_id")
+	_assert(comp.elements.size() == 2, "Detached subgraph adopted cloned elements")
+
+	# Verify parameter override was baked into the cloned element
+	var cloned_srv_id: String = "%s_srv" % comp.id
+	var cloned_srv = store.get_element(cloned_srv_id)
+	_assert(cloned_srv != null, "Cloned server element exists in active document")
+	if cloned_srv != null:
+		_assert(cloned_srv.properties.get("service_time") == 4.5, "Cloned server inherited overridden service_time (4.5s)")
+
+	# Verify external connection was re-wired from compound to actual cloned queue element
+	var rewired_conn: SceneTypes.SceneConnection = null
+	for c in store.active_document.connections:
+		if c.id == "c_infeed_to_comp":
+			rewired_conn = c
+			break
+	_assert(rewired_conn != null, "External connection persisted after detach")
+	if rewired_conn != null:
+		var cloned_q_id: String = "%s_q" % comp.id
+		_assert(rewired_conn.target_element == cloned_q_id, "External connection re-routed target to cloned queue element")
 
 	shell.free()
 

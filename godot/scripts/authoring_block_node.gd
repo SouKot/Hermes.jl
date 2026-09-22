@@ -16,6 +16,7 @@ signal disconnect_port_requested(element_id: String, port_id: String)
 signal element_resized(element_id: String, new_dims: Vector3)
 signal element_resize_committed(element_id: String, new_dims: Vector3)
 signal floating_properties_requested(element_id: String, screen_pos: Vector2)
+signal subgraph_drilldown_requested(subgraph_id: String)
 
 const BG_NORMAL := Color("#121b27")
 const BG_SELECTED := Color("#17263c")
@@ -44,6 +45,7 @@ const LEFT_BAY_WIDTH := 64.0
 const RIGHT_BAY_WIDTH := 64.0
 
 var element: SceneTypes.SceneElement
+var subgraph: SceneTypes.SceneSubgraph
 var is_selected: bool = false
 var is_multi_selected: bool = false
 var hovered_port_id: String = ""
@@ -55,19 +57,30 @@ var _resize_start_dims: Vector3 = Vector3.ZERO
 
 var _port_sockets: Dictionary = {} # port_id -> { "pos": Vector2, "kind": String, "is_output": bool, "dir": String, "name": String }
 
-func _init(p_elem: SceneTypes.SceneElement = null) -> void:
+func _init(p_elem: SceneTypes.SceneElement = null, p_sub: SceneTypes.SceneSubgraph = null) -> void:
 	element = p_elem
+	subgraph = p_sub
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	custom_minimum_size = Vector2(36, 36)
-	if element != null:
+	if element != null or subgraph != null:
 		refresh_from_element()
 
 func _ready() -> void:
 	refresh_from_element()
 
+func get_node_id() -> String:
+	if subgraph != null:
+		return subgraph.id
+	elif element != null:
+		return element.id
+	return ""
+
 func refresh_from_element() -> void:
 	if element != null and element.transform != null:
 		rotation_degrees = float(element.transform.rotation.z)
+		pivot_offset = Vector2(0, 0)
+	elif subgraph != null and subgraph.transform != null:
+		rotation_degrees = float(subgraph.transform.rotation.z)
 		pivot_offset = Vector2(0, 0)
 	_recalculate_size()
 	calculate_sockets()
@@ -287,58 +300,105 @@ func _get_physical_dimensions() -> Vector3:
 		var d = element.geometry["dimensions"]
 		if d is Array and d.size() >= 3:
 			return Vector3(float(d[0]), float(d[1]), float(d[2]))
+	elif subgraph != null:
+		return Vector3(8.0, 4.0, 2.0)
 	return Vector3(4.0, 2.0, 1.0)
 
 func _get_flow_in_ports() -> Array:
 	var res: Array = []
-	if element == null:
-		return res
-	for p in element.input_ports:
-		if p.kind == "flow":
-			res.append(p)
+	if element != null:
+		for p in element.input_ports:
+			if p.kind == "flow":
+				res.append(p)
+	elif subgraph != null:
+		for ep in subgraph.exposed_ports:
+			if ep.get("kind", "") == "flow" and ep.get("direction", "") == "input":
+				var p := SceneTypes.ScenePort.new()
+				p.id = str(ep.get("id", ep.get("port_id", "")))
+				p.name = str(ep.get("name", p.id))
+				p.kind = "flow"
+				p.direction = "input"
+				p.cardinality = str(ep.get("cardinality", "many"))
+				res.append(p)
 	return res
 
 func _get_flow_out_ports() -> Array:
 	var res: Array = []
-	if element == null:
-		return res
-	for p in element.output_ports:
-		if p.kind == "flow":
-			res.append(p)
+	if element != null:
+		for p in element.output_ports:
+			if p.kind == "flow":
+				res.append(p)
+	elif subgraph != null:
+		for ep in subgraph.exposed_ports:
+			if ep.get("kind", "") == "flow" and ep.get("direction", "") == "output":
+				var p := SceneTypes.ScenePort.new()
+				p.id = str(ep.get("id", ep.get("port_id", "")))
+				p.name = str(ep.get("name", p.id))
+				p.kind = "flow"
+				p.direction = "output"
+				p.cardinality = str(ep.get("cardinality", "many"))
+				res.append(p)
 	return res
 
 func _get_signal_ports() -> Array:
 	var res: Array = []
-	if element == null:
-		return res
-	for p in element.input_ports:
-		if p.kind in ["signal", "control"]:
-			res.append(p)
+	if element != null:
+		for p in element.input_ports:
+			if p.kind in ["signal", "control"]:
+				res.append(p)
+	elif subgraph != null:
+		for ep in subgraph.exposed_ports:
+			if ep.get("kind", "") in ["signal", "control"] and ep.get("direction", "") == "input":
+				var p := SceneTypes.ScenePort.new()
+				p.id = str(ep.get("id", ep.get("port_id", "")))
+				p.name = str(ep.get("name", p.id))
+				p.kind = ep.get("kind", "signal")
+				p.direction = "input"
+				p.cardinality = str(ep.get("cardinality", "many"))
+				res.append(p)
 	return res
 
 func _get_metric_ports() -> Array:
 	var res: Array = []
-	if element == null:
-		return res
-	for p in element.metric_ports:
-		res.append(p)
-	for p in element.output_ports:
-		if p.kind in ["metric", "signal"]:
+	if element != null:
+		for p in element.metric_ports:
 			res.append(p)
+		for p in element.output_ports:
+			if p.kind in ["metric", "signal"]:
+				res.append(p)
+	elif subgraph != null:
+		for ep in subgraph.exposed_ports:
+			if ep.get("kind", "") == "metric":
+				var p := SceneTypes.ScenePort.new()
+				p.id = str(ep.get("id", ep.get("port_id", "")))
+				p.name = str(ep.get("name", p.id))
+				p.kind = "metric"
+				p.direction = "output"
+				p.cardinality = str(ep.get("cardinality", "many"))
+				res.append(p)
 	return res
 
 func _gui_input(event: InputEvent) -> void:
+	var nid := get_node_id()
+	if nid.is_empty():
+		return
+
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT:
 			if mb.pressed:
+				if mb.double_click and subgraph != null:
+					subgraph_drilldown_requested.emit(nid)
+					accept_event()
+					return
+
 				# 1. Check if clicked on a port socket
 				var hit_port := _hit_test_port(mb.position)
 				if not hit_port.is_empty():
 					var p_info: Dictionary = _port_sockets[hit_port]
-					port_selected.emit(element.id, hit_port)
+					port_selected.emit(nid, hit_port)
 					port_drag_started.emit(
-						element.id, hit_port, p_info["kind"], p_info["is_output"],
+						nid, hit_port, p_info["kind"], p_info["is_output"],
 						get_port_canvas_position(hit_port)
 					)
 					accept_event()
@@ -348,9 +408,9 @@ func _gui_input(event: InputEvent) -> void:
 				var hit_btn := _hit_test_port_button(mb.position)
 				if not hit_btn.is_empty():
 					if hit_btn["action"] == "add":
-						add_port_requested.emit(element.id, hit_btn["bay"])
+						add_port_requested.emit(nid, hit_btn["bay"])
 					else:
-						remove_port_requested.emit(element.id, hit_btn["bay"])
+						remove_port_requested.emit(nid, hit_btn["bay"])
 					accept_event()
 					return
 
@@ -365,12 +425,12 @@ func _gui_input(event: InputEvent) -> void:
 				# 4. Center body clicked -> drag block
 				_dragging = true
 				_drag_offset = mb.position
-				block_selected.emit(element.id)
+				block_selected.emit(nid)
 				accept_event()
 			else:
 				if _resizing:
 					_resizing = false
-					element_resize_committed.emit(element.id, _get_physical_dimensions())
+					element_resize_committed.emit(nid, _get_physical_dimensions())
 					accept_event()
 				elif _dragging:
 					_dragging = false
@@ -380,14 +440,14 @@ func _gui_input(event: InputEvent) -> void:
 			# Right-click on a port socket -> Disconnect attached wire(s)
 			var hit_port := _hit_test_port(mb.position)
 			if not hit_port.is_empty():
-				disconnect_port_requested.emit(element.id, hit_port)
+				disconnect_port_requested.emit(nid, hit_port)
 				accept_event()
 				return
 			else:
 				# Right-click on block body -> Open Floating Tabbed Properties Inspector!
-				block_selected.emit(element.id)
+				block_selected.emit(nid)
 				var mouse_pos: Vector2 = mb.global_position if mb.global_position != Vector2.ZERO else (get_global_mouse_position() if is_inside_tree() else mb.position)
-				floating_properties_requested.emit(element.id, mouse_pos)
+				floating_properties_requested.emit(nid, mouse_pos)
 				accept_event()
 				return
 
@@ -404,11 +464,11 @@ func _gui_input(event: InputEvent) -> void:
 				element.geometry["dimensions"][0] = new_len
 				element.geometry["dimensions"][1] = new_wid
 			refresh_from_element()
-			element_resized.emit(element.id, Vector3(new_len, new_wid, _resize_start_dims.z))
+			element_resized.emit(nid, Vector3(new_len, new_wid, _resize_start_dims.z))
 			accept_event()
 		elif _dragging:
 			position += mm.position - _drag_offset
-			block_moved.emit(element.id, position)
+			block_moved.emit(nid, position)
 			accept_event()
 		else:
 			if is_selected and _hit_test_resize_handle(mm.position):
@@ -574,6 +634,31 @@ func _draw() -> void:
 			draw_rect(badge_rect, BORDER_NORMAL, false, 1.0)
 			var badge_title := "%s %s" % [title, ("∡%.0f°" % cur_rot) if cur_rot > 0.05 else ""]
 			draw_string(ThemeDB.fallback_font, Vector2(4.0, 12.0), badge_title.strip_edges(), HORIZONTAL_ALIGNMENT_CENTER, int(size.x - 8.0), 8, TEXT_COLOR)
+	elif subgraph != null:
+		var title: String = subgraph.name if not subgraph.name.is_empty() else subgraph.id
+		var role_str: String = "[%s]" % subgraph.role.to_upper()
+		var tmpl_str: String = "Tmpl: %s" % str(subgraph.template_id) if subgraph.template_id != null else "Group"
+		var sub_col := Color("#1abc9c") if subgraph.role == "compound" else Color("#8e44ad")
+
+		# Draw double border for compound
+		if subgraph.role == "compound":
+			var inset_rect := rect.grow(-3.0)
+			draw_rect(inset_rect, Color(sub_col.r, sub_col.g, sub_col.b, 0.08), true)
+			draw_rect(inset_rect, sub_col, false, 1.2)
+
+		if mid_w >= 70.0:
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 22.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 12, TEXT_COLOR)
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 38.0), role_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 9, sub_col)
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 52.0), tmpl_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 9, MUTED_COLOR)
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 68.0), "⤢ Double-click to drill down", HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 8, Color("#3498db"))
+		elif mid_w >= 28.0:
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 22.0), title, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 10, TEXT_COLOR)
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 38.0), role_str, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 8, sub_col)
+		else:
+			var badge_rect := Rect2(2.0, 2.0, size.x - 4.0, 13.0)
+			draw_rect(badge_rect, Color("#09111be0"), true)
+			draw_rect(badge_rect, sub_col, false, 1.0)
+			draw_string(ThemeDB.fallback_font, Vector2(4.0, 12.0), title.strip_edges(), HORIZONTAL_ALIGNMENT_CENTER, int(size.x - 8.0), 8, TEXT_COLOR)
 
 	# 5. Draw Left and Right Port Sockets
 	var socket_r: float = 6.5 if size.y >= 70.0 else clamp(size.y * 0.12, 4.0, 6.0)
