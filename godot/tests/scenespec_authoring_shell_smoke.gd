@@ -1810,6 +1810,7 @@ func test_subsystem_resizing_encapsulation_and_manifest() -> void:
 
 	# 5. Verify Subsystem Block Initial Dimensions and Sizing
 	var block := BlockNode.new(null, sub)
+	block._ready()
 	var init_dims := block._get_physical_dimensions()
 	_assert(init_dims.x >= 8.0 and init_dims.y >= 4.0, "Subsystem block initialized with valid dimensions (>= 8.0x4.0m)")
 	_assert(block.size.x >= init_dims.x * 20.0, "Block size in pixels reflects physical dimensions")
@@ -1825,12 +1826,12 @@ func test_subsystem_resizing_encapsulation_and_manifest() -> void:
 	_assert(block._resizing and block._active_resize_corner == BlockNode.ResizeCorner.BOTTOM_RIGHT, "Subsystem bottom-right corner initiates resizing")
 
 	var mm_drag_br := InputEventMouseMotion.new()
-	mm_drag_br.global_position = mb_down_br.global_position + Vector2(40.0, 20.0) # +2.0m length, +1.0m width
+	mm_drag_br.global_position = mb_down_br.global_position + Vector2(40.0, 40.0) # +2.0m length, +2.0m width
 	block._gui_input(mm_drag_br)
 
 	var br_dims := block._get_physical_dimensions()
 	_assert(abs(br_dims.x - (init_dims.x + 2.0)) < 0.05, "Subsystem length expanded by +2.0m via corner drag")
-	_assert(abs(br_dims.y - (init_dims.y + 1.0)) < 0.05, "Subsystem width expanded by +1.0m via corner drag")
+	_assert(abs(br_dims.y - (init_dims.y + 2.0)) < 0.05, "Subsystem width expanded by +2.0m via corner drag")
 
 	var mb_up := InputEventMouseButton.new()
 	mb_up.button_index = MOUSE_BUTTON_LEFT
@@ -1861,12 +1862,14 @@ func test_subsystem_resizing_encapsulation_and_manifest() -> void:
 	# 7. Test Store Geometry/Position Update and Undo for Subsystems
 	var res_update := store.update_subgraph_geometry_and_position(sub.id, tl_dims, sub.transform.position, init_dims, start_tl_pos)
 	_assert(res_update, "update_subgraph_geometry_and_position succeeded")
-	_assert(sub.transform.scale.x == tl_dims.x, "Subsystem scale.x matches resized dimensions")
-	_assert(sub.editor.extensions["dimensions"][0] == tl_dims.x, "Subsystem editor dimensions updated")
+	var updated_sub := store.get_subgraph(sub.id)
+	_assert(updated_sub.transform.scale.x == tl_dims.x, "Subsystem scale.x matches resized dimensions")
+	_assert(updated_sub.editor.extensions["dimensions"][0] == tl_dims.x, "Subsystem editor dimensions updated")
 
 	var did_undo := store.undo()
 	_assert(did_undo, "Subsystem geometry undo succeeded")
-	_assert(abs(sub.transform.scale.x - init_dims.x) < 0.01, "Undo restored subsystem initial scale length")
+	var restored_sub := store.get_subgraph(sub.id)
+	_assert(abs(restored_sub.transform.scale.x - init_dims.x) < 0.01, "Undo restored subsystem initial scale length")
 
 	# 8. Test Inspector Rendering for Subsystem
 	store.select(sub.id, "subgraph")

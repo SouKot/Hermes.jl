@@ -895,8 +895,8 @@ func group_elements(elem_ids: Array, group_name: String = "", role: String = "gr
 		return null
 
 	var center := Vector3(sum_x / float(valid_count), sum_y / float(valid_count), sum_z / float(valid_count))
-	var bbox_w := max(8.0, snapped(max_x - min_x + 1.0, 0.5))
-	var bbox_h := max(4.0, snapped(max_y - min_y + 1.0, 0.5))
+	var bbox_w: float = maxf(8.0, snapped(max_x - min_x + 1.0, 0.5))
+	var bbox_h: float = maxf(4.0, snapped(max_y - min_y + 1.0, 0.5))
 
 	var internal_conns: Array = []
 	for c in active_document.connections:

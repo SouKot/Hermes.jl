@@ -610,6 +610,8 @@ func _hit_test_port(local_pos: Vector2) -> String:
 	return best_id
 
 func _hit_test_port_button(local_pos: Vector2) -> Dictionary:
+	if element == null:
+		return {}
 	var layout := get_bay_layout()
 	if layout["collapsed"] or size.y < 50.0:
 		return {}
@@ -833,7 +835,7 @@ func _draw() -> void:
 			draw_circle(p_pos, socket_r * 0.5, Color.WHITE if is_out else p_col)
 
 	# 6. Bottom Port Buttons ([+] and [-]) when spacious
-	if not layout["collapsed"] and size.y >= 50.0:
+	if element != null and not layout["collapsed"] and size.y >= 50.0:
 		var btn_h := 16.0
 		var btn_y := size.y - btn_h - 4.0
 		var col_btn_sub := Color("#e74c3c")
