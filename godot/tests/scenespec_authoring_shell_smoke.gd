@@ -64,6 +64,9 @@ func _init() -> void:
 	# Usability Refinement: 4-Corner Invisible Resizing & Tightened Port Hit
 	test_four_corner_resizing_and_tightened_port_hit()
 
+	# Subsystem Encapsulation, 4-Corner Resizing & Internal Manifest (User Feedback)
+	test_subsystem_resizing_encapsulation_and_manifest()
+
 	print("============================================================")
 	if _failures == 0:
 		print("● ALL %d TEST SUITES PASSED CLEANLY (Phase 7D-07 through 7D-10 Verified)" % _tests_run)
@@ -1476,13 +1479,16 @@ func test_subgraph_grouping_and_scope_navigation() -> void:
 	store.exit_to_root_scope()
 	_assert(store.current_scope_id.is_empty(), "Returned to root scope")
 	_assert(store.get_current_scope_name() == "Root", "Current scope name is 'Root'")
-	_assert(store.get_scoped_elements().size() == 3, "Root scope query returns all root elements")
+	_assert(store.get_scoped_elements().size() == 1, "Root scope query encapsulates grouped elements (only 1 un-grouped element at root)")
+	_assert(store.get_scoped_subgraphs().size() == 1, "Root scope query returns 1 subsystem group block")
 	_assert(not shell._lbl_breadcrumb_scope.visible, "Breadcrumb scope label hidden after exiting to root")
 
 	# Ungroup
 	var ungroup_res: bool = store.ungroup(grp.id)
 	_assert(ungroup_res, "Ungroup operation succeeded")
 	_assert(store.get_subgraph(grp.id) == null, "Group subgraph removed from document")
+	_assert(store.get_scoped_elements().size() == 3, "All 3 elements restored to root scope after ungroup")
+	_assert(store.get_scoped_subgraphs().size() == 0, "No subgraphs remain after ungroup")
 	_assert(store.active_document.elements.size() == 3, "All original elements preserved after ungroup")
 
 	shell.free()
@@ -1761,6 +1767,124 @@ func test_four_corner_resizing_and_tightened_port_hit() -> void:
 	_assert(abs(restored_e1.transform.position.x - 10.0) < 0.01 and abs(restored_e1.transform.position.y - 10.0) < 0.01, "Undo restored origin position back to (10.0, 10.0)")
 
 	block.free()
+
+func test_subsystem_resizing_encapsulation_and_manifest() -> void:
+	_tests_run += 1
+	print("\n[Suite 30: Subsystem Encapsulation, 4-Corner Resizing & Internal Manifest]")
+	var shell := AuthoringShell.new()
+	shell._ready()
+
+	var cat: Catalog = shell.catalog
+	var store: DocumentStore = shell.doc_store
+
+	# 1. Setup 3 elements and 2 connections
+	var q := cat.create_element_instance("queue", "q_sub", Vector2(10, 10))
+	var s := cat.create_element_instance("server", "srv_sub", Vector2(25, 10))
+	var c := cat.create_element_instance("conveyor", "conv_ext", Vector2(40, 10))
+	store.add_element(q)
+	store.add_element(s)
+	store.add_element(c)
+
+	store.add_connection_direct("c_int", "q_sub", "flow_out", "srv_sub", "flow_in")
+	store.add_connection_direct("c_ext", "srv_sub", "flow_out", "conv_ext", "flow_in")
+
+	# 2. Group q_sub and srv_sub into Subsystem
+	var sub: SceneTypes.SceneSubgraph = store.group_elements(["q_sub", "srv_sub"], "Assembly Workcell", "group")
+	_assert(sub != null, "Subsystem group created successfully")
+
+	# 3. Verify encapsulation at root scope: internal elements must NOT leak to root scope
+	var scoped_root := store.get_scoped_elements()
+	_assert(scoped_root.size() == 1, "Root scope contains exactly 1 element ('conv_ext'), encapsulated elements excluded")
+	_assert(scoped_root[0].id == "conv_ext", "Only external conveyor remains at root scope")
+	_assert(store.get_scoped_subgraphs().size() == 1, "Root scope contains exactly 1 subsystem block")
+
+	# 4. Verify external connection rewiring to subsystem boundary port
+	var ext_conn: SceneTypes.SceneConnection = null
+	for conn in store.active_document.connections:
+		if conn.id == "c_ext":
+			ext_conn = conn
+			break
+	_assert(ext_conn != null, "External connection c_ext preserved")
+	_assert(ext_conn.source_element == sub.id, "External wire rewired to connect from subsystem block id")
+	_assert(ext_conn.target_element == "conv_ext", "External wire targets conveyor")
+
+	# 5. Verify Subsystem Block Initial Dimensions and Sizing
+	var block := BlockNode.new(null, sub)
+	var init_dims := block._get_physical_dimensions()
+	_assert(init_dims.x >= 8.0 and init_dims.y >= 4.0, "Subsystem block initialized with valid dimensions (>= 8.0x4.0m)")
+	_assert(block.size.x >= init_dims.x * 20.0, "Block size in pixels reflects physical dimensions")
+
+	# 6. Test Interactive 4-Corner Resizing on Subsystem Block
+	# 6A. Bottom-Right corner drag
+	var mb_down_br := InputEventMouseButton.new()
+	mb_down_br.button_index = MOUSE_BUTTON_LEFT
+	mb_down_br.pressed = true
+	mb_down_br.position = block.size - Vector2(5.0, 5.0)
+	mb_down_br.global_position = mb_down_br.position
+	block._gui_input(mb_down_br)
+	_assert(block._resizing and block._active_resize_corner == BlockNode.ResizeCorner.BOTTOM_RIGHT, "Subsystem bottom-right corner initiates resizing")
+
+	var mm_drag_br := InputEventMouseMotion.new()
+	mm_drag_br.global_position = mb_down_br.global_position + Vector2(40.0, 20.0) # +2.0m length, +1.0m width
+	block._gui_input(mm_drag_br)
+
+	var br_dims := block._get_physical_dimensions()
+	_assert(abs(br_dims.x - (init_dims.x + 2.0)) < 0.05, "Subsystem length expanded by +2.0m via corner drag")
+	_assert(abs(br_dims.y - (init_dims.y + 1.0)) < 0.05, "Subsystem width expanded by +1.0m via corner drag")
+
+	var mb_up := InputEventMouseButton.new()
+	mb_up.button_index = MOUSE_BUTTON_LEFT
+	mb_up.pressed = false
+	block._gui_input(mb_up)
+	_assert(not block._resizing, "Releasing mouse commits subsystem resize")
+
+	# 6B. Top-Left corner drag (opposite BR corner anchoring)
+	var start_tl_pos: Vector3 = sub.transform.position
+	var mb_down_tl := InputEventMouseButton.new()
+	mb_down_tl.button_index = MOUSE_BUTTON_LEFT
+	mb_down_tl.pressed = true
+	mb_down_tl.position = Vector2(5.0, 5.0)
+	mb_down_tl.global_position = mb_down_tl.position
+	block._gui_input(mb_down_tl)
+	_assert(block._resizing and block._active_resize_corner == BlockNode.ResizeCorner.TOP_LEFT, "Subsystem top-left corner initiates resizing")
+
+	var mm_drag_tl := InputEventMouseMotion.new()
+	mm_drag_tl.global_position = mb_down_tl.global_position - Vector2(20.0, 20.0) # -1.0m in X and Y
+	block._gui_input(mm_drag_tl)
+
+	var tl_dims := block._get_physical_dimensions()
+	_assert(abs(tl_dims.x - (br_dims.x + 1.0)) < 0.05, "Top-left drag expanded subsystem length")
+	_assert(abs(tl_dims.y - (br_dims.y + 1.0)) < 0.05, "Top-left drag expanded subsystem width")
+	_assert(abs(sub.transform.position.x - (start_tl_pos.x - 1.0)) < 0.05, "Subsystem position origin shifted by -1.0m")
+	block._gui_input(mb_up)
+
+	# 7. Test Store Geometry/Position Update and Undo for Subsystems
+	var res_update := store.update_subgraph_geometry_and_position(sub.id, tl_dims, sub.transform.position, init_dims, start_tl_pos)
+	_assert(res_update, "update_subgraph_geometry_and_position succeeded")
+	_assert(sub.transform.scale.x == tl_dims.x, "Subsystem scale.x matches resized dimensions")
+	_assert(sub.editor.extensions["dimensions"][0] == tl_dims.x, "Subsystem editor dimensions updated")
+
+	var did_undo := store.undo()
+	_assert(did_undo, "Subsystem geometry undo succeeded")
+	_assert(abs(sub.transform.scale.x - init_dims.x) < 0.01, "Undo restored subsystem initial scale length")
+
+	# 8. Test Inspector Rendering for Subsystem
+	store.select(sub.id, "subgraph")
+	shell.inspector.refresh()
+	_assert(shell.inspector._container.get_child_count() > 3, "Inspector rendered subsystem detail panels")
+
+	# 9. Ungroup restores all entities and wires back to root level
+	var ungroup_ok := store.ungroup(sub.id)
+	_assert(ungroup_ok, "Ungroup operation succeeded")
+	_assert(store.get_scoped_elements().size() == 3, "All 3 elements back at root scope after ungroup")
+	_assert(store.get_scoped_subgraphs().size() == 0, "0 subgraphs remaining at root scope")
+
+	# Verify wire c_ext rewired back to srv_sub
+	_assert(ext_conn.source_element == "srv_sub", "External wire connection restored to original element source 'srv_sub'")
+
+	block.free()
+	shell.free()
+
 
 
 

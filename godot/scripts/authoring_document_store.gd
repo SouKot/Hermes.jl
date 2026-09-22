@@ -708,10 +708,14 @@ func get_current_scope_name() -> String:
 func get_subgraph(sub_id: String) -> SceneTypes.SceneSubgraph:
 	if active_document == null:
 		return null
-	for s in active_document.subgraphs:
+	for i in range(active_document.subgraphs.size()):
+		var s = active_document.subgraphs[i]
 		var sid: String = s.id if s is SceneTypes.SceneSubgraph else str(s.get("id", ""))
 		if sid == sub_id:
-			return s if s is SceneTypes.SceneSubgraph else SceneTypes.SceneSubgraph.from_dict(s)
+			if not (s is SceneTypes.SceneSubgraph):
+				s = SceneTypes.SceneSubgraph.from_dict(s)
+				active_document.subgraphs[i] = s
+			return s
 	return null
 
 func get_template(tmpl_id: String) -> SceneTypes.SceneSubgraph:
@@ -751,15 +755,14 @@ func get_scoped_elements() -> Array:
 	if active_document == null:
 		return []
 	if current_scope_id.is_empty():
-		var tmpl_elem_ids := {}
+		var child_elem_ids := {}
 		for s in active_document.subgraphs:
 			var sub: SceneTypes.SceneSubgraph = s if s is SceneTypes.SceneSubgraph else SceneTypes.SceneSubgraph.from_dict(s)
-			if sub.role == "template":
-				for eid in sub.elements:
-					tmpl_elem_ids[str(eid)] = true
+			for eid in sub.elements:
+				child_elem_ids[str(eid)] = true
 		var root_elems: Array = []
 		for e in active_document.elements:
-			if not tmpl_elem_ids.has(e.id):
+			if not child_elem_ids.has(e.id):
 				root_elems.append(e)
 		return root_elems
 	else:
@@ -862,19 +865,38 @@ func group_elements(elem_ids: Array, group_name: String = "", role: String = "gr
 	var sum_z := 0.0
 	var valid_count := 0
 	var id_set := {}
+	var min_x := 999999.0
+	var min_y := 999999.0
+	var max_x := -999999.0
+	var max_y := -999999.0
+
 	for eid in elem_ids:
 		var elem := get_element(str(eid))
 		if elem != null:
 			id_set[str(eid)] = true
-			sum_x += float(elem.transform.position.x)
-			sum_y += float(elem.transform.position.y)
-			sum_z += float(elem.transform.position.z)
+			var ex: float = float(elem.transform.position.x)
+			var ey: float = float(elem.transform.position.y)
+			var ez: float = float(elem.transform.position.z)
+			var ew := 4.0
+			var eh := 2.0
+			if elem.geometry.has("dimensions") and elem.geometry["dimensions"] is Array and elem.geometry["dimensions"].size() >= 2:
+				ew = float(elem.geometry["dimensions"][0])
+				eh = float(elem.geometry["dimensions"][1])
+			sum_x += ex
+			sum_y += ey
+			sum_z += ez
+			min_x = min(min_x, ex)
+			min_y = min(min_y, ey)
+			max_x = max(max_x, ex + ew)
+			max_y = max(max_y, ey + eh)
 			valid_count += 1
 
 	if valid_count == 0:
 		return null
 
 	var center := Vector3(sum_x / float(valid_count), sum_y / float(valid_count), sum_z / float(valid_count))
+	var bbox_w := max(8.0, snapped(max_x - min_x + 1.0, 0.5))
+	var bbox_h := max(4.0, snapped(max_y - min_y + 1.0, 0.5))
 
 	var internal_conns: Array = []
 	for c in active_document.connections:
@@ -896,12 +918,38 @@ func group_elements(elem_ids: Array, group_name: String = "", role: String = "gr
 	sub.name = group_name if not group_name.is_empty() else new_id.capitalize()
 	sub.role = role
 	sub.transform.position = center
+	sub.transform.scale = Vector3(bbox_w, bbox_h, 2.0)
 	sub.editor.graph_position = Vector2(center.x * 20.0, center.y * 20.0)
+	if sub.editor != null:
+		sub.editor.extensions["dimensions"] = [bbox_w, bbox_h, 2.0]
 	sub.elements = elem_ids.duplicate()
 	sub.connections = internal_conns
 
-	if role == "compound":
-		sub.exposed_ports = _synthesize_exposed_ports(elem_ids)
+	# Synthesize exposed boundary ports so external wires can attach cleanly to the subsystem block
+	sub.exposed_ports = _synthesize_exposed_ports(elem_ids)
+
+	# Rewire existing external connections targeting internal elements to the exposed ports of the subgraph
+	var port_lookup := {} # "elem_id::port_id" -> exposed_port_id
+	for ep in sub.exposed_ports:
+		var exp_id: String = str(ep.get("id", ""))
+		var telem: String = str(ep.get("target_element", ""))
+		var tport: String = str(ep.get("target_port", ""))
+		if not exp_id.is_empty() and not telem.is_empty() and not tport.is_empty():
+			port_lookup["%s::%s" % [telem, tport]] = exp_id
+
+	for conn in active_document.connections:
+		var src_in := id_set.has(conn.source_element)
+		var tgt_in := id_set.has(conn.target_element)
+		if src_in and not tgt_in:
+			var key := "%s::%s" % [conn.source_element, conn.source_port]
+			if port_lookup.has(key):
+				conn.source_element = sub.id
+				conn.source_port = port_lookup[key]
+		elif tgt_in and not src_in:
+			var key := "%s::%s" % [conn.target_element, conn.target_port]
+			if port_lookup.has(key):
+				conn.target_element = sub.id
+				conn.target_port = port_lookup[key]
 
 	active_document.subgraphs.append(sub)
 	select(sub.id, "subgraph")
@@ -1178,6 +1226,43 @@ func set_subgraph_position(sub_id: String, new_pos: Vector3) -> bool:
 	subgraphs_modified.emit()
 	document_modified.emit()
 	return true
+
+func set_subgraph_dimensions(sub_id: String, new_dims: Vector3) -> bool:
+	var sub := get_subgraph(sub_id)
+	if sub == null:
+		return false
+	_record_undo()
+	var dims := Vector3(max(1.0, new_dims.x), max(1.0, new_dims.y), max(0.1, new_dims.z))
+	sub.transform.scale = dims
+	if sub.editor != null:
+		sub.editor.extensions["dimensions"] = [dims.x, dims.y, dims.z]
+	validate()
+	subgraphs_modified.emit()
+	document_modified.emit()
+	return true
+
+func update_subgraph_geometry_and_position(sub_id: String, new_dims: Vector3, new_pos: Vector3, orig_dims: Vector3 = Vector3.ZERO, orig_pos: Vector3 = Vector3.ZERO) -> bool:
+	var sub := get_subgraph(sub_id)
+	if sub == null:
+		return false
+	if orig_dims != Vector3.ZERO and orig_pos != Vector3.ZERO:
+		sub.transform.scale = orig_dims
+		if sub.editor != null:
+			sub.editor.extensions["dimensions"] = [orig_dims.x, orig_dims.y, orig_dims.z]
+		sub.transform.position = Vector3(orig_pos.x, orig_pos.y, orig_pos.z)
+		sub.editor.graph_position = Vector2(orig_pos.x * 20.0, orig_pos.y * 20.0)
+	_record_undo()
+	var dims := Vector3(max(1.0, new_dims.x), max(1.0, new_dims.y), max(0.1, new_dims.z))
+	sub.transform.scale = dims
+	if sub.editor != null:
+		sub.editor.extensions["dimensions"] = [dims.x, dims.y, dims.z]
+	sub.transform.position = Vector3(new_pos.x, new_pos.y, max(0.0, new_pos.z))
+	sub.editor.graph_position = Vector2(new_pos.x * 20.0, new_pos.y * 20.0)
+	validate()
+	subgraphs_modified.emit()
+	document_modified.emit()
+	return true
+
 
 func set_subgraph_override(sub_id: String, target_elem_id: String, prop_key: String = "", value: Variant = null) -> bool:
 	var sub := get_subgraph(sub_id)

@@ -272,7 +272,7 @@ func calculate_sockets() -> void:
 			}
 
 func _recalculate_size() -> void:
-	if element == null:
+	if element == null and subgraph == null:
 		size = custom_minimum_size
 		return
 
@@ -313,6 +313,12 @@ func _get_physical_dimensions() -> Vector3:
 		if d is Array and d.size() >= 3:
 			return Vector3(float(d[0]), float(d[1]), float(d[2]))
 	elif subgraph != null:
+		if subgraph.editor != null and subgraph.editor.extensions.has("dimensions"):
+			var d = subgraph.editor.extensions["dimensions"]
+			if d is Array and d.size() >= 3:
+				return Vector3(float(d[0]), float(d[1]), float(d[2]))
+		if subgraph.transform != null and (subgraph.transform.scale.x > 0.1 or subgraph.transform.scale.y > 0.1):
+			return Vector3(max(1.0, subgraph.transform.scale.x), max(1.0, subgraph.transform.scale.y), max(0.1, subgraph.transform.scale.z))
 		return Vector3(8.0, 4.0, 2.0)
 	return Vector3(4.0, 2.0, 1.0)
 
@@ -527,12 +533,17 @@ func _gui_input(event: InputEvent) -> void:
 					element.transform.position.x = snapped(_resize_start_elem_pos.x + dpos.x, 0.05)
 					element.transform.position.y = snapped(_resize_start_elem_pos.y + dpos.y, 0.05)
 					element.editor.graph_position = Vector2(element.transform.position.x * 20.0, element.transform.position.y * 20.0)
-			elif subgraph != null and subgraph.transform != null:
-				if delta_origin_local != Vector2.ZERO:
-					var dpos := delta_origin_local.rotated(rotation)
-					subgraph.transform.position.x = snapped(_resize_start_elem_pos.x + dpos.x, 0.05)
-					subgraph.transform.position.y = snapped(_resize_start_elem_pos.y + dpos.y, 0.05)
-					subgraph.editor.graph_position = Vector2(subgraph.transform.position.x * 20.0, subgraph.transform.position.y * 20.0)
+			elif subgraph != null:
+				if subgraph.transform != null:
+					subgraph.transform.scale = Vector3(new_len, new_wid, _resize_start_dims.z)
+					if delta_origin_local != Vector2.ZERO:
+						var dpos := delta_origin_local.rotated(rotation)
+						subgraph.transform.position.x = snapped(_resize_start_elem_pos.x + dpos.x, 0.05)
+						subgraph.transform.position.y = snapped(_resize_start_elem_pos.y + dpos.y, 0.05)
+						if subgraph.editor != null:
+							subgraph.editor.graph_position = Vector2(subgraph.transform.position.x * 20.0, subgraph.transform.position.y * 20.0)
+				if subgraph.editor != null:
+					subgraph.editor.extensions["dimensions"] = [new_len, new_wid, _resize_start_dims.z]
 
 			if delta_origin_local != Vector2.ZERO:
 				var d_pos_px: Vector2 = (delta_origin_local * 20.0).rotated(rotation) * canvas_scale
@@ -740,30 +751,61 @@ func _draw() -> void:
 			var badge_title := "%s %s" % [title, ("∡%.0f°" % cur_rot) if cur_rot > 0.05 else ""]
 			draw_string(ThemeDB.fallback_font, Vector2(4.0, 12.0), badge_title.strip_edges(), HORIZONTAL_ALIGNMENT_CENTER, int(size.x - 8.0), 8, TEXT_COLOR)
 	elif subgraph != null:
+		var dims := _get_physical_dimensions()
 		var title: String = subgraph.name if not subgraph.name.is_empty() else subgraph.id
-		var role_str: String = "[%s]" % subgraph.role.to_upper()
-		var tmpl_str: String = "Tmpl: %s" % str(subgraph.template_id) if subgraph.template_id != null else "Group"
-		var sub_col := Color("#1abc9c") if subgraph.role == "compound" else Color("#8e44ad")
+		var role_str: String = "[%s]" % ("SUBSYSTEM" if subgraph.role in ["group", "compound"] else subgraph.role.to_upper())
+		var sub_col := Color("#1abc9c") if subgraph.role == "compound" else Color("#9b59b6")
 
-		# Draw double border for compound
-		if subgraph.role == "compound":
-			var inset_rect := rect.grow(-3.0)
-			draw_rect(inset_rect, Color(sub_col.r, sub_col.g, sub_col.b, 0.08), true)
-			draw_rect(inset_rect, sub_col, false, 1.2)
+		# Draw subtle inner outline for subsystem
+		var inset_rect := rect.grow(-3.0)
+		draw_rect(inset_rect, Color(sub_col.r, sub_col.g, sub_col.b, 0.08), true)
+		draw_rect(inset_rect, sub_col, false, 1.2)
 
 		if mid_w >= 70.0:
 			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 22.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 12, TEXT_COLOR)
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 38.0), role_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 9, sub_col)
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 52.0), tmpl_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 9, MUTED_COLOR)
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 68.0), "⤢ Double-click to drill down", HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 8, Color("#3498db"))
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 36.0), role_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 9, sub_col)
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 50.0), "%.1fm × %.1fm" % [dims.x, dims.y], HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 9, COLOR_FLOW)
+
+			# Internal members manifest preview card
+			var card_y := 58.0
+			var avail_h := size.y - card_y - 20.0
+			if avail_h >= 24.0:
+				var card_rect := Rect2(left_w + 6.0, card_y, mid_w - 12.0, avail_h)
+				draw_rect(card_rect, Color(0.06, 0.1, 0.16, 0.75), true)
+				draw_rect(card_rect, Color(sub_col.r, sub_col.g, sub_col.b, 0.35), false, 1.0)
+
+				var n_elems: int = subgraph.elements.size()
+				var n_conns: int = subgraph.connections.size()
+				var header_text := "INSIDE: %d ENTIT%s" % [n_elems, "IES" if n_elems != 1 else "Y"]
+				if n_conns > 0:
+					header_text += " · %d WIRE%s" % [n_conns, "S" if n_conns != 1 else ""]
+				draw_string(ThemeDB.fallback_font, Vector2(card_rect.position.x + 6.0, card_rect.position.y + 13.0), header_text, HORIZONTAL_ALIGNMENT_LEFT, int(card_rect.size.x - 12.0), 8, Color("#a8d5ba"))
+
+				var line_y := card_rect.position.y + 26.0
+				var max_lines: int = int((avail_h - 18.0) / 13.0)
+				var shown := 0
+				for eid in subgraph.elements:
+					if shown >= max_lines:
+						var remaining := n_elems - shown
+						draw_string(ThemeDB.fallback_font, Vector2(card_rect.position.x + 8.0, line_y), "+ %d more..." % remaining, HORIZONTAL_ALIGNMENT_LEFT, int(card_rect.size.x - 16.0), 8, MUTED_COLOR)
+						break
+					draw_string(ThemeDB.fallback_font, Vector2(card_rect.position.x + 8.0, line_y), "• %s" % str(eid), HORIZONTAL_ALIGNMENT_LEFT, int(card_rect.size.x - 16.0), 8, TEXT_COLOR)
+					line_y += 13.0
+					shown += 1
+
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, size.y - 6.0), "⤢ Double-click to open", HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 8, Color("#3498db"))
 		elif mid_w >= 28.0:
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 22.0), title, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 10, TEXT_COLOR)
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 38.0), role_str, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 8, sub_col)
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 20.0), title, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 10, TEXT_COLOR)
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 34.0), role_str, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 8, sub_col)
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 48.0), "%.1f×%.1f" % [dims.x, dims.y], HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 8, COLOR_FLOW)
+			var n_elems: int = subgraph.elements.size()
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 62.0), "%d items" % n_elems, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 8, MUTED_COLOR)
 		else:
 			var badge_rect := Rect2(2.0, 2.0, size.x - 4.0, 13.0)
 			draw_rect(badge_rect, Color("#09111be0"), true)
 			draw_rect(badge_rect, sub_col, false, 1.0)
-			draw_string(ThemeDB.fallback_font, Vector2(4.0, 12.0), title.strip_edges(), HORIZONTAL_ALIGNMENT_CENTER, int(size.x - 8.0), 8, TEXT_COLOR)
+			var badge_title := "%s [%d]" % [title, subgraph.elements.size()]
+			draw_string(ThemeDB.fallback_font, Vector2(4.0, 12.0), badge_title.strip_edges(), HORIZONTAL_ALIGNMENT_CENTER, int(size.x - 8.0), 8, TEXT_COLOR)
 
 	# 5. Draw Left and Right Port Sockets
 	var socket_r: float = 6.5 if size.y >= 70.0 else clamp(size.y * 0.12, 4.0, 6.0)

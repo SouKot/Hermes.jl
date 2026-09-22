@@ -947,6 +947,76 @@ func _render_subgraph(sub_id: String) -> void:
 		doc_store.set_subgraph_position(sub.id, p)
 	)
 
+	# 4b. Dimensions (Size)
+	_container.add_child(HSeparator.new())
+	var dim_lbl := Label.new()
+	dim_lbl.text = "DIMENSIONS (SIZE)"
+	dim_lbl.add_theme_font_size_override("font_size", 10)
+	dim_lbl.add_theme_color_override("font_color", MUTED)
+	_container.add_child(dim_lbl)
+
+	var dim_row := HBoxContainer.new()
+	dim_row.add_theme_constant_override("separation", 6)
+	_container.add_child(dim_row)
+
+	var cur_w: float = float(sub.transform.scale.x) if sub.transform != null and sub.transform.scale.x > 0.1 else 8.0
+	var cur_h: float = float(sub.transform.scale.y) if sub.transform != null and sub.transform.scale.y > 0.1 else 4.0
+	var cur_z: float = float(sub.transform.scale.z) if sub.transform != null and sub.transform.scale.z > 0.05 else 2.0
+	if sub.editor != null and sub.editor.extensions.has("dimensions"):
+		var ed = sub.editor.extensions["dimensions"]
+		if ed is Array and ed.size() >= 3:
+			cur_w = float(ed[0])
+			cur_h = float(ed[1])
+			cur_z = float(ed[2])
+
+	_create_dock_mini_spin(dim_row, "L (m)", cur_w, 1.0, 500.0, 0.5, func(v):
+		var d := Vector3(v, cur_h, cur_z)
+		doc_store.set_subgraph_dimensions(sub.id, d)
+	)
+	_create_dock_mini_spin(dim_row, "W (m)", cur_h, 1.0, 500.0, 0.5, func(v):
+		var d := Vector3(cur_w, v, cur_z)
+		doc_store.set_subgraph_dimensions(sub.id, d)
+	)
+	_create_dock_mini_spin(dim_row, "H (m)", cur_z, 0.1, 100.0, 0.1, func(v):
+		var d := Vector3(cur_w, cur_h, v)
+		doc_store.set_subgraph_dimensions(sub.id, d)
+	)
+
+	# 4c. Internal Members Manifest
+	if not sub.elements.is_empty():
+		_container.add_child(HSeparator.new())
+		var mem_lbl := Label.new()
+		mem_lbl.text = "INTERNAL MEMBERS (%d)" % sub.elements.size()
+		mem_lbl.add_theme_font_size_override("font_size", 10)
+		mem_lbl.add_theme_color_override("font_color", MUTED)
+		_container.add_child(mem_lbl)
+
+		var mem_vbox := VBoxContainer.new()
+		mem_vbox.add_theme_constant_override("separation", 3)
+		for eid in sub.elements:
+			var m_elem := doc_store.get_element(str(eid))
+			var m_row := HBoxContainer.new()
+			var bullet := Label.new()
+			bullet.text = "•"
+			bullet.add_theme_color_override("font_color", ACCENT)
+			m_row.add_child(bullet)
+
+			var m_id := Label.new()
+			m_id.text = str(eid)
+			m_id.add_theme_font_size_override("font_size", 10)
+			m_id.add_theme_color_override("font_color", TEXT)
+			m_row.add_child(m_id)
+
+			if m_elem != null:
+				var m_kind := Label.new()
+				m_kind.text = "(%s)" % m_elem.kind
+				m_kind.add_theme_font_size_override("font_size", 9)
+				m_kind.add_theme_color_override("font_color", MUTED)
+				m_row.add_child(m_kind)
+
+			mem_vbox.add_child(m_row)
+		_container.add_child(mem_vbox)
+
 	# 5. Boundary Ports
 	if not sub.exposed_ports.is_empty():
 		_container.add_child(HSeparator.new())

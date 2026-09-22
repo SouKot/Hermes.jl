@@ -189,6 +189,19 @@ func rebuild_blocks() -> void:
 		b.floating_properties_requested.connect(func(eid: String, spos: Vector2):
 			floating_properties_requested.emit(eid, spos)
 		)
+		b.element_resized.connect(func(_eid: String, _dims: Vector3):
+			_redraw_all()
+		)
+		b.element_resize_committed.connect(func(eid: String, dims: Vector3):
+			if doc_store != null:
+				var target_sub := doc_store.get_subgraph(eid)
+				if target_sub != null and target_sub.transform != null:
+					var orig_dims: Vector3 = b._resize_start_dims
+					var orig_pos: Vector3 = b._resize_start_elem_pos
+					doc_store.update_subgraph_geometry_and_position(eid, dims, target_sub.transform.position, orig_dims, orig_pos)
+				else:
+					doc_store.set_subgraph_dimensions(eid, dims)
+		)
 
 	move_child(_wires_layer, -1)
 	_redraw_all()
