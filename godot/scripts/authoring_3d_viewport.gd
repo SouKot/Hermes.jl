@@ -17,6 +17,12 @@ var _camera: Camera3D
 var _cam_pivot: Node3D
 var _entities_root: Node3D
 var _floor_mesh: MeshInstance3D
+var _agents_root: Node3D
+var _agents_multimesh_instance: MultiMeshInstance3D
+var _agents_multimesh: MultiMesh
+var _active_agents: Array = []
+var selected_agent_id: String = ""
+var is_follow_camera_active: bool = false
 
 # Orbit Camera parameters
 var _cam_distance: float = 30.0
@@ -129,6 +135,20 @@ func _setup_3d_world() -> void:
 	_entities_root = Node3D.new()
 	_entities_root.name = "EntitiesRoot"
 	_world_root.add_child(_entities_root)
+
+	# 5. Agent MultiMesh Container (Hardware-accelerated crowd rendering)
+	_agents_multimesh_instance = MultiMeshInstance3D.new()
+	_agents_multimesh_instance.name = "AgentsMultiMesh"
+	_agents_multimesh = MultiMesh.new()
+	_agents_multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	_agents_multimesh.use_colors = true
+	_agents_multimesh.mesh = MeshFactory.create_agent_capsule_mesh()
+	_agents_multimesh_instance.multimesh = _agents_multimesh
+	_world_root.add_child(_agents_multimesh_instance)
+
+	_agents_root = Node3D.new()
+	_agents_root.name = "AgentsRoot"
+	_world_root.add_child(_agents_root)
 
 func _setup_ui_overlay() -> void:
 	var overlay := MarginContainer.new()
@@ -482,3 +502,109 @@ func _gui_input(event: InputEvent) -> void:
 			_cam_pivot.position += move
 			_update_camera_transform()
 			accept_event()
+
+# ============================================================================
+# Agent Telemetry & Follow Camera
+# ============================================================================
+
+var _agent_transforms: Array = []
+
+func get_agent_transform_3d(index: int) -> Transform3D:
+	if index >= 0 and index < _agent_transforms.size():
+		return _agent_transforms[index]
+	return Transform3D.IDENTITY
+
+func update_agent_telemetry(agents: Array) -> void:
+	_active_agents = agents
+	_agent_transforms.clear()
+	if _agents_multimesh == null:
+		return
+
+	_agents_multimesh.instance_count = agents.size()
+
+	for i in range(agents.size()):
+		var agent = agents[i]
+		if not (agent is Dictionary):
+			continue
+
+		var raw_pos = agent.get("position", [0.0, 0.0, 0.0])
+		var px: float = 0.0
+		var py: float = 0.0
+		var pz: float = 0.0
+		if agent.has("x") and agent.has("y"):
+			px = float(agent["x"])
+			py = float(agent["y"])
+			pz = float(agent.get("z", 0.0))
+		elif raw_pos is Array:
+			if raw_pos.size() >= 1: px = float(raw_pos[0])
+			if raw_pos.size() >= 2: py = float(raw_pos[1])
+			if raw_pos.size() >= 3: pz = float(raw_pos[2])
+		elif raw_pos is Vector3:
+			px = raw_pos.x
+			py = raw_pos.y
+			pz = raw_pos.z
+		elif raw_pos is Vector2:
+			px = raw_pos.x
+			py = raw_pos.y
+
+		# Coordinates: SceneSpec Z-up (X East, Y North, Z Up) -> Godot (X, Z+0.85, -Y)
+		var g_pos := Vector3(px, pz + 0.85, -py)
+
+		var vel = agent.get("velocity", [0.0, 0.0])
+		var vx: float = 0.0
+		var vy: float = 0.0
+		if agent.has("vx") and agent.has("vy"):
+			vx = float(agent["vx"])
+			vy = float(agent["vy"])
+		elif vel is Array and vel.size() >= 2:
+			vx = float(vel[0])
+			vy = float(vel[1])
+		elif vel is Vector2 or vel is Vector3:
+			vx = vel.x
+			vy = vel.y
+
+		var speed := sqrt(vx * vx + vy * vy)
+		var yaw := 0.0
+		if speed > 0.01:
+			yaw = atan2(-vy, vx)
+
+		var basis := Basis.from_euler(Vector3(0, yaw, 0))
+		var t := Transform3D(basis, g_pos)
+		_agents_multimesh.set_instance_transform(i, t)
+		_agent_transforms.append(t)
+
+		# Color
+		var state: String = str(agent.get("state", "walking"))
+		var col := Color("#2ecc71") # green
+		if state == "queuing":
+			col = Color("#3498db") # blue
+		elif speed < 0.35:
+			col = Color("#e74c3c") # red
+		elif speed < 1.0:
+			col = Color("#f1c40f") # amber
+		_agents_multimesh.set_instance_color(i, col)
+
+		# Follow camera if this agent is selected
+		var aid: String = str(agent.get("id", ""))
+		if is_follow_camera_active and aid == selected_agent_id and not aid.is_empty():
+			if _cam_pivot != null:
+				_cam_pivot.position = g_pos
+				_update_camera_transform()
+
+func set_follow_camera(active: bool, agent_id: String = "") -> void:
+	is_follow_camera_active = active
+	if not agent_id.is_empty():
+		selected_agent_id = agent_id
+
+var is_following_agent: bool:
+	get:
+		return is_follow_camera_active
+
+var follow_agent_id: String:
+	get:
+		return selected_agent_id
+
+var _camera_target: Vector3:
+	get:
+		return _cam_pivot.position if _cam_pivot != null else Vector3.ZERO
+

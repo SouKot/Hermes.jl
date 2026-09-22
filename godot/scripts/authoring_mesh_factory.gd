@@ -15,6 +15,11 @@ static var _mat_beacon_yellow: StandardMaterial3D
 static var _mat_beacon_red: StandardMaterial3D
 static var _mat_source_accent: StandardMaterial3D
 static var _mat_sink_accent: StandardMaterial3D
+static var _mat_spawner: StandardMaterial3D
+static var _mat_exit: StandardMaterial3D
+static var _mat_portal_glass: StandardMaterial3D
+static var _mat_wall: StandardMaterial3D
+static var _mat_room_floor: StandardMaterial3D
 
 static func _ensure_materials() -> void:
 	if _mat_steel != null:
@@ -75,6 +80,40 @@ static func _ensure_materials() -> void:
 	_mat_sink_accent.metallic = 0.4
 	_mat_sink_accent.roughness = 0.35
 
+	# Crowd Spawner (Translucent Lime with gentle glow)
+	_mat_spawner = StandardMaterial3D.new()
+	_mat_spawner.albedo_color = Color(0.55, 0.77, 0.29, 0.6)
+	_mat_spawner.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_mat_spawner.emission_enabled = true
+	_mat_spawner.emission = Color("#8bc34a")
+	_mat_spawner.emission_energy_multiplier = 0.8
+
+	# Exit Goal (Glowing Emergency Green)
+	_mat_exit = StandardMaterial3D.new()
+	_mat_exit.albedo_color = Color("#2ecc71")
+	_mat_exit.emission_enabled = true
+	_mat_exit.emission = Color("#2ecc71")
+	_mat_exit.emission_energy_multiplier = 2.5
+
+	# Hybrid Portal Glass (Translucent Cyan)
+	_mat_portal_glass = StandardMaterial3D.new()
+	_mat_portal_glass.albedo_color = Color(0.3, 0.7, 0.9, 0.45)
+	_mat_portal_glass.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_mat_portal_glass.roughness = 0.1
+	_mat_portal_glass.metallic = 0.2
+
+	# Architectural Wall / Column (Warm Matte Off-White)
+	_mat_wall = StandardMaterial3D.new()
+	_mat_wall.albedo_color = Color("#bdc3c7")
+	_mat_wall.metallic = 0.1
+	_mat_wall.roughness = 0.85
+
+	# Walkable Floor Surface (Subtle Concrete/Tile)
+	_mat_room_floor = StandardMaterial3D.new()
+	_mat_room_floor.albedo_color = Color("#34495e")
+	_mat_room_floor.metallic = 0.05
+	_mat_room_floor.roughness = 0.7
+
 static func create_3d_node_for_element(elem: SceneTypes.SceneElement) -> Node3D:
 	_ensure_materials()
 	var root := Node3D.new()
@@ -91,6 +130,16 @@ static func create_3d_node_for_element(elem: SceneTypes.SceneElement) -> Node3D:
 			_build_source(root, elem)
 		"sink":
 			_build_sink(root, elem)
+		"crowd_spawner":
+			_build_crowd_spawner(root, elem)
+		"exit_goal":
+			_build_exit_goal(root, elem)
+		"hybrid_portal":
+			_build_hybrid_portal(root, elem)
+		"obstacle_wall":
+			_build_obstacle_wall(root, elem)
+		"walkable_room":
+			_build_walkable_room(root, elem)
 		_:
 			_build_generic_box(root, elem)
 
@@ -422,4 +471,254 @@ static func get_dims(elem: SceneTypes.SceneElement, default_v: Vector3) -> Vecto
 
 static func _get_dims(elem: SceneTypes.SceneElement, default_v: Vector3) -> Vector3:
 	return get_dims(elem, default_v)
+
+# ============================================================================
+# Crowd & Hybrid 3D Procedural Primitives
+# ============================================================================
+
+static func _build_crowd_spawner(root: Node3D, elem: SceneTypes.SceneElement) -> void:
+	var dims := get_dims(elem, Vector3(2.0, 4.0, 2.0))
+	var length: float = dims.x
+	var width: float = dims.y
+	var height: float = dims.z
+
+	# 1. Floor Ingress Zone Decal
+	var floor_pad := MeshInstance3D.new()
+	var f_mesh := BoxMesh.new()
+	f_mesh.size = Vector3(length, 0.02, width)
+	f_mesh.material = _mat_spawner
+	floor_pad.mesh = f_mesh
+	floor_pad.position = Vector3(length * 0.5, 0.01, 0)
+	root.add_child(floor_pad)
+
+	# 2. Translucent Volumetric Emitter Frame
+	var vol := MeshInstance3D.new()
+	var v_mesh := BoxMesh.new()
+	v_mesh.size = Vector3(length * 0.95, height * 0.8, width * 0.95)
+	v_mesh.material = _mat_spawner
+	vol.mesh = v_mesh
+	vol.position = Vector3(length * 0.5, height * 0.4, 0)
+	root.add_child(vol)
+
+	# 3. Corner Emitter Posts
+	for cx in [0.05, length - 0.05]:
+		for cz in [-width * 0.5 + 0.05, width * 0.5 - 0.05]:
+			var post := MeshInstance3D.new()
+			var p_mesh := CylinderMesh.new()
+			p_mesh.top_radius = 0.04
+			p_mesh.bottom_radius = 0.04
+			p_mesh.height = height
+			p_mesh.material = _mat_steel
+			post.mesh = p_mesh
+			post.position = Vector3(cx, height * 0.5, cz)
+			root.add_child(post)
+
+static func _build_exit_goal(root: Node3D, elem: SceneTypes.SceneElement) -> void:
+	var dims := get_dims(elem, Vector3(1.0, 2.0, 2.4))
+	var length: float = dims.x
+	var width: float = dims.y
+	var height: float = dims.z
+
+	# 1. Doorway Frame (Steel Columns & Top Header)
+	var col_l := MeshInstance3D.new()
+	var cm := BoxMesh.new()
+	cm.size = Vector3(length, height, 0.15)
+	cm.material = _mat_steel
+	col_l.mesh = cm
+	col_l.position = Vector3(length * 0.5, height * 0.5, -width * 0.5)
+	root.add_child(col_l)
+
+	var col_r := MeshInstance3D.new()
+	col_r.mesh = cm
+	col_r.position = Vector3(length * 0.5, height * 0.5, width * 0.5)
+	root.add_child(col_r)
+
+	var header := MeshInstance3D.new()
+	var hm := BoxMesh.new()
+	hm.size = Vector3(length, 0.2, width + 0.15)
+	hm.material = _mat_steel
+	header.mesh = hm
+	header.position = Vector3(length * 0.5, height - 0.1, 0)
+	root.add_child(header)
+
+	# 2. Glowing Exit Sign
+	var sign_mesh := BoxMesh.new()
+	sign_mesh.size = Vector3(0.08, 0.25, 0.8)
+	sign_mesh.material = _mat_exit
+	var sign_inst := MeshInstance3D.new()
+	sign_inst.mesh = sign_mesh
+	sign_inst.position = Vector3(length * 0.5, height + 0.15, 0)
+	root.add_child(sign_inst)
+
+	# 3. Floor Egress Threshold Pad
+	var thresh := MeshInstance3D.new()
+	var tm := BoxMesh.new()
+	tm.size = Vector3(length, 0.02, width)
+	tm.material = _mat_floor_stripe
+	thresh.mesh = tm
+	thresh.position = Vector3(length * 0.5, 0.01, 0)
+	root.add_child(thresh)
+
+static func _build_hybrid_portal(root: Node3D, elem: SceneTypes.SceneElement) -> void:
+	var dims := get_dims(elem, Vector3(1.0, 2.5, 2.2))
+	var length: float = dims.x
+	var width: float = dims.y
+	var height: float = dims.z
+
+	# 1. Base Mounting Plate
+	var base := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(length, 0.04, width)
+	bm.material = _mat_steel
+	base.mesh = bm
+	base.position = Vector3(length * 0.5, 0.02, 0)
+	root.add_child(base)
+
+	# 2. Turnstile Pedestals (Left & Right Stainless Cabinets)
+	var cab_mesh := BoxMesh.new()
+	cab_mesh.size = Vector3(length * 0.8, 1.0, 0.25)
+	cab_mesh.material = _mat_table
+
+	var cab_l := MeshInstance3D.new()
+	cab_l.mesh = cab_mesh
+	cab_l.position = Vector3(length * 0.5, 0.5, -width * 0.35)
+	root.add_child(cab_l)
+
+	var cab_r := MeshInstance3D.new()
+	cab_r.mesh = cab_mesh
+	cab_r.position = Vector3(length * 0.5, 0.5, width * 0.35)
+	root.add_child(cab_r)
+
+	# 3. Optical Glass Swinging Barrier
+	var glass_mesh := BoxMesh.new()
+	glass_mesh.size = Vector3(0.04, 0.8, width * 0.45)
+	glass_mesh.material = _mat_portal_glass
+	var glass := MeshInstance3D.new()
+	glass.mesh = glass_mesh
+	glass.position = Vector3(length * 0.5, 0.5, 0)
+	root.add_child(glass)
+
+	# 4. Overhead Scanner & Beacon Arch
+	var gantry_post := MeshInstance3D.new()
+	var gm := CylinderMesh.new()
+	gm.top_radius = 0.03
+	gm.bottom_radius = 0.03
+	gm.height = height
+	gm.material = _mat_steel
+	gantry_post.mesh = gm
+	gantry_post.position = Vector3(length * 0.5, height * 0.5, -width * 0.45)
+	root.add_child(gantry_post)
+
+	var beacon := MeshInstance3D.new()
+	var b_mesh := SphereMesh.new()
+	b_mesh.radius = 0.08
+	b_mesh.height = 0.16
+	b_mesh.material = _mat_beacon_green
+	beacon.mesh = b_mesh
+	beacon.position = Vector3(length * 0.5, height, -width * 0.45)
+	root.add_child(beacon)
+
+static func _build_obstacle_wall(root: Node3D, elem: SceneTypes.SceneElement) -> void:
+	var dims := get_dims(elem, Vector3(0.4, 6.0, 2.8))
+	var length: float = dims.x
+	var width: float = dims.y
+	var height: float = dims.z
+
+	# Main Wall
+	var wall := MeshInstance3D.new()
+	var wm := BoxMesh.new()
+	wm.size = Vector3(length, height, width)
+	wm.material = _mat_wall
+	wall.mesh = wm
+	wall.position = Vector3(length * 0.5, height * 0.5, 0)
+	root.add_child(wall)
+
+	# Base Kickplate
+	var trim := MeshInstance3D.new()
+	var tm := BoxMesh.new()
+	tm.size = Vector3(length + 0.04, 0.12, width + 0.04)
+	tm.material = _mat_steel
+	trim.mesh = tm
+	trim.position = Vector3(length * 0.5, 0.06, 0)
+	root.add_child(trim)
+
+static func _build_walkable_room(root: Node3D, elem: SceneTypes.SceneElement) -> void:
+	var dims := get_dims(elem, Vector3(10.0, 10.0, 2.8))
+	var length: float = dims.x
+	var width: float = dims.y
+
+	# Floor Slab Tile
+	var floor_tile := MeshInstance3D.new()
+	var fm := BoxMesh.new()
+	fm.size = Vector3(length, 0.02, width)
+	fm.material = _mat_room_floor
+	floor_tile.mesh = fm
+	floor_tile.position = Vector3(length * 0.5, 0.01, 0)
+	root.add_child(floor_tile)
+
+# ============================================================================
+# Procedural Agent Meshes (LOD 0 Mannequin & LOD 1 Capsule)
+# ============================================================================
+
+static func create_agent_mannequin_node(color: Color = Color("#3498db")) -> Node3D:
+	var agent_root := Node3D.new()
+	agent_root.name = "AgentMannequin"
+
+	var skin_mat := StandardMaterial3D.new()
+	skin_mat.albedo_color = color
+	skin_mat.roughness = 0.4
+	skin_mat.metallic = 0.1
+
+	# Torso (Capsule)
+	var torso := MeshInstance3D.new()
+	var tm := CapsuleMesh.new()
+	tm.radius = 0.18
+	tm.height = 0.95
+	tm.material = skin_mat
+	torso.mesh = tm
+	torso.position = Vector3(0, 0.95, 0)
+	agent_root.add_child(torso)
+
+	# Head (Sphere)
+	var head := MeshInstance3D.new()
+	var hm := SphereMesh.new()
+	hm.radius = 0.13
+	hm.height = 0.26
+	head.mesh = hm
+	head.position = Vector3(0, 1.55, 0)
+	agent_root.add_child(head)
+
+	# Directional Visor (Forward heading indicator)
+	var visor := MeshInstance3D.new()
+	var vm := BoxMesh.new()
+	vm.size = Vector3(0.08, 0.06, 0.16)
+	var v_mat := StandardMaterial3D.new()
+	v_mat.albedo_color = Color("#111827")
+	visor.mesh = vm
+	visor.material_override = v_mat
+	visor.position = Vector3(0.12, 1.55, 0) # X forward
+	agent_root.add_child(visor)
+
+	# Floor Contact Shadow Disc
+	var shadow := MeshInstance3D.new()
+	var sm := CylinderMesh.new()
+	sm.top_radius = 0.25
+	sm.bottom_radius = 0.25
+	sm.height = 0.005
+	var sh_mat := StandardMaterial3D.new()
+	sh_mat.albedo_color = Color(0.05, 0.08, 0.12, 0.5)
+	sh_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	shadow.mesh = sm
+	shadow.material_override = sh_mat
+	shadow.position = Vector3(0, 0.003, 0)
+	agent_root.add_child(shadow)
+
+	return agent_root
+
+static func create_agent_capsule_mesh() -> CapsuleMesh:
+	var mesh := CapsuleMesh.new()
+	mesh.radius = 0.20
+	mesh.height = 1.70
+	return mesh
+
 

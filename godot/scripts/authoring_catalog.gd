@@ -41,7 +41,7 @@ class CatalogEntry:
 		return grouped
 
 var _entries: Dictionary = {} # kind -> CatalogEntry
-var _categories: Array = ["Material Handling", "Storage & Queues", "Processing", "I/O Boundary"]
+var _categories: Array = ["Material Handling", "Storage & Queues", "Processing", "I/O Boundary", "Crowd & Pedestrian", "Hybrid & Multi-Paradigm"]
 
 func _init() -> void:
 	_register_defaults()
@@ -337,6 +337,143 @@ func _register_defaults() -> void:
 		"collect_metrics": true
 	}
 	_entries["sink"] = sink
+
+	# 6. Crowd Spawner (Ingress)
+	var spawner := CatalogEntry.new()
+	spawner.kind = "crowd_spawner"
+	spawner.display_name = "Crowd Spawner"
+	spawner.category = "Crowd & Pedestrian"
+	spawner.description = "Generates agent streams into a room, corridor, or concourse."
+	spawner.default_dimensions = Vector3(2.0, 4.0, 2.0)
+	spawner.default_elevation_start = 0.0
+	spawner.default_elevation_end = 0.0
+	spawner.color = Color("#8bc34a")
+	spawner.default_input_ports = []
+	spawner.default_output_ports = [
+		{"id": "crowd_out", "kind": "flow", "direction": "output", "cardinality": "many", "name": "Crowd Stream"}
+	]
+	spawner.default_metric_ports = [
+		{"id": "spawned_count", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Spawned Total"}
+	]
+	spawner.property_schemas = [
+		{"key": "agent_count", "display_name": "Target Agent Count", "type": "int", "default_value": 50, "unit": "peds", "range": [1, 100000, 10], "runtime_editable": false, "group": "Population", "description": "Total number of agents to generate."},
+		{"key": "spawn_rate", "display_name": "Spawn Rate", "type": "float", "default_value": 2.0, "unit": "ped/s", "range": [0.1, 100.0, 0.5], "runtime_editable": true, "group": "Ingress Dynamics", "description": "Frequency of pedestrian entry into the simulation space."},
+		{"key": "initial_speed", "display_name": "Initial Velocity", "type": "float", "default_value": 1.34, "unit": "m/s", "range": [0.2, 5.0, 0.1], "runtime_editable": true, "group": "Ingress Dynamics", "description": "Initial desired velocity assigned to newly spawned agents."},
+		{"key": "spawn_distribution", "display_name": "Inter-Arrival Pattern", "type": "enum", "default_value": "constant", "options": ["constant", "poisson", "burst"], "runtime_editable": true, "group": "Ingress Dynamics", "description": "Statistical arrival distribution for spawned pedestrians."}
+	]
+	spawner.default_properties = {
+		"agent_count": 50,
+		"spawn_rate": 2.0,
+		"initial_speed": 1.34,
+		"spawn_distribution": "constant"
+	}
+	_entries["crowd_spawner"] = spawner
+
+	# 7. Exit Goal (Egress)
+	var exit_g := CatalogEntry.new()
+	exit_g.kind = "exit_goal"
+	exit_g.display_name = "Exit Goal / Doorway"
+	exit_g.category = "Crowd & Pedestrian"
+	exit_g.description = "Destination portal or doorway where agents complete their journey and leave the crowd."
+	exit_g.default_dimensions = Vector3(1.0, 2.0, 2.4)
+	exit_g.default_elevation_start = 0.0
+	exit_g.default_elevation_end = 0.0
+	exit_g.color = Color("#4caf50")
+	exit_g.default_input_ports = [
+		{"id": "crowd_in", "kind": "flow", "direction": "input", "cardinality": "many", "name": "Crowd In"}
+	]
+	exit_g.default_output_ports = []
+	exit_g.default_metric_ports = [
+		{"id": "egress_flow", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Egress Rate"},
+		{"id": "exited_total", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Exited Total"}
+	]
+	exit_g.property_schemas = [
+		{"key": "door_width", "display_name": "Door Opening Width", "type": "float", "default_value": 2.0, "unit": "m", "range": [0.5, 20.0, 0.5], "runtime_editable": true, "group": "Doorway Geometry", "description": "Clear doorway width determining egress bottleneck throughput."},
+		{"key": "remove_on_exit", "display_name": "Remove Agent on Exit", "type": "bool", "default_value": true, "runtime_editable": false, "group": "Egress Rules", "description": "Instantly purge agent from simulation upon reaching the exit threshold."}
+	]
+	exit_g.default_properties = {
+		"door_width": 2.0,
+		"remove_on_exit": true
+	}
+	_entries["exit_goal"] = exit_g
+
+	# 8. Walkable Room / Concourse
+	var room := CatalogEntry.new()
+	room.kind = "walkable_room"
+	room.display_name = "Walkable Concourse / Room"
+	room.category = "Crowd & Pedestrian"
+	room.description = "Navigable floor polygon defining continuous walking territory for agents."
+	room.default_dimensions = Vector3(10.0, 10.0, 2.8)
+	room.default_elevation_start = 0.0
+	room.default_elevation_end = 0.0
+	room.color = Color("#95a5a6")
+	room.default_input_ports = []
+	room.default_output_ports = []
+	room.default_metric_ports = [
+		{"id": "density", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Area Density"}
+	]
+	room.property_schemas = [
+		{"key": "navmesh_enabled", "display_name": "Generate Navmesh", "type": "bool", "default_value": true, "runtime_editable": false, "group": "Navigation", "description": "Bake navigation mesh over this floor surface for pathfinding."},
+		{"key": "speed_factor", "display_name": "Walking Speed Multiplier", "type": "float", "default_value": 1.0, "unit": "x", "range": [0.1, 2.0, 0.1], "runtime_editable": true, "group": "Surface Properties", "description": "Modulates pedestrian velocity (e.g. 0.7 for stairs/carpet, 1.2 for moving sidewalks)."}
+	]
+	room.default_properties = {
+		"navmesh_enabled": true,
+		"speed_factor": 1.0
+	}
+	_entries["walkable_room"] = room
+
+	# 9. Obstacle Barrier / Wall
+	var obst := CatalogEntry.new()
+	obst.kind = "obstacle_wall"
+	obst.display_name = "Obstacle Barrier / Pillar"
+	obst.category = "Crowd & Pedestrian"
+	obst.description = "Solid architectural column or partition wall that repels crowd agents."
+	obst.default_dimensions = Vector3(0.4, 6.0, 2.8)
+	obst.default_elevation_start = 0.0
+	obst.default_elevation_end = 0.0
+	obst.color = Color("#7f8c8d")
+	obst.default_input_ports = []
+	obst.default_output_ports = []
+	obst.default_metric_ports = []
+	obst.property_schemas = [
+		{"key": "is_passable", "display_name": "Passable Barrier", "type": "bool", "default_value": false, "runtime_editable": false, "group": "Collision", "description": "Defines whether agents can pass through (e.g. transparent queue stanchions vs solid walls)."}
+	]
+	obst.default_properties = {
+		"is_passable": false
+	}
+	_entries["obstacle_wall"] = obst
+
+	# 10. Hybrid Portal (Turnstile / Gateway)
+	var portal := CatalogEntry.new()
+	portal.kind = "hybrid_portal"
+	portal.display_name = "Hybrid Turnstile / Portal"
+	portal.category = "Hybrid & Multi-Paradigm"
+	portal.description = "Boundary gateway converting discrete event parts/queue entities into continuous crowd agents, or vice versa."
+	portal.default_dimensions = Vector3(1.0, 2.5, 2.2)
+	portal.default_elevation_start = 0.0
+	portal.default_elevation_end = 0.0
+	portal.color = Color("#9b59b6")
+	portal.default_input_ports = [
+		{"id": "flow_in", "kind": "flow", "direction": "input", "cardinality": "one", "name": "DES In"},
+		{"id": "gate_control", "kind": "control", "direction": "input", "cardinality": "one", "name": "Gate Control"}
+	]
+	portal.default_output_ports = [
+		{"id": "crowd_out", "kind": "flow", "direction": "output", "cardinality": "many", "name": "Crowd Stream"}
+	]
+	portal.default_metric_ports = [
+		{"id": "throughput", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Throughput"}
+	]
+	portal.property_schemas = [
+		{"key": "conversion_mode", "display_name": "Conversion Paradigm", "type": "enum", "default_value": "des_to_crowd", "options": ["des_to_crowd", "crowd_to_des"], "runtime_editable": false, "group": "Hybrid Coupling", "description": "Direction of conversion between discrete items and continuous agents."},
+		{"key": "initial_speed", "display_name": "Egress Pedestrian Speed", "type": "float", "default_value": 1.2, "unit": "m/s", "range": [0.2, 3.0, 0.1], "runtime_editable": true, "group": "Hybrid Coupling", "description": "Initial walking velocity imparted to pedestrians as they leave the turnstile."},
+		{"key": "gate_latency_sec", "display_name": "Handshake Latency", "type": "float", "default_value": 0.5, "unit": "s", "range": [0.0, 10.0, 0.1], "runtime_editable": true, "group": "Hybrid Coupling", "description": "Physical transaction delay at turnstile badge scanner before admission."}
+	]
+	portal.default_properties = {
+		"conversion_mode": "des_to_crowd",
+		"initial_speed": 1.2,
+		"gate_latency_sec": 0.5
+	}
+	_entries["hybrid_portal"] = portal
 
 func create_element_instance(kind: String, id_val: String, pos: Vector2) -> SceneTypes.SceneElement:
 	var entry := get_entry(kind)

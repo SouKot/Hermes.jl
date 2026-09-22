@@ -14,6 +14,7 @@ const AuthoringShell := preload("res://scripts/authoring_shell.gd")
 const Inspector := preload("res://scripts/authoring_inspector.gd")
 const RuleBuilder := preload("res://scripts/authoring_rule_builder.gd")
 const FloatingInspector := preload("res://scripts/authoring_floating_inspector.gd")
+const ABMDialog := preload("res://scripts/authoring_abm_dialog.gd")
 
 var _failures: int = 0
 var _tests_run: int = 0
@@ -50,9 +51,14 @@ func _init() -> void:
 	test_resizable_splitters_and_expand_layout()
 	test_floating_tabbed_properties_inspector()
 
+	# Phase 7D-09 ABM & Multi-Paradigm Crowd Suites
+	test_abm_model_registry_and_configuration_dialog()
+	test_catalog_crowd_and_hybrid_primitives()
+	test_agent_telemetry_2d_and_3d_visualization()
+
 	print("============================================================")
 	if _failures == 0:
-		print("● ALL %d TEST SUITES PASSED CLEANLY (Phase 7D-07 & 7D-08 & Floating Tabs Verified)" % _tests_run)
+		print("● ALL %d TEST SUITES PASSED CLEANLY (Phase 7D-07, 7D-08, 7D-09 Verified)" % _tests_run)
 		print("============================================================")
 		quit(0)
 	else:
@@ -1189,5 +1195,227 @@ func test_floating_tabbed_properties_inspector() -> void:
 
 	block.free()
 	flt.free()
+
+func test_abm_model_registry_and_configuration_dialog() -> void:
+	_tests_run += 1
+	print("\n[Suite 23: ABM Model Registry, Presets & Schema-Driven Dialog]")
+	
+	# 1. Model Registry Checks
+	_assert(ABMDialog.MODEL_REGISTRY.has("SFM"), "Model Registry contains SFM (Social Force Model)")
+	_assert(ABMDialog.MODEL_REGISTRY.has("ORCA"), "Model Registry contains ORCA (Optimal Reciprocal Collision Avoidance)")
+	_assert(ABMDialog.MODEL_REGISTRY.has("HybridFSM"), "Model Registry contains HybridFSM")
+	_assert(ABMDialog.MODEL_REGISTRY.has("CSM"), "Model Registry contains CSM (Cellular Spatial Markov)")
+
+	var sfm_def: Dictionary = ABMDialog.MODEL_REGISTRY["SFM"]
+	_assert(sfm_def.get("library") == "SimCrowd", "SFM library is SimCrowd")
+	_assert(sfm_def.get("presets", {}).has("Dense Rush Hour"), "SFM includes 'Dense Rush Hour' preset")
+
+	# 2. Dialog Initialization & Binding
+	var store := DocumentStore.new()
+	var dialog := ABMDialog.new(store)
+	_assert(not dialog.visible, "ABM dialog starts hidden")
+
+	dialog.open()
+	_assert(dialog.visible, "ABM dialog visible after open()")
+
+	# 3. Toggle Enabled
+	_assert(not store.active_document.abm_config.get("enabled", false), "ABM starts disabled by default")
+	dialog._check_enabled.button_pressed = true
+	dialog._on_enabled_toggled(true)
+	_assert(bool(store.active_document.abm_config.get("enabled", false)) == true, "Enabling ABM updates doc abm_config.enabled")
+	_assert(store.active_document.simulation.mode == "hybrid", "Enabling ABM sets simulation mode to 'hybrid'")
+
+	# 4. Model Selection & Switching
+	dialog._on_model_selected(1) # ORCA
+	_assert(store.active_document.abm_config.get("model_name") == "ORCA", "Selected model updated to ORCA")
+	_assert(dialog.get_current_model_name() == "ORCA", "Dialog returns current model ORCA")
+	_assert(dialog._migration_label.text.contains("Switched model"), "Migration label shows transition notice")
+
+	# Switch back to SFM
+	dialog._on_model_selected(0) # SFM
+	_assert(store.active_document.abm_config.get("model_name") == "SFM", "Selected model restored to SFM")
+
+	# 5. Apply Presets
+	dialog._on_preset_selected(1) # Dense Rush Hour
+	var params: Dictionary = store.active_document.abm_config.get("parameters", {})
+	_assert(float(params.get("A", 0.0)) == 2500.0, "Preset 'Dense Rush Hour' applied A=2500.0")
+	_assert(float(params.get("k", 0.0)) == 16000.0, "Preset 'Dense Rush Hour' applied k=16000.0")
+
+	# 6. Hardware Backend Preference
+	dialog._on_backend_selected(2) # GPU
+	_assert(store.active_document.abm_config.get("backend_preference") == "gpu", "Hardware backend preference set to GPU")
+
+	dialog._on_fallback_selected(1) # Strict
+	_assert(store.active_document.abm_config.get("fallback_policy") == "strict", "Fallback policy set to strict")
+
+	# 7. Add and Modify Custom Experimental Parameter
+	dialog._on_add_custom_param_pressed()
+	var custom_params: Dictionary = store.active_document.abm_config.get("parameters", {})
+	var custom_key: String = ""
+	for k in custom_params.keys():
+		if str(k).begins_with("custom_param"):
+			custom_key = str(k)
+			break
+	_assert(not custom_key.is_empty(), "Custom parameter dynamically added to ABM configuration")
+
+	dialog._on_param_value_changed(custom_key, 42.5)
+	_assert(float(store.active_document.abm_config["parameters"][custom_key]) == 42.5, "Custom parameter value updated to 42.5")
+
+	dialog._remove_custom_param(custom_key)
+	_assert(not store.active_document.abm_config["parameters"].has(custom_key), "Custom parameter removed cleanly")
+
+	dialog.close()
+	_assert(not dialog.visible, "ABM dialog closed cleanly")
+	dialog.free()
+
+func test_catalog_crowd_and_hybrid_primitives() -> void:
+	_tests_run += 1
+	print("\n[Suite 24: Catalog Crowd & Hybrid Primitives & 3D Builders]")
+	var cat := Catalog.new()
+	var factory := MeshFactory.new()
+
+	# Verify Catalog Categories
+	var categories: Array = cat.get_categories()
+	_assert(categories.has("Crowd & Pedestrian"), "Catalog has 'Crowd & Pedestrian' category")
+	_assert(categories.has("Hybrid & Multi-Paradigm"), "Catalog has 'Hybrid & Multi-Paradigm' category")
+
+	# 1. crowd_spawner
+	var spawner_entry := cat.get_entry("crowd_spawner")
+	_assert(spawner_entry != null, "crowd_spawner registered in catalog")
+	var spawner_elem := cat.create_element_instance("crowd_spawner", "spawner_01", Vector2(0, 0))
+	_assert(spawner_elem.output_ports.size() >= 1 and spawner_elem.metric_ports.size() >= 1, "crowd_spawner has pedestrian flow out and metric ports")
+	_assert(spawner_elem.properties.has("spawn_rate"), "crowd_spawner has 'spawn_rate' property")
+	_assert(spawner_elem.properties.has("initial_speed"), "crowd_spawner has 'initial_speed' property")
+	var spawner_node: Node3D = MeshFactory.create_3d_node_for_element(spawner_elem)
+	_assert(spawner_node != null and spawner_node is Node3D, "MeshFactory built 3D node for crowd_spawner")
+	spawner_node.free()
+
+	# 2. exit_goal
+	var exit_entry := cat.get_entry("exit_goal")
+	_assert(exit_entry != null, "exit_goal registered in catalog")
+	var exit_elem := cat.create_element_instance("exit_goal", "exit_01", Vector2(10, 0))
+	_assert(exit_elem.input_ports.size() >= 1, "exit_goal has pedestrian input port")
+	_assert(exit_elem.properties.has("door_width"), "exit_goal has 'door_width' property")
+	var exit_node: Node3D = MeshFactory.create_3d_node_for_element(exit_elem)
+	_assert(exit_node != null and exit_node is Node3D, "MeshFactory built 3D node for exit_goal")
+	exit_node.free()
+
+	# 3. walkable_room
+	var room_entry := cat.get_entry("walkable_room")
+	_assert(room_entry != null, "walkable_room registered in catalog")
+	var room_elem := cat.create_element_instance("walkable_room", "hall_01", Vector2(0, 10))
+	_assert(room_elem.geometry.has("dimensions"), "walkable_room has dimensions geometry")
+	_assert(room_elem.properties.has("speed_factor"), "walkable_room has 'speed_factor' surface property")
+	var room_node: Node3D = MeshFactory.create_3d_node_for_element(room_elem)
+	_assert(room_node != null and room_node is Node3D, "MeshFactory built 3D node for walkable_room")
+	room_node.free()
+
+	# 4. obstacle_wall
+	var wall_entry := cat.get_entry("obstacle_wall")
+	_assert(wall_entry != null, "obstacle_wall registered in catalog")
+	var wall_elem := cat.create_element_instance("obstacle_wall", "wall_01", Vector2(10, 10))
+	_assert(wall_elem.properties.has("is_passable"), "obstacle_wall has 'is_passable' property")
+	var wall_node: Node3D = MeshFactory.create_3d_node_for_element(wall_elem)
+	_assert(wall_node != null and wall_node is Node3D, "MeshFactory built 3D node for obstacle_wall")
+	wall_node.free()
+
+	# 5. hybrid_portal
+	var portal_entry := cat.get_entry("hybrid_portal")
+	_assert(portal_entry != null, "hybrid_portal registered in catalog")
+	var portal_elem := cat.create_element_instance("hybrid_portal", "turnstile_01", Vector2(5, 5))
+	_assert(portal_elem.input_ports.size() >= 1 and portal_elem.output_ports.size() >= 1, "hybrid_portal has DES and ABM interface ports")
+	_assert(portal_elem.properties.has("gate_latency_sec"), "hybrid_portal has 'gate_latency_sec' property")
+	var portal_node: Node3D = MeshFactory.create_3d_node_for_element(portal_elem)
+	_assert(portal_node != null and portal_node is Node3D, "MeshFactory built 3D node for hybrid_portal")
+	portal_node.free()
+
+	# Procedural Agent Mannequin & Capsule Meshes
+	var mannequin: Node3D = MeshFactory.create_agent_mannequin_node()
+	_assert(mannequin != null and mannequin is Node3D, "MeshFactory created LOD 0 mannequin node")
+	mannequin.free()
+
+	var capsule_mesh: CapsuleMesh = MeshFactory.create_agent_capsule_mesh()
+	_assert(capsule_mesh != null and capsule_mesh is CapsuleMesh, "MeshFactory created LOD 1 capsule mesh")
+
+func test_agent_telemetry_2d_and_3d_visualization() -> void:
+	_tests_run += 1
+	print("\n[Suite 25: 2D/3D Agent Telemetry Rendering & Follow-Camera]")
+	var shell := AuthoringShell.new()
+	shell._ready()
+
+	# 1. Shell ABM UI Status
+	_assert(shell._btn_abm != null, "Authoring shell header contains '⚙ ABM Settings' button")
+	_assert(shell._abm_status_pill != null, "Authoring shell header contains ABM status pill")
+	_assert(shell._abm_status_pill.text.contains("OFF"), "ABM status pill initially displays '[○ ABM: OFF]'")
+
+	# Enable ABM in document and verify status pill updates
+	shell.doc_store.active_document.abm_config = {"enabled": true, "model_name": "SFM"}
+	shell.doc_store.active_document.simulation.mode = "hybrid"
+	shell._update_abm_status_pill()
+	_assert(shell._abm_status_pill.text.contains("SFM"), "ABM status pill reflects active '[● ABM: SFM]'")
+
+	# 2. Canvas 2D Agent Telemetry
+	var sample_agents: Array = [
+		{
+			"id": "agent_01",
+			"x": 5.0,
+			"y": 2.5,
+			"z": 0.0,
+			"vx": 1.2,
+			"vy": 0.3,
+			"speed": 1.23,
+			"r_body": 0.22,
+			"state": "walking"
+		},
+		{
+			"id": "agent_02",
+			"x": 8.0,
+			"y": 4.0,
+			"z": 0.0,
+			"vx": 0.1,
+			"vy": 0.05,
+			"speed": 0.11,
+			"r_body": 0.20,
+			"state": "queuing"
+		}
+	]
+
+	shell._canvas_2d.update_agent_telemetry(sample_agents)
+	_assert(shell._canvas_2d._live_agents.size() == 2, "2D Canvas received 2 live agents")
+	_assert(shell._canvas_2d._agent_trajectories.has("agent_01"), "2D Canvas tracks trajectory for agent_01")
+	_assert(shell._canvas_2d._agent_trajectories["agent_01"].size() >= 1, "agent_01 trajectory recorded position")
+
+	# 3. 3D Viewport Agent Telemetry
+	shell._viewport_3d.update_agent_telemetry(sample_agents)
+	_assert(shell._viewport_3d._agents_multimesh_instance != null, "3D Viewport has MultiMeshInstance3D for agents")
+	var mm: MultiMesh = shell._viewport_3d._agents_multimesh_instance.multimesh
+	_assert(mm != null and mm.instance_count == 2, "MultiMesh instance_count allocated for 2 agents")
+
+	# Check coordinate transform for agent_01:
+	# physical X=5.0 -> 3D X=5.0
+	# physical Y=2.5 -> 3D Z=-2.5
+	# physical Z=0.0 -> 3D Y=0.85
+	var xform: Transform3D = shell._viewport_3d.get_agent_transform_3d(0)
+	_assert(abs(xform.origin.x - 5.0) < 0.01, "Agent 01 3D X mapped to 5.0m")
+	_assert(abs(xform.origin.y - 0.85) < 0.01, "Agent 01 3D Y elevated to waist center 0.85m")
+	_assert(abs(xform.origin.z - (-2.5)) < 0.01, "Agent 01 3D Z mapped to -2.5m (SceneSpec Z-up to Godot Y-up)")
+
+	# 4. Follow-Camera Tracking
+	shell._viewport_3d.set_follow_camera(true, "agent_01")
+	_assert(shell._viewport_3d.is_following_agent, "Follow-camera mode enabled")
+	_assert(shell._viewport_3d.follow_agent_id == "agent_01", "Follow-camera tracking agent_01")
+
+	# Update telemetry again to trigger camera follow lerp
+	sample_agents[0]["x"] = 6.2
+	sample_agents[0]["y"] = 3.1
+	shell.update_agent_telemetry(sample_agents)
+	_assert(abs(shell._viewport_3d._camera_target.x - 6.2) < 0.01, "Follow-camera target updated to agent_01 physical coordinates")
+
+	# Disable follow camera
+	shell._viewport_3d.set_follow_camera(false)
+	_assert(not shell._viewport_3d.is_following_agent, "Follow-camera mode disabled cleanly")
+
+	shell.free()
+
 
 

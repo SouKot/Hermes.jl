@@ -1,10 +1,10 @@
 # Phase 7D: Checkpoint & Session Resume Handoff
 
-**Timestamp**: 2026-09-22T01:00:00-07:00  
+**Timestamp**: 2026-09-22T14:15:00-07:00  
 **Workspace**: `/run/media/sourabh/SANDISK-2TB/antigravity/ABM`  
 **Git Branch**: `main`  
-**Current Milestone**: Phase 7D-06, 7D-06A, 7D-07, and 7D-08 Completed & Accepted (100% Tests Passing, All 22 Suites Clean)  
-**Next Immediate Milestone**: Phase 7D-11 / Fast-Track Phase 7D-12 (Julia Compiler & Runtime Activation for Running DES Models)  
+**Current Milestone**: Phase 7D-06 through 7D-09 Completed & Accepted (100% Tests Passing, All 25 Suites Clean)  
+**Next Immediate Milestone**: Phase 7D-10 (Subgraphs, Hierarchical Grouping & Reusable Station Templates) or Phase 7D-11 / 7D-12 (Julia Compiler & Runtime Activation)  
 **Detailed Walkthrough**: [`walkthrough.md`](file:///home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/walkthrough.md)
 
 ---
@@ -36,15 +36,37 @@
    - No-code rule builder modal with live metric auto-discovery (`authoring_rule_builder.gd`).
    - Active simulation edit policy (`[🟢 LIVE]` vs `[🟡 RESTART]`).
 
-5. **Dock, Inspector & Floating Window Refinements (User Requested)**:
-   - **Streamlined Docked Inspector**: Removed exhaustive property dumps, 3D CAD dumps, and connected port chips. Displays only the entity ID, kind pill, `⛶ Open Floating Tabs (Right-Click)` button, primary operational parameter, compact $(X, Y, Z)$ coordinates, and quick actions (`Duplicate`, `Delete`).
-   - **~1cm Collapsible Docks**: Left and Right docks configured with `custom_minimum_size.x = 38` ($\approx 1\text{ cm}$) and `clip_contents = true`, enabling users to shrink sidebars to 38px to maximize canvas working area on any display size.
-   - **Floating Tabbed Properties Window (`authoring_floating_inspector.gd`)**:
-     - Opened via Right-Click on any machine block or via the `⛶` button. Draggable and non-modal.
-     - **Tab 0 (Process & DES)**: All operational parameters, statistical distributions, and live sparklines.
-     - **Tab 1 (Spatial / CAD)**: Length, Width, Height, Start/End Elevation, continuous Rotation, and $(X, Y, Z)$ position.
-     - **Tab 2 (Ports & Interfaces)**: Port display name editing, cardinality dropdown (`Single Link` / `Multi-Link`), chute buffer capacity SpinBox, handshake latency SpinBox, active connected wires routing list with individual `[Sever Wire]` and `[Disconnect All]` buttons, and dynamic bay expansion (`+ Infeed`, `+ Outfeed`, `- Remove Last`).
-     - **Tab 3 (Reliability & Rules)**: Failure rate, MTTR, and the No-Code Rule Builder.
+5. **Dock, Inspector & Floating Window Refinements**:
+   - **Streamlined Docked Inspector**: Displays only essential entity metadata, compact coordinates, and quick actions.
+   - **~1cm Collapsible Docks**: Left and Right docks configured with `custom_minimum_size.x = 38` ($\approx 1\text{ cm}$) and `clip_contents = true`.
+   - **Floating Tabbed Properties Window (`authoring_floating_inspector.gd`)**: 4 comprehensive tabs for Process & DES, Spatial / CAD, Ports & Interfaces, and Reliability & Rules.
+
+6. **Phase 7D-09 (ABM & Hybrid Multi-Paradigm Configuration & Agent Visualization)**:
+   - **Component Catalog Crowd & Hybrid Primitives**:
+     - `crowd_spawner` (Ingress): Continuous agent generation with spawn rate, target velocity, and arrival distribution.
+     - `exit_goal` (Egress): Destination doorway absorbing pedestrians with configurable width and removal policy.
+     - `walkable_room` (Concourse): Continuous walking surface with surface friction and navmesh flags.
+     - `obstacle_wall` (Pillars/Partitions): Architectural barriers repelling crowd agents.
+     - `hybrid_portal` (Turnstiles): Bidirectional conversion between discrete queue entities and continuous crowd agents.
+   - **Schema-Driven ABM & Hybrid Configuration Dialog (`authoring_abm_dialog.gd`)**:
+     - Model selector: Social Force Model (SFM), Optimal Reciprocal Collision Avoidance (ORCA), Hybrid Finite State Machine (HybridFSM), and Cellular Spatial Markov (CSM).
+     - Hardware Execution Backends: `Auto`, `CPU (Julia Multithreading)`, `GPU (CUDA/OneAPI Accelerators)`.
+     - Fallback policy (`allow` / `strict`).
+     - Calibrated presets (e.g. Standard, Dense Rush Hour, Emergency Evacuation) and dynamic parameter editing with real-time migration previews.
+     - Dynamic custom experimental parameters (`+ Add Custom Parameter`).
+     - Real-time header status pill (`[● ABM: SFM]` vs `[○ ABM: OFF]`).
+   - **2D Canvas Agent Visualization**:
+     - Dedicated `_agents_layer` between blocks and wires.
+     - Circular discs scaled to physical body radius $r_{\text{body}}$ ($20\text{ px/m}$).
+     - Dynamic speed/state color palette (free-flow green $\ge 1.0\text{ m/s}$, amber $0.35\text{--}1.0\text{ m/s}$, high-contact red $< 0.35\text{ m/s}$, queuing blue).
+     - Directional heading chevrons along velocity vectors $\vec{v}$.
+     - Fading trajectory ribbons and selection highlight rings.
+   - **3D Viewport Agent Visualization & Tracking**:
+     - High-performance GPU-instanced crowd rendering via `MultiMeshInstance3D` capsules (LOD 1) and procedural mannequin with foot contact shadow (LOD 0).
+     - Exact spatial mapping from SceneSpec Z-up to Godot 3D Y-up $(X \to X, Z+0.85 \to Y, -Y \to Z)$ and velocity heading yaw.
+     - Smooth "Follow Agent" camera tracking mode locking viewpoint onto any designated agent.
+   - **3D Procedural Mesh Factory Builders**:
+     - Procedural 3D models for all 5 crowd/hybrid elements (spawner volume, doorway, walkable room, barrier wall, turnstile bank).
 
 ---
 
@@ -52,11 +74,11 @@
 
 All automated test suites pass 100% with zero regressions:
 
-1. **Godot Headless Smoke Test (All 22 Suites Passing)**:
+1. **Godot Headless Smoke Test (All 25 Suites Passing)**:
    ```bash
    /home/sourabh/.local/bin/godot --headless --path godot --script res://tests/scenespec_authoring_shell_smoke.gd
    ```
-   - **Result**: `● ALL 22 TEST SUITES PASSED CLEANLY (Phase 7D-07 & 7D-08 & Floating Tabs Verified)`
+   - **Result**: `● ALL 25 TEST SUITES PASSED CLEANLY (Phase 7D-07, 7D-08, 7D-09 Verified)`
 
 2. **Master Phase 7D Acceptance Suite (12/12 Steps Passing)**:
    ```bash

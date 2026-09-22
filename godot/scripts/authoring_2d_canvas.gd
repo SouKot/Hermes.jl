@@ -42,8 +42,25 @@ var _wire_hovered_port: String = ""
 var _wire_is_compatible: bool = false
 var _wire_rejection_reason: String = ""
 var _wires_layer: Control = null
+var _agents_layer: Control = null
+var _active_agents: Array = []
+var _live_agents: Array:
+	get:
+		return _active_agents
+var _agent_trajectories: Dictionary = {} # agent_id -> Array[Vector2]
+var show_trajectories: bool = true
+var show_agent_vectors: bool = false
+var selected_agent_id: String = ""
 
-func _ensure_wires_layer() -> void:
+func _ensure_layers() -> void:
+	if _agents_layer == null:
+		_agents_layer = Control.new()
+		_agents_layer.name = "AgentsOverlay"
+		_agents_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_agents_layer.z_index = 8
+		_agents_layer.draw.connect(_on_agents_layer_draw)
+		add_child(_agents_layer)
+
 	if _wires_layer == null:
 		_wires_layer = Control.new()
 		_wires_layer.name = "WiresOverlay"
@@ -52,19 +69,44 @@ func _ensure_wires_layer() -> void:
 		_wires_layer.draw.connect(_on_wires_layer_draw)
 		add_child(_wires_layer)
 
+func _ensure_wires_layer() -> void:
+	_ensure_layers()
+
 func _redraw_all() -> void:
 	queue_redraw()
+	if _agents_layer != null and is_instance_valid(_agents_layer):
+		_agents_layer.queue_redraw()
 	if _wires_layer != null and is_instance_valid(_wires_layer):
 		_wires_layer.queue_redraw()
+
+func update_agent_telemetry(agents: Array) -> void:
+	_active_agents = agents
+	for a in agents:
+		if a is Dictionary:
+			var aid: String = str(a.get("id", ""))
+			if not aid.is_empty():
+				var px: float = float(a.get("x", 0.0))
+				var py: float = float(a.get("y", 0.0))
+				if a.has("position") and a["position"] is Array and a["position"].size() >= 2:
+					px = float(a["position"][0])
+					py = float(a["position"][1])
+				if not _agent_trajectories.has(aid):
+					_agent_trajectories[aid] = []
+				var arr: Array = _agent_trajectories[aid]
+				arr.append(Vector2(px, py))
+				if arr.size() > 25:
+					arr.pop_front()
+	if _agents_layer != null and is_instance_valid(_agents_layer):
+		_agents_layer.queue_redraw()
 
 func _init(p_store: DocumentStore = null) -> void:
 	doc_store = p_store
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	clip_contents = true
-	_ensure_wires_layer()
+	_ensure_layers()
 
 func _ready() -> void:
-	_ensure_wires_layer()
+	_ensure_layers()
 	if doc_store != null:
 		doc_store.document_loaded.connect(_on_document_reloaded)
 		doc_store.document_modified.connect(_on_document_modified)
@@ -72,9 +114,9 @@ func _ready() -> void:
 		rebuild_blocks()
 
 func rebuild_blocks() -> void:
-	_ensure_wires_layer()
+	_ensure_layers()
 	for child in get_children():
-		if child == _wires_layer:
+		if child == _wires_layer or child == _agents_layer:
 			continue
 		child.queue_free()
 	_block_nodes.clear()
@@ -641,6 +683,95 @@ func _draw() -> void:
 
 	# 2. CAD Floorplan Grid & Architectural Walls
 	_draw_cad_background()
+
+func _on_agents_layer_draw() -> void:
+	if _agents_layer == null or _active_agents.is_empty():
+		return
+
+	var m_scale: float = 20.0 * zoom_level
+
+	for agent in _active_agents:
+		if not (agent is Dictionary):
+			continue
+		var raw_pos = agent.get("position", [0.0, 0.0])
+		var px: float = 0.0
+		var py: float = 0.0
+		if agent.has("x") and agent.has("y"):
+			px = float(agent["x"])
+			py = float(agent["y"])
+		elif raw_pos is Array and raw_pos.size() >= 2:
+			px = float(raw_pos[0])
+			py = float(raw_pos[1])
+		elif raw_pos is Vector2 or raw_pos is Vector3:
+			px = raw_pos.x
+			py = raw_pos.y
+
+		var canvas_pos := pan_offset + Vector2(px, py) * m_scale
+		var r_body: float = float(agent.get("r_body", agent.get("radius", 0.20)))
+		var r_px: float = max(r_body * m_scale, 4.0)
+
+		# State & Speed Color Palette
+		var vel = agent.get("velocity", [0.0, 0.0])
+		var vx: float = 0.0
+		var vy: float = 0.0
+		if agent.has("vx") and agent.has("vy"):
+			vx = float(agent["vx"])
+			vy = float(agent["vy"])
+		elif vel is Array and vel.size() >= 2:
+			vx = float(vel[0])
+			vy = float(vel[1])
+		elif vel is Vector2 or vel is Vector3:
+			vx = vel.x
+			vy = vel.y
+
+		var speed: float = sqrt(vx * vx + vy * vy)
+		var state: String = str(agent.get("state", "walking"))
+
+		var col: Color = Color("#2ecc71") # free walking green
+		if state == "queuing":
+			col = Color("#3498db") # blue
+		elif speed < 0.35:
+			col = Color("#e74c3c") # blocked / high contact red
+		elif speed < 1.0:
+			col = Color("#f1c40f") # slow / congested amber
+
+		# 1. Trajectory Ribbon
+		if show_trajectories:
+			var t_points: PackedVector2Array = []
+			var aid: String = str(agent.get("id", ""))
+			if agent.has("trajectory") and agent["trajectory"] is Array and agent["trajectory"].size() > 1:
+				for tp in agent["trajectory"]:
+					if tp is Array and tp.size() >= 2:
+						t_points.append(pan_offset + Vector2(float(tp[0]), float(tp[1])) * m_scale)
+					elif tp is Vector2:
+						t_points.append(pan_offset + tp * m_scale)
+			elif not aid.is_empty() and _agent_trajectories.has(aid) and _agent_trajectories[aid].size() > 1:
+				for pt in _agent_trajectories[aid]:
+					t_points.append(pan_offset + pt * m_scale)
+			if t_points.size() > 1:
+				var trail_col := Color(col.r, col.g, col.b, 0.35)
+				_agents_layer.draw_polyline(t_points, trail_col, 1.5, true)
+
+		# 2. Physical Body Disc
+		_agents_layer.draw_circle(canvas_pos, r_px, col)
+		_agents_layer.draw_arc(canvas_pos, r_px, 0, TAU, 16, Color(0.05, 0.08, 0.12, 0.85), 1.2)
+
+		# 3. Directional Heading Chevron
+		if speed > 0.05:
+			var heading := Vector2(vx, vy).normalized()
+			var tip := canvas_pos + heading * (r_px * 0.85)
+			var left := canvas_pos - heading * (r_px * 0.4) + Vector2(-heading.y, heading.x) * (r_px * 0.5)
+			var right := canvas_pos - heading * (r_px * 0.4) - Vector2(-heading.y, heading.x) * (r_px * 0.5)
+			var chevron_pts: PackedVector2Array = [tip, left, right]
+			_agents_layer.draw_colored_polygon(chevron_pts, Color(0.05, 0.08, 0.12, 0.9))
+		else:
+			# Stationary concentric ring
+			_agents_layer.draw_circle(canvas_pos, r_px * 0.4, Color(0.05, 0.08, 0.12, 0.7))
+
+		# 4. Selected Agent Highlight Ring
+		var aid: String = str(agent.get("id", ""))
+		if aid == selected_agent_id and not aid.is_empty():
+			_agents_layer.draw_arc(canvas_pos, r_px + 3.0, 0, TAU, 24, Color("#00d2ff"), 2.0)
 
 func _on_wires_layer_draw() -> void:
 	if _wires_layer == null:

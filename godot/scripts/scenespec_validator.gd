@@ -14,7 +14,7 @@ const VALID_KIND_PAIRS := [
 	["control", "control"]
 ]
 
-const KNOWN_ABM_MODELS := ["SFM", "ORCA", "HybridFSM", "SocialForce", "RuleBased"]
+const KNOWN_ABM_MODELS := ["SFM", "ORCA", "HybridFSM", "CSM", "SocialForce", "RuleBased"]
 
 static func _prop(target: Variant, prop: String, default_val: Variant = null) -> Variant:
 	if target == null:

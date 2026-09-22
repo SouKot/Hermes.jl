@@ -12,6 +12,7 @@ const DiagnosticsPanel := preload("res://scripts/authoring_diagnostics_panel.gd"
 const Inspector := preload("res://scripts/authoring_inspector.gd")
 const RuleBuilder := preload("res://scripts/authoring_rule_builder.gd")
 const FloatingInspector := preload("res://scripts/authoring_floating_inspector.gd")
+const ABMDialog := preload("res://scripts/authoring_abm_dialog.gd")
 
 enum ViewMode { VIEW_2D, VIEW_3D }
 
@@ -54,6 +55,9 @@ var _inspector_panel: Inspector
 var _floating_inspector: FloatingInspector
 var _rule_builder: RuleBuilder
 var _diagnostics_panel: DiagnosticsPanel
+var _abm_dialog: ABMDialog
+var _btn_abm: Button
+var _abm_status_pill: Label
 
 # Backwards compatibility getters/setters
 var _inspector_container: VBoxContainer:
@@ -104,6 +108,7 @@ func _ready() -> void:
 	_update_view_toggle_ui()
 	_populate_catalog()
 	_populate_inspector()
+	_update_abm_status_pill()
 
 func _connect_signals() -> void:
 	doc_store.document_loaded.connect(_on_document_loaded)
@@ -199,6 +204,12 @@ func _build_ui() -> void:
 	)
 	add_child(_floating_inspector)
 
+	# 6. Floating / Modal ABM & Hybrid Configuration Dialog
+	_abm_dialog = ABMDialog.new(doc_store)
+	_abm_dialog.visible = false
+	_abm_dialog.closed.connect(func(): _abm_dialog.visible = false)
+	add_child(_abm_dialog)
+
 func _build_header() -> Control:
 	var panel := PanelContainer.new()
 	panel.custom_minimum_size.y = 52
@@ -272,6 +283,22 @@ func _build_header() -> Control:
 			_viewport_3d.frame_scene()
 	)
 	row.add_child(btn_frame)
+
+	row.add_child(VSeparator.new())
+
+	# ABM Status & Settings
+	_abm_status_pill = Label.new()
+	_abm_status_pill.text = "[○ ABM: OFF]"
+	_abm_status_pill.add_theme_font_size_override("font_size", 11)
+	_abm_status_pill.add_theme_color_override("font_color", MUTED)
+	row.add_child(_abm_status_pill)
+
+	_btn_abm = Button.new()
+	_btn_abm.text = "⚙ ABM Settings"
+	_btn_abm.pressed.connect(_on_abm_button_pressed)
+	row.add_child(_btn_abm)
+
+	row.add_child(VSeparator.new())
 
 	# TWO-VIEW SYSTEM TOGGLE BUTTONS
 	var toggle_box := HBoxContainer.new()
@@ -511,12 +538,14 @@ func _open_rule_builder(conn_id: String) -> void:
 
 func _on_document_loaded(doc: SceneTypes.SceneDocument) -> void:
 	_update_title()
+	_update_abm_status_pill()
 	_diagnostics_panel.update_diagnostics(doc_store.last_diagnostics, doc_store.is_document_valid)
 	_canvas_2d.rebuild_blocks()
 	_viewport_3d.rebuild_3d_scene()
 
 func _on_document_modified() -> void:
 	_update_title()
+	_update_abm_status_pill()
 	_diagnostics_panel.update_diagnostics(doc_store.last_diagnostics, doc_store.is_document_valid)
 	if _viewport_3d != null:
 		_viewport_3d.rebuild_3d_scene()
@@ -592,3 +621,36 @@ func _delete_element(eid: String) -> void:
 func _on_floating_properties_requested(elem_id: String, screen_pos: Vector2 = Vector2.ZERO) -> void:
 	if _floating_inspector != null:
 		_floating_inspector.open_for_element(elem_id, screen_pos)
+
+func _on_abm_button_pressed() -> void:
+	if _abm_dialog != null:
+		_abm_dialog.open()
+		var sz := _abm_dialog.custom_minimum_size
+		if size.x > sz.x and size.y > sz.y:
+			_abm_dialog.position = (size - sz) * 0.5
+		else:
+			_abm_dialog.position = Vector2(80, 50)
+		_abm_dialog.move_to_front()
+
+func _update_abm_status_pill() -> void:
+	if _abm_status_pill == null or doc_store == null or doc_store.active_document == null:
+		return
+	var doc: SceneTypes.SceneDocument = doc_store.active_document
+	var sim: Dictionary = doc.simulation if doc.simulation is Dictionary else {}
+	var mode: String = str(sim.get("mode", "des_only"))
+	var abm: Dictionary = doc.abm_config if doc.abm_config is Dictionary else {}
+	var enabled: bool = bool(abm.get("enabled", false))
+	var model: String = str(abm.get("model_name", "SFM")).to_upper()
+	if enabled or mode == "hybrid" or mode == "abm_only":
+		_abm_status_pill.text = "[● ABM: %s]" % model
+		_abm_status_pill.add_theme_color_override("font_color", ACCENT)
+	else:
+		_abm_status_pill.text = "[○ ABM: OFF]"
+		_abm_status_pill.add_theme_color_override("font_color", MUTED)
+
+func update_agent_telemetry(agents: Array) -> void:
+	if _canvas_2d != null and _canvas_2d.has_method("update_agent_telemetry"):
+		_canvas_2d.update_agent_telemetry(agents)
+	if _viewport_3d != null and _viewport_3d.has_method("update_agent_telemetry"):
+		_viewport_3d.update_agent_telemetry(agents)
+
