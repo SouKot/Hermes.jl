@@ -155,7 +155,13 @@ func rebuild_blocks() -> void:
 		)
 		b.element_resize_committed.connect(func(eid: String, dims: Vector3):
 			if doc_store != null:
-				doc_store.update_element_geometry(eid, dims)
+				var target_elem := doc_store.get_element(eid)
+				if target_elem != null and target_elem.transform != null:
+					var orig_dims: Vector3 = b._resize_start_dims
+					var orig_pos: Vector3 = b._resize_start_elem_pos
+					doc_store.update_element_geometry_and_position(eid, dims, target_elem.transform.position, orig_dims, orig_pos)
+				else:
+					doc_store.update_element_geometry(eid, dims)
 		)
 
 	# 2. Scoped Subgraphs (Compound nodes)

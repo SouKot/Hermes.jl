@@ -61,6 +61,9 @@ func _init() -> void:
 	test_versioned_template_packaging_and_instantiation()
 	test_compound_boundary_ports_and_detach_policy()
 
+	# Usability Refinement: 4-Corner Invisible Resizing & Tightened Port Hit
+	test_four_corner_resizing_and_tightened_port_hit()
+
 	print("============================================================")
 	if _failures == 0:
 		print("● ALL %d TEST SUITES PASSED CLEANLY (Phase 7D-07 through 7D-10 Verified)" % _tests_run)
@@ -1628,6 +1631,136 @@ func test_compound_boundary_ports_and_detach_policy() -> void:
 		_assert(rewired_conn.target_element == cloned_q_id, "External connection re-routed target to cloned queue element")
 
 	shell.free()
+
+func test_four_corner_resizing_and_tightened_port_hit() -> void:
+	_tests_run += 1
+	print("\n[Suite 29: 4-Corner Invisible Resizing, Accurate Port Hit & Hover Feedback]")
+	var store := DocumentStore.new()
+	var cat := Catalog.new()
+	var e1 := cat.create_element_instance("conveyor", "conv_4c", Vector2(10.0, 10.0))
+	e1.geometry["dimensions"] = [6.0, 4.0, 0.8]
+	store.add_element(e1)
+
+	var block := BlockNode.new(e1)
+	block._ready()
+
+	# 1. Test 4-Corner Hit-Testing
+	var c_tl := block._hit_test_resize_corner(Vector2(5.0, 5.0))
+	_assert(c_tl == BlockNode.ResizeCorner.TOP_LEFT, "Top-left corner hit test resolves TOP_LEFT")
+
+	var c_tr := block._hit_test_resize_corner(Vector2(block.size.x - 5.0, 5.0))
+	_assert(c_tr == BlockNode.ResizeCorner.TOP_RIGHT, "Top-right corner hit test resolves TOP_RIGHT")
+
+	var c_br := block._hit_test_resize_corner(Vector2(block.size.x - 5.0, block.size.y - 5.0))
+	_assert(c_br == BlockNode.ResizeCorner.BOTTOM_RIGHT, "Bottom-right corner hit test resolves BOTTOM_RIGHT")
+
+	var c_bl := block._hit_test_resize_corner(Vector2(5.0, block.size.y - 5.0))
+	_assert(c_bl == BlockNode.ResizeCorner.BOTTOM_LEFT, "Bottom-left corner hit test resolves BOTTOM_LEFT")
+
+	var c_center := block._hit_test_resize_corner(block.size * 0.5)
+	_assert(c_center == BlockNode.ResizeCorner.NONE, "Center body hit test returns NONE for resize corner")
+
+	# 2. Test Tightened Port Hit Testing
+	var port_pos := block.get_port_local_position("flow_in")
+	var hit_exact := block._hit_test_port(port_pos)
+	_assert(hit_exact == "flow_in", "Port hit test passes at exact socket center")
+
+	var hit_near := block._hit_test_port(port_pos + Vector2(4.0, 0.0))
+	_assert(hit_near == "flow_in", "Port hit test passes within socket circle (4px offset)")
+
+	var hit_far := block._hit_test_port(port_pos + Vector2(12.0, 0.0))
+	_assert(hit_far == "", "Port hit test cleanly rejects clicks outside tight socket zone (12px offset)")
+
+	# 3. Test Hover Cursor Shapes
+	var mm_tl := InputEventMouseMotion.new()
+	mm_tl.position = Vector2(5.0, 5.0)
+	block._gui_input(mm_tl)
+	_assert(block.mouse_default_cursor_shape == Control.CURSOR_FDIAGSIZE, "Hover over Top-Left corner shows CURSOR_FDIAGSIZE")
+
+	var mm_tr := InputEventMouseMotion.new()
+	mm_tr.position = Vector2(block.size.x - 5.0, 5.0)
+	block._gui_input(mm_tr)
+	_assert(block.mouse_default_cursor_shape == Control.CURSOR_BDIAGSIZE, "Hover over Top-Right corner shows CURSOR_BDIAGSIZE")
+
+	var mm_br := InputEventMouseMotion.new()
+	mm_br.position = Vector2(block.size.x - 5.0, block.size.y - 5.0)
+	block._gui_input(mm_br)
+	_assert(block.mouse_default_cursor_shape == Control.CURSOR_FDIAGSIZE, "Hover over Bottom-Right corner shows CURSOR_FDIAGSIZE")
+
+	var mm_bl := InputEventMouseMotion.new()
+	mm_bl.position = Vector2(5.0, block.size.y - 5.0)
+	block._gui_input(mm_bl)
+	_assert(block.mouse_default_cursor_shape == Control.CURSOR_BDIAGSIZE, "Hover over Bottom-Left corner shows CURSOR_BDIAGSIZE")
+
+	var mm_port := InputEventMouseMotion.new()
+	mm_port.position = port_pos
+	block._gui_input(mm_port)
+	_assert(block.mouse_default_cursor_shape == Control.CURSOR_POINTING_HAND, "Hover over Port shows CURSOR_POINTING_HAND")
+
+	var mm_center := InputEventMouseMotion.new()
+	mm_center.position = block.size * 0.5
+	block._gui_input(mm_center)
+	_assert(block.mouse_default_cursor_shape == Control.CURSOR_ARROW, "Hover over body shows CURSOR_ARROW")
+
+	# 4. Interactive Resizing Simulations
+	# 4A. Bottom-Right Resize: Top-Left anchored at (10.0, 10.0)
+	var mb_down_br := InputEventMouseButton.new()
+	mb_down_br.button_index = MOUSE_BUTTON_LEFT
+	mb_down_br.pressed = true
+	mb_down_br.position = Vector2(block.size.x - 5.0, block.size.y - 5.0)
+	mb_down_br.global_position = mb_down_br.position
+	block._gui_input(mb_down_br)
+	_assert(block._resizing and block._active_resize_corner == BlockNode.ResizeCorner.BOTTOM_RIGHT, "Bottom-right click initiates resizing")
+
+	var mm_drag_br := InputEventMouseMotion.new()
+	mm_drag_br.global_position = mb_down_br.global_position + Vector2(20.0, 20.0) # +1.0m length, +1.0m width
+	block._gui_input(mm_drag_br)
+
+	var br_dims := block._get_physical_dimensions()
+	_assert(abs(br_dims.x - 7.0) < 0.05, "Bottom-Right drag expanded length to 7.0m (+1.0m)")
+	_assert(abs(br_dims.y - 5.0) < 0.05, "Bottom-Right drag expanded width to 5.0m (+1.0m)")
+	_assert(abs(e1.transform.position.x - 10.0) < 0.01 and abs(e1.transform.position.y - 10.0) < 0.01, "Top-Left origin stays anchored at (10.0, 10.0)")
+
+	var mb_up := InputEventMouseButton.new()
+	mb_up.button_index = MOUSE_BUTTON_LEFT
+	mb_up.pressed = false
+	block._gui_input(mb_up)
+	_assert(not block._resizing, "Releasing mouse commits resize")
+
+	# 4B. Top-Left Resize: Bottom-Right anchored at (10 + 7, 10 + 5) = (17.0, 15.0)
+	# Drag Top-Left outward by -20px (-1.0m) in X and -20px (-1.0m) in Y
+	var mb_down_tl := InputEventMouseButton.new()
+	mb_down_tl.button_index = MOUSE_BUTTON_LEFT
+	mb_down_tl.pressed = true
+	mb_down_tl.position = Vector2(5.0, 5.0)
+	mb_down_tl.global_position = mb_down_tl.position
+	block._gui_input(mb_down_tl)
+	_assert(block._resizing and block._active_resize_corner == BlockNode.ResizeCorner.TOP_LEFT, "Top-left click initiates resizing")
+
+	var mm_drag_tl := InputEventMouseMotion.new()
+	mm_drag_tl.global_position = mb_down_tl.global_position - Vector2(20.0, 20.0) # -20px in X and Y (drag outwards)
+	block._gui_input(mm_drag_tl)
+
+	var tl_dims := block._get_physical_dimensions()
+	_assert(abs(tl_dims.x - 8.0) < 0.05, "Top-Left drag expanded length to 8.0m (+1.0m)")
+	_assert(abs(tl_dims.y - 6.0) < 0.05, "Top-Left drag expanded width to 6.0m (+1.0m)")
+	_assert(abs(e1.transform.position.x - 9.0) < 0.05, "Origin shifted by -1.0m in X to 9.0m")
+	_assert(abs(e1.transform.position.y - 9.0) < 0.05, "Origin shifted by -1.0m in Y to 9.0m")
+	var opp_corner_x: float = e1.transform.position.x + tl_dims.x
+	var opp_corner_y: float = e1.transform.position.y + tl_dims.y
+	_assert(abs(opp_corner_x - 17.0) < 0.05 and abs(opp_corner_y - 15.0) < 0.05, "Opposite Bottom-Right corner stays strictly anchored at (17.0, 15.0)")
+	block._gui_input(mb_up)
+
+	# 5. Test Atomic Undo of Geometry and Position
+	store.update_element_geometry_and_position("conv_4c", tl_dims, e1.transform.position, Vector3(6.0, 4.0, 0.8), Vector3(10.0, 10.0, 0.0))
+	var did_undo := store.undo()
+	_assert(did_undo, "Undo transaction succeeded for corner resize")
+	var restored_e1 := store.get_element("conv_4c")
+	_assert(abs(restored_e1.geometry["dimensions"][0] - 6.0) < 0.01, "Undo restored dimensions length back to 6.0m")
+	_assert(abs(restored_e1.geometry["dimensions"][1] - 4.0) < 0.01, "Undo restored dimensions width back to 4.0m")
+	_assert(abs(restored_e1.transform.position.x - 10.0) < 0.01 and abs(restored_e1.transform.position.y - 10.0) < 0.01, "Undo restored origin position back to (10.0, 10.0)")
+
+	block.free()
 
 
 

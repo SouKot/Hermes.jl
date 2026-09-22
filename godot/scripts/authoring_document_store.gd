@@ -374,6 +374,22 @@ func update_element_position(elem_id: String, new_pos: Vector3) -> bool:
 	document_modified.emit()
 	return true
 
+func update_element_geometry_and_position(elem_id: String, new_dims: Vector3, new_pos: Vector3, orig_dims: Vector3 = Vector3.ZERO, orig_pos: Vector3 = Vector3.ZERO) -> bool:
+	var elem := get_element(elem_id)
+	if elem == null:
+		return false
+	if orig_dims != Vector3.ZERO and orig_pos != Vector3.ZERO:
+		elem.geometry["dimensions"] = [orig_dims.x, orig_dims.y, orig_dims.z]
+		elem.transform.position = Vector3(orig_pos.x, orig_pos.y, orig_pos.z)
+		elem.editor.graph_position = Vector2(orig_pos.x * 20.0, orig_pos.y * 20.0)
+	_record_undo()
+	elem.geometry["dimensions"] = [max(0.1, new_dims.x), max(0.1, new_dims.y), max(0.05, new_dims.z)]
+	elem.transform.position = Vector3(new_pos.x, new_pos.y, max(0.0, new_pos.z))
+	elem.editor.graph_position = Vector2(new_pos.x * 20.0, new_pos.y * 20.0)
+	validate()
+	document_modified.emit()
+	return true
+
 func add_connection(conn: SceneTypes.SceneConnection) -> void:
 	_record_undo()
 	active_document.connections.append(conn)

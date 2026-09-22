@@ -51,9 +51,21 @@ var is_multi_selected: bool = false
 var hovered_port_id: String = ""
 var _dragging: bool = false
 var _drag_offset: Vector2 = Vector2.ZERO
+enum ResizeCorner {
+	NONE,
+	TOP_LEFT,
+	TOP_RIGHT,
+	BOTTOM_RIGHT,
+	BOTTOM_LEFT
+}
+
 var _resizing: bool = false
+var _active_resize_corner: ResizeCorner = ResizeCorner.NONE
 var _resize_start_mouse: Vector2 = Vector2.ZERO
+var _resize_start_global_mouse: Vector2 = Vector2.ZERO
 var _resize_start_dims: Vector3 = Vector3.ZERO
+var _resize_start_node_pos: Vector2 = Vector2.ZERO
+var _resize_start_elem_pos: Vector3 = Vector3.ZERO
 
 var _port_sockets: Dictionary = {} # port_id -> { "pos": Vector2, "kind": String, "is_output": bool, "dir": String, "name": String }
 
@@ -414,11 +426,23 @@ func _gui_input(event: InputEvent) -> void:
 					accept_event()
 					return
 
-				# 3. Check if clicked on resize handle (when selected)
-				if is_selected and _hit_test_resize_handle(mb.position):
+				# 3. Check if clicked on any of the 4 resize corners
+				var hit_corner := _hit_test_resize_corner(mb.position)
+				if hit_corner != ResizeCorner.NONE:
 					_resizing = true
+					_active_resize_corner = hit_corner
 					_resize_start_mouse = mb.position
+					_resize_start_global_mouse = mb.global_position if mb.global_position != Vector2.ZERO else (position + mb.position)
 					_resize_start_dims = _get_physical_dimensions()
+					_resize_start_node_pos = position
+					if element != null and element.transform != null:
+						_resize_start_elem_pos = Vector3(float(element.transform.position[0]), float(element.transform.position[1]), float(element.transform.position[2]))
+					elif subgraph != null and subgraph.transform != null:
+						_resize_start_elem_pos = Vector3(float(subgraph.transform.position[0]), float(subgraph.transform.position[1]), float(subgraph.transform.position[2]))
+					else:
+						_resize_start_elem_pos = Vector3.ZERO
+					if not is_selected:
+						block_selected.emit(nid)
 					accept_event()
 					return
 
@@ -430,6 +454,7 @@ func _gui_input(event: InputEvent) -> void:
 			else:
 				if _resizing:
 					_resizing = false
+					_active_resize_corner = ResizeCorner.NONE
 					element_resize_committed.emit(nid, _get_physical_dimensions())
 					accept_event()
 				elif _dragging:
@@ -454,15 +479,65 @@ func _gui_input(event: InputEvent) -> void:
 	elif event is InputEventMouseMotion:
 		var mm := event as InputEventMouseMotion
 		if _resizing:
-			var dx := mm.position.x - _resize_start_mouse.x
-			var dy := mm.position.y - _resize_start_mouse.y
+			var mouse_pos: Vector2 = mm.global_position if mm.global_position != Vector2.ZERO else (position + mm.position)
+			var global_delta: Vector2 = mouse_pos - _resize_start_global_mouse
+			var canvas_scale: float = max(scale.x, 0.01)
+
+			var local_delta: Vector2 = (global_delta / canvas_scale).rotated(-rotation)
+			var delta_len_m: float = local_delta.x / 20.0
+			var delta_wid_m: float = local_delta.y / 20.0
+
 			var min_l: float = custom_minimum_size.x / 20.0
 			var min_w: float = custom_minimum_size.y / 20.0
-			var new_len: float = max(min_l, snapped(_resize_start_dims.x + (dx / 20.0), 0.1))
-			var new_wid: float = max(min_w, snapped(_resize_start_dims.y + (dy / 20.0), 0.1))
+
+			var new_len: float = _resize_start_dims.x
+			var new_wid: float = _resize_start_dims.y
+			var delta_origin_local := Vector2.ZERO
+
+			match _active_resize_corner:
+				ResizeCorner.BOTTOM_RIGHT:
+					new_len = max(min_l, snapped(_resize_start_dims.x + delta_len_m, 0.1))
+					new_wid = max(min_w, snapped(_resize_start_dims.y + delta_wid_m, 0.1))
+					delta_origin_local = Vector2.ZERO
+
+				ResizeCorner.BOTTOM_LEFT:
+					new_len = max(min_l, snapped(_resize_start_dims.x - delta_len_m, 0.1))
+					new_wid = max(min_w, snapped(_resize_start_dims.y + delta_wid_m, 0.1))
+					var dl: float = new_len - _resize_start_dims.x
+					delta_origin_local = Vector2(-dl, 0.0)
+
+				ResizeCorner.TOP_RIGHT:
+					new_len = max(min_l, snapped(_resize_start_dims.x + delta_len_m, 0.1))
+					new_wid = max(min_w, snapped(_resize_start_dims.y - delta_wid_m, 0.1))
+					var dw: float = new_wid - _resize_start_dims.y
+					delta_origin_local = Vector2(0.0, -dw)
+
+				ResizeCorner.TOP_LEFT:
+					new_len = max(min_l, snapped(_resize_start_dims.x - delta_len_m, 0.1))
+					new_wid = max(min_w, snapped(_resize_start_dims.y - delta_wid_m, 0.1))
+					var dl: float = new_len - _resize_start_dims.x
+					var dw: float = new_wid - _resize_start_dims.y
+					delta_origin_local = Vector2(-dl, -dw)
+
 			if element != null and element.geometry.has("dimensions"):
 				element.geometry["dimensions"][0] = new_len
 				element.geometry["dimensions"][1] = new_wid
+				if delta_origin_local != Vector2.ZERO and element.transform != null:
+					var dpos := delta_origin_local.rotated(rotation)
+					element.transform.position.x = snapped(_resize_start_elem_pos.x + dpos.x, 0.05)
+					element.transform.position.y = snapped(_resize_start_elem_pos.y + dpos.y, 0.05)
+					element.editor.graph_position = Vector2(element.transform.position.x * 20.0, element.transform.position.y * 20.0)
+			elif subgraph != null and subgraph.transform != null:
+				if delta_origin_local != Vector2.ZERO:
+					var dpos := delta_origin_local.rotated(rotation)
+					subgraph.transform.position.x = snapped(_resize_start_elem_pos.x + dpos.x, 0.05)
+					subgraph.transform.position.y = snapped(_resize_start_elem_pos.y + dpos.y, 0.05)
+					subgraph.editor.graph_position = Vector2(subgraph.transform.position.x * 20.0, subgraph.transform.position.y * 20.0)
+
+			if delta_origin_local != Vector2.ZERO:
+				var d_pos_px: Vector2 = (delta_origin_local * 20.0).rotated(rotation) * canvas_scale
+				position = _resize_start_node_pos + d_pos_px
+
 			refresh_from_element()
 			element_resized.emit(nid, Vector3(new_len, new_wid, _resize_start_dims.z))
 			accept_event()
@@ -471,20 +546,50 @@ func _gui_input(event: InputEvent) -> void:
 			block_moved.emit(nid, position)
 			accept_event()
 		else:
-			if is_selected and _hit_test_resize_handle(mm.position):
+			var corner := _hit_test_resize_corner(mm.position)
+			if corner == ResizeCorner.TOP_LEFT or corner == ResizeCorner.BOTTOM_RIGHT:
 				mouse_default_cursor_shape = Control.CURSOR_FDIAGSIZE
+			elif corner == ResizeCorner.TOP_RIGHT or corner == ResizeCorner.BOTTOM_LEFT:
+				mouse_default_cursor_shape = Control.CURSOR_BDIAGSIZE
+			elif not _hit_test_port(mm.position).is_empty():
+				mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 			else:
 				mouse_default_cursor_shape = Control.CURSOR_ARROW
 
+func _get_corner_size() -> float:
+	return clamp(min(size.x, size.y) * 0.25, 10.0, 16.0)
+
+func _hit_test_resize_corner(local_pos: Vector2) -> ResizeCorner:
+	var c := _get_corner_size()
+	if local_pos.x < 0.0 or local_pos.y < 0.0 or local_pos.x > size.x or local_pos.y > size.y:
+		return ResizeCorner.NONE
+
+	var in_left := local_pos.x <= c
+	var in_right := local_pos.x >= (size.x - c)
+	var in_top := local_pos.y <= c
+	var in_bottom := local_pos.y >= (size.y - c)
+
+	if in_left and in_top:
+		return ResizeCorner.TOP_LEFT
+	elif in_right and in_top:
+		return ResizeCorner.TOP_RIGHT
+	elif in_right and in_bottom:
+		return ResizeCorner.BOTTOM_RIGHT
+	elif in_left and in_bottom:
+		return ResizeCorner.BOTTOM_LEFT
+	return ResizeCorner.NONE
+
 func _hit_test_resize_handle(local_pos: Vector2) -> bool:
-	return Rect2(size.x - 20.0, size.y - 20.0, 20.0, 20.0).has_point(local_pos)
+	return _hit_test_resize_corner(local_pos) != ResizeCorner.NONE
 
 func hit_test_port(local_pos: Vector2) -> String:
 	return _hit_test_port(local_pos)
 
 func _hit_test_port(local_pos: Vector2) -> String:
+	var socket_r: float = 6.5 if size.y >= 70.0 else clamp(size.y * 0.12, 4.0, 6.0)
+	var max_dist: float = socket_r + 2.5
 	var best_id := ""
-	var best_dist := 16.0
+	var best_dist := max_dist
 	for port_id in _port_sockets.keys():
 		var spos: Vector2 = _port_sockets[port_id]["pos"]
 		var d: float = local_pos.distance_to(spos)
@@ -696,12 +801,6 @@ func _draw() -> void:
 		_draw_port_btn_pair(Rect2(size.x - 62.0, btn_y, 13.0, btn_h), Rect2(size.x - 48.0, btn_y, 13.0, btn_h), COLOR_SIGNAL, col_btn_sub)
 		_draw_port_btn_pair(Rect2(size.x - 30.0, btn_y, 13.0, btn_h), Rect2(size.x - 16.0, btn_y, 13.0, btn_h), COLOR_METRIC, col_btn_sub)
 
-	# 7. Draw resize grip handle at bottom-right when selected
-	if is_selected:
-		var grip_col := BORDER_SELECTED
-		draw_line(Vector2(size.x - 14, size.y - 4), Vector2(size.x - 4, size.y - 14), grip_col, 1.5)
-		draw_line(Vector2(size.x - 9, size.y - 4), Vector2(size.x - 4, size.y - 9), grip_col, 1.5)
-		draw_line(Vector2(size.x - 4, size.y - 4), Vector2(size.x - 4, size.y - 4), grip_col, 1.5)
 
 func _draw_port_btn_pair(r_add: Rect2, r_sub: Rect2, add_col: Color, sub_col: Color) -> void:
 	# Add button [+]
