@@ -68,6 +68,11 @@
    - **3D Procedural Mesh Factory Builders**:
      - Procedural 3D models for all 5 crowd/hybrid elements (spawner volume, doorway, walkable room, barrier wall, turnstile bank).
 
+7. **Inspector OptionButton Empty Options Fix**:
+   - Resolved Godot runtime crash `Index p_which = 0 is out of bounds` when selecting or instantiating catalog items.
+   - Standardized catalog schemas (`spawn_distribution`, `conversion_mode`) to use `enum_options` with fallback to `options`.
+   - Added safety guards in `authoring_inspector.gd` and `authoring_floating_inspector.gd` verifying `opt.item_count > 0` before selecting.
+
 ---
 
 ## 2. Test Verification & Evidence
