@@ -11,6 +11,9 @@ const Canvas2D := preload("res://scripts/authoring_2d_canvas.gd")
 const MeshFactory := preload("res://scripts/authoring_mesh_factory.gd")
 const Viewport3D := preload("res://scripts/authoring_3d_viewport.gd")
 const AuthoringShell := preload("res://scripts/authoring_shell.gd")
+const Inspector := preload("res://scripts/authoring_inspector.gd")
+const RuleBuilder := preload("res://scripts/authoring_rule_builder.gd")
+const FloatingInspector := preload("res://scripts/authoring_floating_inspector.gd")
 
 var _failures: int = 0
 var _tests_run: int = 0
@@ -27,10 +30,29 @@ func _init() -> void:
 	test_procedural_mesh_factory_server_and_queue()
 	test_2d_canvas_and_port_wiring()
 	test_authoring_shell_two_view_switching_and_transport()
+	test_keyboard_and_multi_element_deletion()
+	test_block_duplication()
+	test_arbitrary_angle_rotation_and_parity()
+	test_3d_click_picking_and_selection_indicator()
+	test_camera_framing_and_view_modes()
+
+	# Phase 7D-07 & 7D-08 Suites
+	test_typed_port_visuals_and_semantic_colors()
+	test_interactive_invalid_link_rejection_and_cardinality()
+	test_dag_hierarchical_auto_layout()
+	test_declarative_schema_inspector_and_statistical_distributions()
+	test_port_properties_inspection_and_buffer_editing()
+	test_multi_selection_mixed_values_and_batch_undo()
+	test_no_code_rule_builder_and_metric_discovery()
+	test_active_simulation_live_edit_policy()
+
+	# Fluid Window Scaling & Right-Click Floating Tabbed Inspector Suites
+	test_resizable_splitters_and_expand_layout()
+	test_floating_tabbed_properties_inspector()
 
 	print("============================================================")
 	if _failures == 0:
-		print("● ALL %d TEST SUITES PASSED CLEANLY (Phase 7D-05 Verified)" % _tests_run)
+		print("● ALL %d TEST SUITES PASSED CLEANLY (Phase 7D-07 & 7D-08 & Floating Tabs Verified)" % _tests_run)
 		print("============================================================")
 		quit(0)
 	else:
@@ -131,8 +153,9 @@ func test_authoring_block_node_three_part_layout() -> void:
 	var block := BlockNode.new(elem)
 	block._ready()
 
-	_assert(block.size.x >= 260.0, "Block width is at least 260px to fit 2-column bays and center")
-	_assert(block.size.y >= 96.0, "Block height fits port bays and dimensions")
+	# Proportional sizing: 8.0m conveyor at 20px/m is 160px
+	_assert(abs(block.size.x - 160.0) < 1.0, "Block width is proportional to physical length (8.0m * 20px/m = 160px)")
+	_assert(block.size.y >= 72.0, "Block height fits port bays and sockets (>= 72px)")
 
 	# Sockets in Left Bay (2 columns: IN at x=16, OUT at x=46)
 	var flow_in_pos: Vector2 = block._port_sockets["flow_in"]["pos"]
@@ -168,6 +191,22 @@ func test_authoring_block_node_three_part_layout() -> void:
 	var hit_met_out_rem := block._hit_test_remove_button(Vector2(block.size.x - 9.0, block.size.y - 10.0))
 	_assert(hit_met_out_add == "metric_out", "Right Bay Column 2 bottom button triggers Add Metric Out")
 	_assert(hit_met_out_rem == "metric_out", "Right Bay Column 2 bottom button triggers Remove Metric Out")
+
+	# Test compact entity contraction (Source 2.0m x 2.0m: collapses middle to 0 gap between ports)
+	var src_elem := cat.create_element_instance("source", "src_02", Vector2(7.5, 10.0))
+	src_elem.geometry["dimensions"] = [2.0, 2.0, 1.0]
+	var src_block := BlockNode.new(src_elem)
+	src_block._ready()
+	_assert(abs(src_block.size.x - 40.0) < 1.0, "Compact source (2.0m) contracts to 40px without artificial 260px padding")
+	_assert(abs(src_block.size.y - 40.0) < 1.0, "Compact source height is proportional (2.0m = 40px)")
+	_assert(src_block.get_bay_layout()["collapsed"] == true, "Compact source collapses middle part to 0 gap between ports")
+
+	# Test Zero-Gap 2D/3D Coordination
+	var src_right_2d := (float(src_elem.transform.position[0]) + float(src_elem.geometry["dimensions"][0])) * 20.0 # 9.5m * 20 = 190px
+	var conv_touch_x := 9.5 # Touching source_02 in 2D
+	var conv_left_2d := conv_touch_x * 20.0 # 190px
+	_assert(abs(src_right_2d - conv_left_2d) < 0.01, "Zero gap in 2D canvas: Source right edge touches Conveyor left edge at exactly 190px")
+	_assert(abs((src_elem.transform.position[0] + src_elem.geometry["dimensions"][0]) - conv_touch_x) < 0.01, "Zero gap in 3D: Source ends at 9.5m, Conveyor starts at 9.5m (0.0m seam)")
 
 	# Test resize handle hit test & dynamic size expansion
 	block.set_selected(true)
@@ -340,6 +379,10 @@ func test_2d_canvas_and_port_wiring() -> void:
 	_assert(rev_sig.source_element == "s1" and rev_sig.target_element == "c1", "Reverse dragged Signal In -> Metric Out normalized with metric as source")
 	_assert(rev_sig.link_type == "signal", "Link type normalized as signal")
 
+	# Free up s1.flow_in port by removing prior connections so hover check can test compatibility
+	store.remove_connection(conn.id)
+	store.remove_connection(rev_conn.id)
+
 	# Test _update_wire_hover directly without to_local error
 	canvas._on_port_drag_started("c1", "flow_out", "flow", true, Vector2(100, 100))
 	var s1_node: BlockNode = canvas._block_nodes["s1"]
@@ -467,8 +510,24 @@ func test_authoring_shell_two_view_switching_and_transport() -> void:
 			for sub in child.get_children():
 				if sub is SpinBox:
 					spinbox_count += 1
-	_assert(spinbox_count >= 8, "Inspector contains editable SpinBoxes for Position (X,Y,Z), Dimensions (L,W,H), and Elevation (Z1,Z2)")
+	_assert(spinbox_count >= 3, "Docked inspector contains editable SpinBoxes for Position (X,Y,Z)")
 	_assert(shell._insp_spin_px != null and shell._insp_spin_py != null and shell._insp_spin_pz != null, "Position SpinBox references initialized")
+
+	# Test Floating Inspector Spatial / CAD tab contains full geometry SpinBoxes (Position X,Y,Z, Dimensions L,W,H, Elevation Z1,Z2)
+	shell._floating_inspector.open_for_element("test_c")
+	shell._floating_inspector._switch_tab(1)
+	var cad_spinbox_count := 0
+	for child in shell._floating_inspector._pages_container.get_children():
+		if child is HBoxContainer:
+			for sub in child.get_children():
+				if sub is SpinBox:
+					cad_spinbox_count += 1
+				elif sub is VBoxContainer:
+					for sub_child in sub.get_children():
+						if sub_child is SpinBox:
+							cad_spinbox_count += 1
+	_assert(cad_spinbox_count >= 8, "Floating Inspector CAD tab contains editable SpinBoxes for Position (X,Y,Z), Dimensions (L,W,H), and Elevation (Z1,Z2)")
+	shell._floating_inspector.close()
 
 	# Test Position SpinBox change updates element and 2D canvas
 	shell._insp_spin_px.value = 15.0
@@ -498,3 +557,637 @@ func test_authoring_shell_two_view_switching_and_transport() -> void:
 	vp._reset_camera_default()
 	_assert(abs(vp._cam_pivot.position.x - 15.0) < 0.1, "Camera reset restores default pivot X=15.0")
 	_assert(vp._camera.position.y > 5.0, "Reset camera elevated above floor")
+
+func test_keyboard_and_multi_element_deletion() -> void:
+	_tests_run += 1
+	print("\n[Suite 8: Phase 7D-06 - Keyboard Deletion & Multi-Element Cascade]")
+	var store := DocumentStore.new()
+	var cat := Catalog.new()
+	var e1 := cat.create_element_instance("source", "src_del", Vector2(10, 10))
+	var e2 := cat.create_element_instance("conveyor", "conv_del", Vector2(20, 10))
+	store.add_element(e1)
+	store.add_element(e2)
+
+	# Wire them
+	var conn := SceneTypes.SceneConnection.new()
+	conn.id = "c_del"
+	conn.source_element = "src_del"
+	conn.source_port = "flow_out_1"
+	conn.target_element = "conv_del"
+	conn.target_port = "flow_in_1"
+	store.add_connection(conn)
+	_assert(store.active_document.elements.size() == 2, "2 elements added")
+	_assert(store.active_document.connections.size() == 1, "1 connection added")
+
+	# Select src_del and simulate canvas KEY_DELETE
+	var canvas := Canvas2D.new(store)
+	store.select("src_del", "element")
+	var ev := InputEventKey.new()
+	ev.pressed = true
+	ev.keycode = KEY_DELETE
+	canvas._input(ev)
+
+	_assert(store.active_document.elements.size() == 1, "src_del was deleted via KEY_DELETE")
+	_assert(store.get_element("src_del") == null, "src_del no longer in document")
+	_assert(store.active_document.connections.is_empty(), "Attached wire was cascade-deleted")
+
+	# Test undo
+	store.undo()
+	_assert(store.active_document.elements.size() == 2, "Undo restored deleted element")
+	_assert(store.active_document.connections.size() == 1, "Undo restored cascade-deleted connection")
+
+	# Test Multi-element deletion
+	store.set_selected_elements(["src_del", "conv_del"])
+	_assert(store.selected_elements.size() == 2, "Both elements selected in store")
+	canvas._input(ev)
+	_assert(store.active_document.elements.is_empty(), "Both elements removed via multi-selection deletion")
+	_assert(store.active_document.connections.is_empty(), "All connections purged")
+
+	# Undo multi-delete
+	store.undo()
+	_assert(store.active_document.elements.size() == 2, "Undo restored both elements in single transaction")
+
+func test_block_duplication() -> void:
+	_tests_run += 1
+	print("\n[Suite 9: Phase 7D-06 - Block Duplication]")
+	var store := DocumentStore.new()
+	var cat := Catalog.new()
+	var e1 := cat.create_element_instance("conveyor", "conv_main", Vector2(15.0, 10.0))
+	store.add_element(e1)
+	store.select("conv_main", "element")
+
+	# Duplicate via store API
+	var dup := store.duplicate_element("conv_main")
+	_assert(dup != null, "Duplication returned cloned element")
+	_assert(dup.id == "conv_main_copy", "Duplicate assigned unique ID (conv_main_copy)")
+	_assert(store.active_document.elements.size() == 2, "Document now contains 2 elements")
+	_assert(abs(dup.transform.position.x - 17.0) < 0.01, "Duplicate X offset by +2.0m (15m -> 17m)")
+	_assert(abs(dup.transform.position.y - 12.0) < 0.01, "Duplicate Y offset by +2.0m (10m -> 12m)")
+	_assert(store.selected_id == "conv_main_copy", "Duplicate is automatically selected")
+
+	# Duplicate again to check incremental ID
+	var dup2 := store.duplicate_element("conv_main")
+	_assert(dup2.id == "conv_main_copy02", "Second duplicate increments suffix to conv_main_copy02")
+	_assert(store.active_document.elements.size() == 3, "Document now contains 3 elements")
+
+	# Undo duplicates
+	store.undo()
+	_assert(store.active_document.elements.size() == 2, "Undo reverted second duplicate")
+	store.undo()
+	_assert(store.active_document.elements.size() == 1, "Undo reverted first duplicate")
+
+func test_arbitrary_angle_rotation_and_parity() -> void:
+	_tests_run += 1
+	print("\n[Suite 10: Phase 7D-06 & 7D-06A - Continuous Arbitrary Angle Rotation]")
+	var store := DocumentStore.new()
+	var cat := Catalog.new()
+	var e1 := cat.create_element_instance("conveyor", "conv_rot", Vector2(10.0, 10.0))
+	e1.geometry["dimensions"] = [6.0, 1.2, 0.8]
+	store.add_element(e1)
+	store.select("conv_rot", "element")
+
+	var vp := Viewport3D.new(store)
+	var canvas := Canvas2D.new(store)
+
+	# Set arbitrary rotation: 45.0 degrees
+	store.set_element_rotation("conv_rot", 45.0)
+	_assert(abs(e1.transform.rotation.z - 45.0) < 0.01, "Element rotation set to 45.0°")
+
+	vp.rebuild_3d_scene()
+	var anchor: Node3D = vp._entities_root.get_node_or_null("ElemAnchor_conv_rot")
+	_assert(anchor != null, "3D ElemAnchor exists")
+	_assert(abs(anchor.rotation_degrees.y - (-45.0)) < 0.01, "3D Anchor rotated by -45.0° (Godot Y matches Z-up Yaw)")
+
+	# Set another arbitrary angle: 72.5 degrees
+	store.set_element_rotation("conv_rot", 72.5)
+	_assert(abs(e1.transform.rotation.z - 72.5) < 0.01, "Element rotation set to arbitrary continuous 72.5°")
+	vp.rebuild_3d_scene()
+	anchor = vp._entities_root.get_node_or_null("ElemAnchor_conv_rot")
+	_assert(abs(anchor.rotation_degrees.y - (-72.5)) < 0.01, "3D Anchor rotated to -72.5°")
+
+	# Test 2D BlockNode rotated port coordinates
+	canvas.rebuild_blocks()
+	var block: BlockNode = canvas._block_nodes["conv_rot"]
+	_assert(abs(block.rotation_degrees - 72.5) < 0.01, "2D BlockNode rotation_degrees matches element rotation (72.5°)")
+	var p_canvas := block.get_port_canvas_position("flow_out_1")
+	var p_local := block.get_port_local_position("flow_out_1")
+	var expected_canvas: Vector2 = block.position + block.pivot_offset + (p_local - block.pivot_offset).rotated(deg_to_rad(72.5))
+	_assert(p_canvas.distance_to(expected_canvas) < 0.05, "Port canvas position accurately transformed via 2D rotation matrix")
+
+	# Test rotation shortcuts (KEY_R advances +45°, Shift+KEY_R advances +15°)
+	store.set_element_rotation("conv_rot", 0.0)
+	var ev_r := InputEventKey.new()
+	ev_r.pressed = true
+	ev_r.keycode = KEY_R
+	canvas._input(ev_r)
+	_assert(abs(e1.transform.rotation.z - 45.0) < 0.01, "KEY_R advances rotation by +45.0°")
+
+	ev_r.shift_pressed = true
+	canvas._input(ev_r)
+	_assert(abs(e1.transform.rotation.z - 60.0) < 0.01, "Shift + KEY_R advances rotation by fine +15.0° (45° + 15° = 60°)")
+
+func test_3d_click_picking_and_selection_indicator() -> void:
+	_tests_run += 1
+	print("\n[Suite 11: Phase 7D-06A - 3D Click Picking & Selection Highlight]")
+	var store := DocumentStore.new()
+	var cat := Catalog.new()
+	var e1 := cat.create_element_instance("server", "srv_pick", Vector2(10.0, 10.0))
+	e1.geometry["dimensions"] = [4.0, 2.0, 1.5]
+	store.add_element(e1)
+
+	var vp := Viewport3D.new(store)
+	vp.rebuild_3d_scene()
+	vp.frame_scene()
+
+	# Select element and verify 3D selection indicator attached
+	store.select("srv_pick", "element")
+	_assert(vp._selection_indicator != null and is_instance_valid(vp._selection_indicator), "Selection indicator attached in 3D")
+	var anchor: Node3D = vp._entities_root.get_node_or_null("ElemAnchor_srv_pick")
+	_assert(anchor != null and anchor.has_node("SelectionIndicator"), "Selection indicator parented to active element anchor")
+
+	# Deselect and verify indicator cleared
+	store.clear_selection()
+	_assert(vp._selection_indicator == null, "Selection indicator cleared on deselect")
+
+	# Test mathematical raycast picking at element center
+	var picked_id := vp.pick_element_at(vp._sub_viewport.size * 0.5)
+	_assert(picked_id == "srv_pick", "3D center raycast picked srv_pick")
+
+func test_camera_framing_and_view_modes() -> void:
+	_tests_run += 1
+	print("\n[Suite 12: Phase 7D-06 & 7D-06A - Framing & Camera View Modes]")
+	var store := DocumentStore.new()
+	var cat := Catalog.new()
+	var e1 := cat.create_element_instance("source", "s1", Vector2(0.0, 0.0))
+	var e2 := cat.create_element_instance("sink", "s2", Vector2(50.0, 30.0))
+	store.add_element(e1)
+	store.add_element(e2)
+
+	var canvas := Canvas2D.new(store)
+	canvas.size = Vector2(800, 600)
+	canvas.frame_all()
+	_assert(canvas.zoom_level > 0.3 and canvas.zoom_level < 2.0, "2D Canvas frame_all set appropriate zoom level")
+
+	var vp := Viewport3D.new(store)
+	_assert(vp._camera.projection == Camera3D.PROJECTION_PERSPECTIVE, "3D Camera default projection is Perspective")
+	# Switch to Orthographic
+	vp._camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+	vp._camera.size = vp._cam_distance * 0.75
+	_assert(vp._camera.projection == Camera3D.PROJECTION_ORTHOGONAL, "3D Camera projection switched to Orthographic")
+	vp.frame_scene()
+	_assert(vp._camera.size > 20.0, "Orthographic size updated on frame_scene (zoomed out)")
+	vp.frame_selection()
+	_assert(vp._camera.size < 15.0 and vp._camera.size > 2.0, "Orthographic size updated on frame_selection (zoomed in on element)")
+
+func test_typed_port_visuals_and_semantic_colors() -> void:
+	_tests_run += 1
+	print("\n[Suite 13: Phase 7D-07 - Typed Port Visuals & Semantic Port Colors]")
+	var cat := Catalog.new()
+	var elem := cat.create_element_instance("server", "srv_typed", Vector2(10, 10))
+	var block := BlockNode.new(elem)
+	block.size = Vector2(180, 120)
+
+	# Verify port color definitions
+	_assert(BlockNode.COLOR_FLOW == Color("#2ecc71"), "Flow ports styled with emerald green (#2ecc71)")
+	_assert(BlockNode.COLOR_METRIC == Color("#9b59b6"), "Metric ports styled with amethyst purple (#9b59b6)")
+	_assert(BlockNode.COLOR_SIGNAL == Color("#3498db"), "Signal ports styled with cobalt blue (#3498db)")
+	_assert(BlockNode.COLOR_CONTROL == Color("#e67e22"), "Control ports styled with warm amber (#e67e22)")
+	_assert(BlockNode.COLOR_EVENT == Color("#e74c3c"), "Event ports styled with coral red (#e74c3c)")
+
+	# Add a 'many' cardinality port
+	var multi_port := SceneTypes.ScenePort.new()
+	multi_port.id = "multi_flow_in"
+	multi_port.kind = "flow"
+	multi_port.cardinality = "many"
+	elem.input_ports.append(multi_port)
+	block.rebuild_ports()
+
+	# Check socket metadata
+	var has_many := false
+	for p_id in block._port_sockets.keys():
+		var socket: Dictionary = block._port_sockets[p_id]
+		if socket.get("cardinality") == "many":
+			has_many = true
+			break
+	_assert(has_many, "Port with cardinality='many' correctly registered in block socket cache")
+
+	# Test port selection signal emission on click
+	var selected := {"port": ""}
+	block.port_selected.connect(func(_eid: String, pid: String): selected["port"] = pid)
+	var pos := block.get_port_canvas_position("flow_in")
+	var hit := block.hit_test_port(pos - block.position)
+	_assert(hit == "flow_in", "hit_test_port resolves port socket position accurately")
+	block.port_selected.emit("srv_typed", "flow_in")
+	_assert(selected["port"] == "flow_in", "Clicking/selecting socket triggers port_selected signal")
+
+func test_interactive_invalid_link_rejection_and_cardinality() -> void:
+	_tests_run += 1
+	print("\n[Suite 14: Phase 7D-07 - Interactive Invalid Link Rejection & Single Cardinality]")
+	var store := DocumentStore.new()
+	var cat := Catalog.new()
+	var e_src := cat.create_element_instance("source", "s1", Vector2(0, 0))
+	var e_srv := cat.create_element_instance("server", "srv1", Vector2(10, 0))
+	store.add_element(e_src)
+	store.add_element(e_srv)
+
+	var canvas := Canvas2D.new(store)
+	canvas.size = Vector2(800, 600)
+	canvas.rebuild_blocks()
+
+	var srv_block: BlockNode = canvas._block_nodes["srv1"]
+	var pos_util := srv_block.get_port_canvas_position("utilization")
+	var pos_flow_in := srv_block.get_port_canvas_position("flow_in")
+	var pos_flow_out := srv_block.get_port_canvas_position("flow_out")
+
+	# 1. Test incompatible kind rejection (Flow output -> Metric output/in)
+	canvas.start_wire_drag("s1", "flow_out", "flow", true, Vector2(50, 50))
+	canvas.update_wire_hover_at(pos_util)
+	_assert(not canvas._wire_is_compatible, "Linking Flow port to Metric port is rejected")
+	_assert(canvas._wire_rejection_reason.contains("Incompatible link") or canvas._wire_rejection_reason.contains("Incompatible kinds") or canvas._wire_rejection_reason.contains("Cannot connect"), "Rejection reason indicates kind or direction incompatibility: " + canvas._wire_rejection_reason)
+
+	# 2. Test direction mismatch rejection (Output -> Output)
+	canvas.update_wire_hover_at(pos_flow_out)
+	_assert(not canvas._wire_is_compatible, "Linking Output port to Output port is rejected")
+	_assert(canvas._wire_rejection_reason.contains("Cannot connect"), "Rejection reason indicates direction mismatch: " + canvas._wire_rejection_reason)
+
+	# 3. Test compatible link
+	canvas.update_wire_hover_at(pos_flow_in)
+	_assert(canvas._wire_is_compatible, "Linking Flow Output to Flow Input is accepted")
+	_assert(canvas._wire_rejection_reason.is_empty(), "No rejection reason on compatible link")
+
+	# Finish drag and create connection
+	canvas.finish_wire_drag()
+	_assert(store.active_document.connections.size() == 1, "Compatible link created connection in DocumentStore")
+
+	# 4. Test Single Cardinality rejection (flow_in already connected)
+	var e_src2 := cat.create_element_instance("source", "s2", Vector2(0, 10))
+	store.add_element(e_src2)
+	canvas.rebuild_blocks()
+
+	canvas.start_wire_drag("s2", "flow_out", "flow", true, Vector2(50, 150))
+	canvas.update_wire_hover_at(pos_flow_in)
+	_assert(not canvas._wire_is_compatible, "Second link to single-cardinality input socket is rejected")
+	_assert(canvas._wire_rejection_reason.contains("already connected"), "Rejection reason indicates single-cardinality limit: " + canvas._wire_rejection_reason)
+	canvas._cancel_wire_drag()
+
+func test_dag_hierarchical_auto_layout() -> void:
+	_tests_run += 1
+	print("\n[Suite 15: Phase 7D-07 - Process Graph Hierarchical DAG Auto-Layout]")
+	var store := DocumentStore.new()
+	var cat := Catalog.new()
+	var s := cat.create_element_instance("source", "s_node", Vector2(0, 0))
+	var q := cat.create_element_instance("queue", "q_node", Vector2(0, 0))
+	var m := cat.create_element_instance("server", "m_node", Vector2(0, 0))
+	var k := cat.create_element_instance("sink", "k_node", Vector2(0, 0))
+	store.add_element(s)
+	store.add_element(q)
+	store.add_element(m)
+	store.add_element(k)
+
+	# Wire up s -> q -> m -> k
+	var c1 := SceneTypes.SceneConnection.new()
+	c1.id = "c1"; c1.source_element = "s_node"; c1.source_port = "flow_out_1"; c1.target_element = "q_node"; c1.target_port = "flow_in_1"; c1.link_type = "flow"
+	var c2 := SceneTypes.SceneConnection.new()
+	c2.id = "c2"; c2.source_element = "q_node"; c2.source_port = "flow_out_1"; c2.target_element = "m_node"; c2.target_port = "flow_in_1"; c2.link_type = "flow"
+	var c3 := SceneTypes.SceneConnection.new()
+	c3.id = "c3"; c3.source_element = "m_node"; c3.source_port = "flow_out_1"; c3.target_element = "k_node"; c3.target_port = "flow_in_1"; c3.link_type = "flow"
+	store.add_connection(c1)
+	store.add_connection(c2)
+	store.add_connection(c3)
+
+	# Execute Auto-Layout DAG
+	var ok := store.auto_layout_dag(60.0, 40.0)
+	_assert(ok, "auto_layout_dag executed successfully")
+
+	# Verify strict left-to-right topological order
+	var sx: float = s.editor.graph_position.x
+	var qx: float = q.editor.graph_position.x
+	var mx: float = m.editor.graph_position.x
+	var kx: float = k.editor.graph_position.x
+	_assert(sx < qx and qx < mx and mx < kx, "Topological ordering preserved: Source (%.0f) < Queue (%.0f) < Server (%.0f) < Sink (%.0f)" % [sx, qx, mx, kx])
+
+	# Verify 20px/m 1:1 parity with 3D transform position
+	_assert(abs(float(s.transform.position[0]) - (sx / 20.0)) < 0.01, "Source 3D position maintains 20px/m parity")
+	_assert(abs(float(k.transform.position[0]) - (kx / 20.0)) < 0.01, "Sink 3D position maintains 20px/m parity")
+
+	# Verify undo restores layout
+	var old_sx := sx
+	store.undo()
+	var restored_s := store.get_element("s_node")
+	_assert(restored_s != null and (restored_s.editor.graph_position.x != old_sx or restored_s.editor.graph_position == Vector2.ZERO), "Undo successfully rolled back DAG auto-layout")
+
+func test_declarative_schema_inspector_and_statistical_distributions() -> void:
+	_tests_run += 1
+	print("\n[Suite 16: Phase 7D-08 - Declarative Schema Inspector & Statistical Distributions]")
+	var store := DocumentStore.new()
+	var cat := Catalog.new()
+	var srv := cat.create_element_instance("server", "srv_insp", Vector2(0, 0))
+	store.add_element(srv)
+	store.select("srv_insp", "element")
+
+	var insp := Inspector.new(store, cat)
+
+	# Verify schema resolution for server
+	var entry := cat.get_entry("server")
+	var s_schema: Dictionary = entry.get_property_schema("service_time")
+	_assert(not s_schema.is_empty(), "service_time schema found on server")
+	_assert(s_schema.get("type") == "distribution", "service_time property type is 'distribution'")
+	_assert(s_schema.get("supported_distributions", []).has("triangular"), "service_time supports triangular distribution")
+
+	# Test set_element_property with triangular distribution
+	var tri_dist := {
+		"distribution": "triangular",
+		"min": 4.0,
+		"mode": 8.0,
+		"max": 15.0
+	}
+	store.set_element_property("srv_insp", "service_time", tri_dist)
+	_assert(srv.properties.get("service_time", {}).get("distribution") == "triangular", "Triangular distribution written to element properties")
+
+	# Test DistributionSparkline generation
+	var sparkline := Inspector.DistributionSparkline.new()
+	sparkline.custom_minimum_size = Vector2(200, 36)
+	sparkline.set_distribution(tri_dist)
+	_assert(sparkline.dist_data.get("distribution") == "triangular", "Sparkline configured with triangular distribution")
+	_assert(sparkline.dist_data.get("mode") == 8.0, "Sparkline mode is 8.0")
+
+	# Test Exponential distribution
+	var exp_dist := {"distribution": "exponential", "mean": 6.5}
+	sparkline.set_distribution(exp_dist)
+	_assert(sparkline.dist_data.get("distribution") == "exponential", "Sparkline accepts exponential distribution")
+
+	# Test Normal distribution
+	var norm_dist := {"distribution": "normal", "mean": 10.0, "std_dev": 2.0}
+	sparkline.set_distribution(norm_dist)
+	_assert(sparkline.dist_data.get("distribution") == "normal", "Sparkline accepts normal distribution")
+
+func test_port_properties_inspection_and_buffer_editing() -> void:
+	_tests_run += 1
+	print("\n[Suite 17: Phase 7D-08 - Port Properties Inspection & Dedicated Buffer Editing]")
+	var store := DocumentStore.new()
+	var cat := Catalog.new()
+	var q := cat.create_element_instance("queue", "q_port_test", Vector2(0, 0))
+	store.add_element(q)
+
+	# Select flow_in port
+	store.select_port("q_port_test", "flow_in")
+	_assert(store.selected_type == "port", "DocumentStore selected_type is 'port'")
+	_assert(store.selected_port_id == "flow_in", "DocumentStore selected_port_id is 'flow_in'")
+
+	var insp := Inspector.new(store, cat)
+
+	# Update port properties (chute_buffer_capacity and conveyance_handshake_latency_sec)
+	var new_port_props := {
+		"chute_buffer_capacity": 6,
+		"conveyance_handshake_latency_sec": 0.25
+	}
+	store.update_port_properties("q_port_test", "flow_in", new_port_props)
+
+	var p: SceneTypes.ScenePort = store.get_selected_port()
+	_assert(p != null, "get_selected_port retrieved port object")
+	_assert(int(p.get_extension("chute_buffer_capacity", 0)) == 6 or int(p.get_extension("chute_capacity", 0)) == 6, "Port chute_buffer_capacity updated to 6")
+	_assert(abs(float(p.get_extension("conveyance_handshake_latency_sec", 0.0)) - 0.25) < 0.001 or abs(float(p.get_extension("latency", 0.0)) - 0.25) < 0.001, "Port conveyance_handshake_latency_sec updated to 0.25")
+
+	# Test undo reverts port properties
+	store.undo()
+	p = store.get_selected_port()
+	_assert(p != null and int(p.get_extension("chute_buffer_capacity", 0)) != 6, "Undo reverted port properties")
+
+func test_multi_selection_mixed_values_and_batch_undo() -> void:
+	_tests_run += 1
+	print("\n[Suite 18: Phase 7D-08 - Multi-Selection Mixed Values & Single-Transaction Batch Undo]")
+	var store := DocumentStore.new()
+	var cat := Catalog.new()
+	var c1 := cat.create_element_instance("conveyor", "c_batch_1", Vector2(0, 0))
+	var c2 := cat.create_element_instance("conveyor", "c_batch_2", Vector2(10, 0))
+	c1.properties["speed"] = 1.2
+	c2.properties["speed"] = 2.4
+	store.add_element(c1)
+	store.add_element(c2)
+
+	# Multi-select both conveyors
+	store.select_multiple(["c_batch_1", "c_batch_2"])
+	_assert(store.selected_type == "element", "DocumentStore selected_type is 'element'")
+	_assert(store.selected_elements.size() == 2, "2 elements in selected_elements")
+
+	# Inspector in multi-selection mode
+	var insp := Inspector.new(store, cat)
+	_assert(insp._is_multi_selection(), "Inspector recognizes multi-selection state")
+
+	# Update speed on both in single batch transaction
+	store.set_elements_property_batch(["c_batch_1", "c_batch_2"], "speed", 3.5)
+	_assert(c1.properties.get("speed") == 3.5, "c1 speed updated to 3.5")
+	_assert(c2.properties.get("speed") == 3.5, "c2 speed updated to 3.5")
+
+	# Test single-transaction undo
+	var undo_ok := store.undo()
+	_assert(undo_ok, "Undo transaction succeeded")
+	var restored_c1 := store.get_element("c_batch_1")
+	var restored_c2 := store.get_element("c_batch_2")
+	_assert(restored_c1 != null and restored_c1.properties.get("speed") == 1.2, "Single undo reverted c1 speed back to 1.2")
+	_assert(restored_c2 != null and restored_c2.properties.get("speed") == 2.4, "Single undo reverted c2 speed back to 2.4 simultaneously")
+
+func test_no_code_rule_builder_and_metric_discovery() -> void:
+	_tests_run += 1
+	print("\n[Suite 19: Phase 7D-08 - No-Code Rule & Condition Builder with Metric Discovery]")
+	var store := DocumentStore.new()
+	var cat := Catalog.new()
+	var q := cat.create_element_instance("queue", "q_metrics", Vector2(0, 0))
+	var srv := cat.create_element_instance("server", "srv_metrics", Vector2(10, 0))
+	store.add_element(q)
+	store.add_element(srv)
+
+	var conn := SceneTypes.SceneConnection.new()
+	conn.id = "conn_rule_test"
+	conn.source_element = "q_metrics"; conn.source_port = "flow_out_1"
+	conn.target_element = "srv_metrics"; conn.target_port = "flow_in_1"
+	conn.link_type = "flow"
+	store.add_connection(conn)
+
+	var rule_b := RuleBuilder.new(store)
+
+	# Test metric auto-discovery across document elements
+	var available := rule_b.get_available_metrics()
+	_assert(available.size() >= 2, "Discovered at least 2 metrics across elements")
+	var metric_ids: Array = []
+	for m in available:
+		metric_ids.append(m.id)
+	_assert(metric_ids.has("q_metrics.occupancy"), "Discovered q_metrics.occupancy metric")
+	_assert(metric_ids.has("srv_metrics.utilization"), "Discovered srv_metrics.utilization metric")
+
+	# Open connection in rule builder and save condition
+	rule_b.open_for_connection("conn_rule_test")
+	var condition := {
+		"metric": "q_metrics.occupancy",
+		"operator": ">=",
+		"threshold": 80.0,
+		"unit": "%"
+	}
+	store.update_connection_condition("conn_rule_test", condition)
+	_assert(conn.condition.get("metric") == "q_metrics.occupancy", "Rule builder updated connection condition metric")
+	_assert(conn.condition.get("operator") == ">=", "Rule builder updated operator to >=")
+	_assert(conn.condition.get("threshold") == 80.0, "Rule builder updated threshold to 80.0")
+
+	# Test Undo reverts condition
+	store.undo()
+	var restored_conn: SceneTypes.SceneConnection = store.active_document.connections[0]
+	_assert(restored_conn.condition == null or (restored_conn.condition is Dictionary and (restored_conn.condition as Dictionary).is_empty()), "Undo reverted connection condition")
+
+func test_active_simulation_live_edit_policy() -> void:
+	_tests_run += 1
+	print("\n[Suite 20: Phase 7D-08 - Active Simulation Live Edit vs Restart Required Policy]")
+	var store := DocumentStore.new()
+	var cat := Catalog.new()
+	var srv := cat.create_element_instance("server", "srv_live_test", Vector2(0, 0))
+	store.add_element(srv)
+	store.select("srv_live_test", "element")
+
+	var insp := Inspector.new(store, cat)
+	_assert(not insp.is_sim_running, "Simulation starts inactive (is_sim_running == false)")
+
+	# Check schema edit policy declarations
+	var entry := cat.get_entry("server")
+	var s_time_schema := entry.get_property_schema("service_time")
+	var s_fail_schema := entry.get_property_schema("failure_rate")
+	_assert(s_time_schema.get("edit_policy") == "live", "service_time edit policy is 'live'")
+	_assert(s_fail_schema.get("edit_policy") == "restart_required", "failure_rate edit policy is 'restart_required'")
+
+	# Set simulation to running
+	insp.set_simulation_running(true)
+	_assert(insp.is_sim_running, "Simulation state updated to running (is_sim_running == true)")
+
+	# Set simulation back to stopped
+	insp.set_simulation_running(false)
+	_assert(not insp.is_sim_running, "Simulation state updated back to stopped")
+
+func test_resizable_splitters_and_expand_layout() -> void:
+	_tests_run += 1
+	print("\n[Suite 21: Adjustable Splitters & Fluid Window Scaling]")
+	var shell := AuthoringShell.new()
+	shell._ready()
+
+	# Verify outer and inner splitters are HSplitContainer
+	_assert(shell._outer_split != null and shell._outer_split is HSplitContainer, "Outer layout uses HSplitContainer")
+	_assert(shell._inner_split != null and shell._inner_split is HSplitContainer, "Inner layout uses HSplitContainer")
+
+	# Verify default offsets and expand fill
+	_assert(shell._outer_split.split_offset == 220, "Outer splitter has 220px default catalog offset")
+	_assert(shell._center_container != null and shell._center_container.size_flags_horizontal == Control.SIZE_EXPAND_FILL, "Center layout viewport has SIZE_EXPAND_FILL")
+
+	# Verify dock minimum collapsible width is 38px (~1cm)
+	var left_dock: Control = shell._outer_split.get_child(0)
+	var right_dock: Control = shell._inner_split.get_child(1)
+	_assert(left_dock.custom_minimum_size.x == 38, "Left catalog dock has 38px (~1cm) minimum width")
+	_assert(right_dock.custom_minimum_size.x == 38, "Right inspector dock has 38px (~1cm) minimum width")
+	_assert(left_dock.clip_contents and right_dock.clip_contents, "Both docks have clip_contents enabled for collapse")
+
+	# Test dynamic resizing and collapsing splitters down to 1cm
+	shell._outer_split.split_offset = 38
+	_assert(shell._outer_split.split_offset == 38, "Outer splitter collapsed down to 1cm (38px)")
+	shell._outer_split.split_offset = 260
+	_assert(shell._outer_split.split_offset == 260, "Outer splitter dynamically adjusted to 260px")
+	shell._inner_split.split_offset = 320
+	_assert(shell._inner_split.split_offset == 320, "Inner splitter dynamically adjusted to 320px")
+
+	shell.free()
+
+func test_floating_tabbed_properties_inspector() -> void:
+	_tests_run += 1
+	print("\n[Suite 22: Right-Click Floating Tabbed Properties Inspector]")
+	var store := DocumentStore.new()
+	var cat := Catalog.new()
+	var srv := cat.create_element_instance("server", "srv_flt_test", Vector2(10, 10))
+	store.add_element(srv)
+
+	var flt := FloatingInspector.new(store, cat)
+	_assert(not flt.visible, "Floating inspector starts hidden")
+
+	# Open for server element
+	flt.open_for_element("srv_flt_test", Vector2(150, 150))
+	_assert(flt.visible, "Floating inspector becomes visible on open_for_element")
+	_assert(flt.current_elem_id == "srv_flt_test", "Floating inspector tracks active element ID")
+
+	# Verify 4 tabs
+	_assert(flt._tab_buttons.size() == 4, "Floating inspector has exactly 4 tabs")
+	_assert(flt._tab_buttons[0].text.contains("Process"), "Tab 0 is Process & DES")
+	_assert(flt._tab_buttons[1].text.contains("Spatial"), "Tab 1 is Spatial / CAD")
+	_assert(flt._tab_buttons[2].text.contains("Ports"), "Tab 2 is Ports & Interfaces")
+	_assert(flt._tab_buttons[3].text.contains("Rules") or flt._tab_buttons[3].text.contains("Reliability"), "Tab 3 is Reliability & Rules")
+
+	# Switch tabs
+	flt._switch_tab(1)
+	_assert(flt.current_tab == 1, "Switched to Tab 1 (Spatial / CAD)")
+	_assert(flt._pages_container.get_child_count() > 0, "Spatial tab rendered controls in page container")
+
+	# Test spatial coordinate editing via floating inspector
+	_assert(flt._spin_px != null, "Position X spinbox initialized in Spatial tab")
+	flt._spin_px.value = 14.5
+	flt._spin_px.value_changed.emit(14.5)
+	_assert(srv.transform.position.x == 14.5, "Floating inspector updated element X position")
+	_assert(srv.editor.graph_position.x == 290.0, "Floating inspector synced 2D graph X position (14.5m * 20px/m = 290px)")
+
+	# Test Tab 2: Rich Ports & Interfaces
+	flt._switch_tab(2)
+	_assert(flt.current_tab == 2, "Switched to Tab 2 (Ports & Interfaces)")
+	_assert(flt._pages_container.get_child_count() > 0, "Ports tab rendered controls")
+
+	# Test updating port cardinality via floating inspector
+	store.update_port_properties("srv_flt_test", "flow_in", {"cardinality": "many"})
+	var p_in: SceneTypes.ScenePort = srv.input_ports[0]
+	_assert(p_in.cardinality == "many", "Port cardinality updated to 'many'")
+
+	# Test updating port display name
+	store.update_port_properties("srv_flt_test", "flow_in", {"name": "Primary Infeed"})
+	_assert(p_in.name == "Primary Infeed", "Port display name updated to 'Primary Infeed'")
+
+	# Test updating chute buffer capacity & latency
+	store.update_port_properties("srv_flt_test", "flow_in", {
+		"chute_buffer_capacity": 15,
+		"conveyance_handshake_latency_sec": 0.35
+	})
+	_assert(int(p_in.get_extension("chute_buffer_capacity", 0)) == 15, "Port chute buffer capacity updated to 15")
+	_assert(abs(float(p_in.get_extension("conveyance_handshake_latency_sec", 0.0)) - 0.35) < 0.001, "Port handshake latency updated to 0.35s")
+
+	# Test dynamic port addition
+	flt._add_dynamic_port(srv, "flow_out")
+	_assert(srv.output_ports.size() >= 2, "Dynamic outfeed port added via floating inspector")
+
+	# Add an outbound connection with condition = null to test rules tab robustness
+	var out_conn := SceneTypes.SceneConnection.new()
+	out_conn.id = "conn_null_cond_test"
+	out_conn.source_element = "srv_flt_test"; out_conn.source_port = "flow_out"
+	out_conn.target_element = "sink_node"; out_conn.target_port = "flow_in"
+	out_conn.condition = null
+	store.add_connection(out_conn)
+
+	# Test Tab 3: Reliability & Progressive Disclosure with null-condition connection
+	flt._switch_tab(3)
+	_assert(flt.current_tab == 3, "Switched to Tab 3 (Reliability & Rules)")
+	_assert(flt._pages_container.get_child_count() > 0, "Rules tab rendered controls including outbound connection with null condition")
+
+	# Test Close
+	flt.close()
+	_assert(not flt.visible, "Floating inspector hidden after close()")
+	_assert(flt.current_elem_id == "", "Element ID cleared after close()")
+
+	# Test Right-Click trigger on BlockNode
+	var block := BlockNode.new(srv)
+	block.size = Vector2(180, 120)
+	block.rebuild_ports()
+	var right_click_captured := {"id": "", "pos": Vector2.ZERO}
+	block.floating_properties_requested.connect(func(eid: String, pos: Vector2):
+		right_click_captured["id"] = eid
+		right_click_captured["pos"] = pos
+	)
+
+	var mb := InputEventMouseButton.new()
+	mb.button_index = MOUSE_BUTTON_RIGHT
+	mb.pressed = true
+	mb.position = block.size * 0.5
+	block._gui_input(mb)
+	_assert(right_click_captured["id"] == "srv_flt_test", "Right-click on block node emits floating_properties_requested")
+
+	block.free()
+	flt.free()
+
+

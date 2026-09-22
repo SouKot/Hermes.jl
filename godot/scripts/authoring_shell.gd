@@ -9,6 +9,9 @@ const Catalog := preload("res://scripts/authoring_catalog.gd")
 const Canvas2D := preload("res://scripts/authoring_2d_canvas.gd")
 const Viewport3D := preload("res://scripts/authoring_3d_viewport.gd")
 const DiagnosticsPanel := preload("res://scripts/authoring_diagnostics_panel.gd")
+const Inspector := preload("res://scripts/authoring_inspector.gd")
+const RuleBuilder := preload("res://scripts/authoring_rule_builder.gd")
+const FloatingInspector := preload("res://scripts/authoring_floating_inspector.gd")
 
 enum ViewMode { VIEW_2D, VIEW_3D }
 
@@ -36,6 +39,8 @@ var current_view: ViewMode = ViewMode.VIEW_2D
 var _doc_title_label: Label
 var _btn_view_2d: Button
 var _btn_view_3d: Button
+var _outer_split: HSplitContainer
+var _inner_split: HSplitContainer
 var _center_container: Control
 var _canvas_2d: Canvas2D
 var _viewport_3d: Viewport3D
@@ -45,11 +50,35 @@ var _catalog_container: VBoxContainer
 var _tree_container: VBoxContainer
 
 # Right Dock
-var _inspector_container: VBoxContainer
+var _inspector_panel: Inspector
+var _floating_inspector: FloatingInspector
+var _rule_builder: RuleBuilder
 var _diagnostics_panel: DiagnosticsPanel
-var _insp_spin_px: SpinBox
-var _insp_spin_py: SpinBox
-var _insp_spin_pz: SpinBox
+
+# Backwards compatibility getters/setters
+var _inspector_container: VBoxContainer:
+	get:
+		return _inspector_panel._container if _inspector_panel != null else null
+var _insp_spin_px: SpinBox:
+	get:
+		return _inspector_panel._spin_px if _inspector_panel != null else null
+	set(v):
+		if _inspector_panel != null: _inspector_panel._spin_px = v
+var _insp_spin_py: SpinBox:
+	get:
+		return _inspector_panel._spin_py if _inspector_panel != null else null
+	set(v):
+		if _inspector_panel != null: _inspector_panel._spin_py = v
+var _insp_spin_pz: SpinBox:
+	get:
+		return _inspector_panel._spin_pz if _inspector_panel != null else null
+	set(v):
+		if _inspector_panel != null: _inspector_panel._spin_pz = v
+var _insp_spin_rot: SpinBox:
+	get:
+		return _inspector_panel._spin_rot if _inspector_panel != null else null
+	set(v):
+		if _inspector_panel != null: _inspector_panel._spin_rot = v
 
 # Transport
 var _btn_play: Button
@@ -84,6 +113,12 @@ func _connect_signals() -> void:
 	doc_store.diagnostics_updated.connect(_on_diagnostics_updated)
 	_diagnostics_panel.diagnostic_focused.connect(_on_diagnostic_focused)
 	_diagnostics_panel.fix_requested.connect(_on_diagnostic_fix_requested)
+	if _canvas_2d != null:
+		_canvas_2d.floating_properties_requested.connect(_on_floating_properties_requested)
+	if _viewport_3d != null:
+		_viewport_3d.floating_properties_requested.connect(_on_floating_properties_requested)
+	if _inspector_panel != null:
+		_inspector_panel.open_floating_requested.connect(_on_floating_properties_requested)
 
 func _process(delta: float) -> void:
 	if is_sim_running:
@@ -104,28 +139,31 @@ func _build_ui() -> void:
 	# 1. Top Header
 	root.add_child(_build_header())
 
-	# 2. Main Workspace (Left Dock | Center Viewport | Right Dock)
-	var content := HBoxContainer.new()
-	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	content.add_theme_constant_override("separation", 6)
-	content.add_theme_constant_override("margin_left", 8)
-	content.add_theme_constant_override("margin_right", 8)
-	content.add_theme_constant_override("margin_top", 4)
-	content.add_theme_constant_override("margin_bottom", 4)
-	root.add_child(content)
+	# 2. Main Workspace (Resizable Splitters: Left Dock | Center Viewport | Right Dock)
+	_outer_split = HSplitContainer.new()
+	_outer_split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_outer_split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_outer_split.split_offset = 220
+	root.add_child(_outer_split)
 
-	content.add_child(_build_left_dock())
+	_outer_split.add_child(_build_left_dock())
+
+	_inner_split = HSplitContainer.new()
+	_inner_split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_inner_split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_outer_split.add_child(_inner_split)
 
 	# Center Viewport Area
 	_center_container = PanelContainer.new()
 	_center_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_center_container.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_center_container.custom_minimum_size = Vector2(300, 200)
 	var center_style := StyleBoxFlat.new()
 	center_style.bg_color = BG
 	center_style.border_color = BORDER
 	center_style.set_border_width_all(1)
 	_center_container.add_theme_stylebox_override("panel", center_style)
-	content.add_child(_center_container)
+	_inner_split.add_child(_center_container)
 
 	_canvas_2d = Canvas2D.new(doc_store)
 	_canvas_2d.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -136,10 +174,30 @@ func _build_ui() -> void:
 	_viewport_3d.visible = false
 	_center_container.add_child(_viewport_3d)
 
-	content.add_child(_build_right_dock())
+	_inner_split.add_child(_build_right_dock())
 
 	# 3. Persistent Bottom Transport
 	root.add_child(_build_transport())
+
+	# 4. Floating / Modal Rule Builder Overlay
+	_rule_builder = RuleBuilder.new(doc_store)
+	_rule_builder.visible = false
+	_rule_builder.closed.connect(func(): _rule_builder.visible = false)
+	_rule_builder.rule_saved.connect(func(conn_id: String, cond: Dictionary):
+		doc_store.update_connection_condition(conn_id, cond)
+		if _inspector_panel != null:
+			_inspector_panel.refresh()
+	)
+	add_child(_rule_builder)
+
+	# 5. Floating / Modal Tabbed Inspector Window
+	_floating_inspector = FloatingInspector.new(doc_store, catalog)
+	_floating_inspector.duplicate_requested.connect(_duplicate_element)
+	_floating_inspector.delete_requested.connect(_delete_element)
+	_floating_inspector.open_rule_builder_requested.connect(func(cid: String):
+		_rule_builder.open_for_connection(cid)
+	)
+	add_child(_floating_inspector)
 
 func _build_header() -> Control:
 	var panel := PanelContainer.new()
@@ -192,6 +250,29 @@ func _build_header() -> Control:
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(spacer)
 
+	# Auto-Layout DAG button
+	var btn_layout := Button.new()
+	btn_layout.text = "☷ Auto-Layout"
+	btn_layout.pressed.connect(func():
+		if _canvas_2d != null:
+			_canvas_2d.auto_layout_dag()
+		if _viewport_3d != null:
+			_viewport_3d.rebuild_3d_scene()
+			_viewport_3d.frame_scene()
+	)
+	row.add_child(btn_layout)
+
+	# Frame All button
+	var btn_frame := Button.new()
+	btn_frame.text = "⛶ Frame All"
+	btn_frame.pressed.connect(func():
+		if current_view == ViewMode.VIEW_2D and _canvas_2d != null:
+			_canvas_2d.frame_all()
+		elif current_view == ViewMode.VIEW_3D and _viewport_3d != null:
+			_viewport_3d.frame_scene()
+	)
+	row.add_child(btn_frame)
+
 	# TWO-VIEW SYSTEM TOGGLE BUTTONS
 	var toggle_box := HBoxContainer.new()
 	toggle_box.add_theme_constant_override("separation", 0)
@@ -211,7 +292,8 @@ func _build_header() -> Control:
 
 func _build_left_dock() -> Control:
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size.x = 220
+	panel.custom_minimum_size.x = 38 # ~1cm minimum collapsible width
+	panel.clip_contents = true
 	var style := StyleBoxFlat.new()
 	style.bg_color = PANEL
 	style.border_color = BORDER
@@ -242,7 +324,8 @@ func _build_left_dock() -> Control:
 
 func _build_right_dock() -> Control:
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size.x = 280
+	panel.custom_minimum_size.x = 38 # ~1cm minimum collapsible width
+	panel.clip_contents = true
 	var style := StyleBoxFlat.new()
 	style.bg_color = PANEL
 	style.border_color = BORDER
@@ -259,15 +342,13 @@ func _build_right_dock() -> Control:
 	insp_title.add_theme_color_override("font_color", TEXT)
 	vbox.add_child(insp_title)
 
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	vbox.add_child(scroll)
-
-	_inspector_container = VBoxContainer.new()
-	_inspector_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_inspector_container.add_theme_constant_override("separation", 6)
-	scroll.add_child(_inspector_container)
+	_inspector_panel = Inspector.new(doc_store, catalog)
+	_inspector_panel.duplicate_requested.connect(_duplicate_element)
+	_inspector_panel.delete_requested.connect(_delete_element)
+	_inspector_panel.rule_builder_requested.connect(func(conn_id: String):
+		_open_rule_builder(conn_id)
+	)
+	vbox.add_child(_inspector_panel)
 
 	# Bottom half: Diagnostics
 	_diagnostics_panel = DiagnosticsPanel.new()
@@ -294,6 +375,8 @@ func _build_transport() -> Control:
 	_btn_play.text = "▶ PLAY"
 	_btn_play.pressed.connect(func():
 		is_sim_running = true
+		if _inspector_panel != null:
+			_inspector_panel.set_simulation_running(true)
 		play_requested.emit()
 	)
 	row.add_child(_btn_play)
@@ -302,6 +385,8 @@ func _build_transport() -> Control:
 	_btn_pause.text = "⏸ PAUSE"
 	_btn_pause.pressed.connect(func():
 		is_sim_running = false
+		if _inspector_panel != null:
+			_inspector_panel.set_simulation_running(false)
 		pause_requested.emit()
 	)
 	row.add_child(_btn_pause)
@@ -321,6 +406,8 @@ func _build_transport() -> Control:
 		is_sim_running = false
 		sim_time = 0.0
 		_clock_label.text = "t = 0.00 s"
+		if _inspector_panel != null:
+			_inspector_panel.set_simulation_running(false)
 		reset_requested.emit()
 	)
 	row.add_child(_btn_reset)
@@ -407,229 +494,20 @@ func _instantiate_catalog_item(kind: String) -> void:
 	_viewport_3d.rebuild_3d_scene()
 
 func _populate_inspector() -> void:
-	for child in _inspector_container.get_children():
-		child.queue_free()
+	if _inspector_panel != null:
+		_inspector_panel.refresh()
 
-	if doc_store == null or doc_store.selected_id.is_empty():
-		var empty_lbl := Label.new()
-		empty_lbl.text = "No selection.\nClick an entity block or connection wire to inspect."
-		empty_lbl.add_theme_font_size_override("font_size", 11)
-		empty_lbl.add_theme_color_override("font_color", MUTED)
-		_inspector_container.add_child(empty_lbl)
+func _open_rule_builder(conn_id: String) -> void:
+	if _rule_builder == null:
 		return
-
-	# 1. Connection Selected
-	if doc_store.selected_type == "connection":
-		var conn: SceneTypes.SceneConnection = null
-		if doc_store.active_document != null:
-			for c in doc_store.active_document.connections:
-				if c.id == doc_store.selected_id:
-					conn = c
-					break
-		if conn != null:
-			_add_inspector_field("Type", "Connection (%s)" % conn.link_type.capitalize())
-			_add_inspector_field("ID", conn.id)
-			_add_inspector_field("Source", "%s . %s" % [conn.source_element, conn.source_port])
-			_add_inspector_field("Target", "%s . %s" % [conn.target_element, conn.target_port])
-
-			var del_conn_btn := Button.new()
-			del_conn_btn.text = "Delete Connection"
-			del_conn_btn.add_theme_color_override("font_color", Color("#e74c3c"))
-			var cid := conn.id
-			del_conn_btn.pressed.connect(func():
-				doc_store.remove_connection(cid)
-				_canvas_2d._redraw_all()
-				_populate_inspector()
-			)
-			_inspector_container.add_child(del_conn_btn)
-		return
-
-	# 2. Element Selected
-	var elem := doc_store.get_element(doc_store.selected_id)
-	if elem == null:
-		return
-
-	# Name / ID
-	_add_inspector_field("ID", elem.id)
-	_add_inspector_field("Kind", elem.kind.capitalize())
-
-	# Position (Editable, Top-Left Datum)
-	var pos_sep := HSeparator.new()
-	_inspector_container.add_child(pos_sep)
-	var pos_lbl := Label.new()
-	pos_lbl.text = "POSITION (m) [Top-Left Datum]"
-	pos_lbl.add_theme_font_size_override("font_size", 10)
-	pos_lbl.add_theme_color_override("font_color", MUTED)
-	_inspector_container.add_child(pos_lbl)
-
-	var cur_px: float = float(elem.transform.position.x)
-	var cur_py: float = float(elem.transform.position.y)
-	var cur_pz: float = float(elem.transform.position.z)
-	var eid := elem.id
-
-	_insp_spin_px = _add_inspector_spinbox("X (Left)", cur_px, -200.0, 200.0, 0.1, func(v: float):
-		cur_px = v
-		doc_store.update_element_position(eid, Vector3(cur_px, cur_py, cur_pz))
-	)
-	_insp_spin_py = _add_inspector_spinbox("Y (Top)", cur_py, -200.0, 200.0, 0.1, func(v: float):
-		cur_py = v
-		doc_store.update_element_position(eid, Vector3(cur_px, cur_py, cur_pz))
-	)
-	_insp_spin_pz = _add_inspector_spinbox("Z (Floor)", cur_pz, 0.0, 50.0, 0.1, func(v: float):
-		cur_pz = v
-		doc_store.update_element_position(eid, Vector3(cur_px, cur_py, cur_pz))
-	)
-
-	# Physical Dimensions (Editable)
-	var dims_sep := HSeparator.new()
-	_inspector_container.add_child(dims_sep)
-	var dims_lbl := Label.new()
-	dims_lbl.text = "PHYSICAL DIMENSIONS (m)"
-	dims_lbl.add_theme_font_size_override("font_size", 10)
-	dims_lbl.add_theme_color_override("font_color", MUTED)
-	_inspector_container.add_child(dims_lbl)
-
-	var dims = elem.geometry.get("dimensions", [4.0, 2.0, 0.8])
-	var cur_len: float = float(dims[0]) if (dims is Array and dims.size() >= 1) else 4.0
-	var cur_wid: float = float(dims[1]) if (dims is Array and dims.size() >= 2) else 2.0
-	var cur_hgt: float = float(dims[2]) if (dims is Array and dims.size() >= 3) else 0.8
-	var z_s: float = float(elem.geometry.get("elevation_start", 0.8))
-	var z_e: float = float(elem.geometry.get("elevation_end", z_s))
-
-	_add_inspector_spinbox("Length (X)", cur_len, 0.5, 100.0, 0.1, func(v: float):
-		cur_len = v
-		doc_store.update_element_geometry(eid, Vector3(cur_len, cur_wid, cur_hgt), z_s, z_e)
-	)
-	_add_inspector_spinbox("Width (Y)", cur_wid, 0.2, 50.0, 0.1, func(v: float):
-		cur_wid = v
-		doc_store.update_element_geometry(eid, Vector3(cur_len, cur_wid, cur_hgt), z_s, z_e)
-	)
-	_add_inspector_spinbox("Height (Z)", cur_hgt, 0.1, 20.0, 0.05, func(v: float):
-		cur_hgt = v
-		doc_store.update_element_geometry(eid, Vector3(cur_len, cur_wid, cur_hgt), z_s, z_e)
-	)
-
-	# Elevation (Editable)
-	var elev_sep := HSeparator.new()
-	_inspector_container.add_child(elev_sep)
-	var elev_lbl := Label.new()
-	elev_lbl.text = "ELEVATION (m)"
-	elev_lbl.add_theme_font_size_override("font_size", 10)
-	elev_lbl.add_theme_color_override("font_color", MUTED)
-	_inspector_container.add_child(elev_lbl)
-
-	_add_inspector_spinbox("Elev Start (Z1)", z_s, 0.0, 50.0, 0.1, func(v: float):
-		z_s = v
-		doc_store.update_element_geometry(eid, Vector3(cur_len, cur_wid, cur_hgt), z_s, z_e)
-	)
-	_add_inspector_spinbox("Elev End (Z2)", z_e, 0.0, 50.0, 0.1, func(v: float):
-		z_e = v
-		doc_store.update_element_geometry(eid, Vector3(cur_len, cur_wid, cur_hgt), z_s, z_e)
-	)
-
-	# Active Connections for this Element
-	var conns_sep := HSeparator.new()
-	_inspector_container.add_child(conns_sep)
-
-	var conns_lbl := Label.new()
-	conns_lbl.text = "ACTIVE CONNECTIONS"
-	conns_lbl.add_theme_font_size_override("font_size", 10)
-	conns_lbl.add_theme_color_override("font_color", MUTED)
-	_inspector_container.add_child(conns_lbl)
-
-	var found_conns := false
-	if doc_store.active_document != null:
-		for c in doc_store.active_document.connections:
-			if c.source_element == elem.id or c.target_element == elem.id:
-				found_conns = true
-				var row := HBoxContainer.new()
-				var lbl := Label.new()
-				lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-				lbl.add_theme_font_size_override("font_size", 10)
-				var is_out: bool = (c.source_element == elem.id)
-				var col := Color("#2ecc71") if c.link_type == "flow" else Color("#f39c12")
-				if is_out:
-					lbl.text = "OUT: %s → %s.%s" % [c.source_port, c.target_element, c.target_port]
-				else:
-					lbl.text = "IN: %s ← %s.%s" % [c.target_port, c.source_element, c.source_port]
-				lbl.add_theme_color_override("font_color", col)
-				row.add_child(lbl)
-
-				var x_btn := Button.new()
-				x_btn.text = "✕"
-				x_btn.custom_minimum_size = Vector2(22, 18)
-				x_btn.add_theme_font_size_override("font_size", 10)
-				x_btn.add_theme_color_override("font_color", Color("#e74c3c"))
-				var conn_id: String = c.id
-				x_btn.pressed.connect(func():
-					doc_store.remove_connection(conn_id)
-					_canvas_2d._redraw_all()
-					_populate_inspector()
-				)
-				row.add_child(x_btn)
-				_inspector_container.add_child(row)
-
-	if not found_conns:
-		var no_conn := Label.new()
-		no_conn.text = "None"
-		no_conn.add_theme_font_size_override("font_size", 10)
-		no_conn.add_theme_color_override("font_color", MUTED)
-		_inspector_container.add_child(no_conn)
-
-	var btn_sep := HSeparator.new()
-	_inspector_container.add_child(btn_sep)
-
-	# Delete button
-	var del_btn := Button.new()
-	del_btn.text = "Delete Entity"
-	del_btn.add_theme_color_override("font_color", Color("#e74c3c"))
-	del_btn.pressed.connect(func():
-		doc_store.remove_element(elem.id)
-		_canvas_2d.rebuild_blocks()
-		_viewport_3d.rebuild_3d_scene()
-	)
-	_inspector_container.add_child(del_btn)
-
-func _add_inspector_field(label_txt: String, val_txt: String) -> void:
-	var row := HBoxContainer.new()
-	var l := Label.new()
-	l.text = label_txt
-	l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	l.add_theme_font_size_override("font_size", 11)
-	l.add_theme_color_override("font_color", MUTED)
-	row.add_child(l)
-
-	var v := Label.new()
-	v.text = val_txt
-	v.add_theme_font_size_override("font_size", 11)
-	v.add_theme_color_override("font_color", TEXT)
-	row.add_child(v)
-	_inspector_container.add_child(row)
-
-func _add_inspector_spinbox(label_txt: String, initial_val: float, min_val: float, max_val: float, step_val: float, on_changed: Callable) -> SpinBox:
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 6)
-	var l := Label.new()
-	l.text = label_txt
-	l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	l.add_theme_font_size_override("font_size", 11)
-	l.add_theme_color_override("font_color", MUTED)
-	row.add_child(l)
-
-	var sb := SpinBox.new()
-	sb.min_value = min_val
-	sb.max_value = max_val
-	sb.step = step_val
-	sb.value = initial_val
-	sb.custom_minimum_size = Vector2(86, 26)
-	sb.alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	var le := sb.get_line_edit()
-	if le != null:
-		le.add_theme_font_size_override("font_size", 11)
-	sb.value_changed.connect(on_changed)
-	row.add_child(sb)
-	_inspector_container.add_child(row)
-	return sb
+	_rule_builder.open_for_connection(conn_id)
+	var sz := _rule_builder.custom_minimum_size
+	if size.x > sz.x and size.y > sz.y:
+		_rule_builder.position = (size - sz) * 0.5
+	else:
+		_rule_builder.position = Vector2(50, 50)
+	_rule_builder.visible = true
+	_rule_builder.move_to_front()
 
 func _on_document_loaded(doc: SceneTypes.SceneDocument) -> void:
 	_update_title()
@@ -651,6 +529,8 @@ func _on_document_modified() -> void:
 				_insp_spin_py.set_value_no_signal(sel_elem.transform.position.y)
 			if _insp_spin_pz != null and is_instance_valid(_insp_spin_pz) and not _insp_spin_pz.has_focus():
 				_insp_spin_pz.set_value_no_signal(sel_elem.transform.position.z)
+			if _insp_spin_rot != null and is_instance_valid(_insp_spin_rot) and not _insp_spin_rot.has_focus():
+				_insp_spin_rot.set_value_no_signal(fposmod(float(sel_elem.transform.rotation.z), 360.0))
 
 func _on_document_saved(_path: String) -> void:
 	_update_title()
@@ -659,6 +539,7 @@ func _on_selection_changed(_id_val: String, _type_val: String) -> void:
 	_insp_spin_px = null
 	_insp_spin_py = null
 	_insp_spin_pz = null
+	_insp_spin_rot = null
 	_populate_inspector()
 
 func _on_diagnostics_updated(diagnostics: Array, is_valid: bool) -> void:
@@ -697,3 +578,17 @@ func _on_save_clicked() -> void:
 	if save_path.is_empty():
 		save_path = "user://authored_scene.json"
 	doc_store.save_to_file(save_path)
+
+func _duplicate_element(eid: String) -> void:
+	doc_store.duplicate_element(eid)
+	if _canvas_2d != null: _canvas_2d.rebuild_blocks()
+	if _viewport_3d != null: _viewport_3d.rebuild_3d_scene()
+
+func _delete_element(eid: String) -> void:
+	doc_store.remove_element(eid)
+	if _canvas_2d != null: _canvas_2d.rebuild_blocks()
+	if _viewport_3d != null: _viewport_3d.rebuild_3d_scene()
+
+func _on_floating_properties_requested(elem_id: String, screen_pos: Vector2 = Vector2.ZERO) -> void:
+	if _floating_inspector != null:
+		_floating_inspector.open_for_element(elem_id, screen_pos)
