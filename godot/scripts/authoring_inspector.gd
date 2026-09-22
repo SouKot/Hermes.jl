@@ -486,7 +486,8 @@ func _build_property_widget(elem: SceneTypes.SceneElement, schema: Dictionary) -
 	if p_type == "distribution":
 		_build_distribution_editor(elem, key, cur_val, is_live)
 	elif p_type == "enum":
-		_build_enum_editor(elem, key, cur_val, schema.get("enum_options", []), is_live)
+		var opts: Array = schema.get("enum_options", schema.get("options", []))
+		_build_enum_editor(elem, key, cur_val, opts, is_live)
 	elif p_type == "bool":
 		_build_bool_editor(elem, key, bool(cur_val), is_live)
 	else:
@@ -650,23 +651,31 @@ func _build_distribution_editor(elem: SceneTypes.SceneElement, prop_key: String,
 	_container.add_child(sparkline)
 
 func _build_enum_editor(elem: SceneTypes.SceneElement, prop_key: String, cur_val, options: Array, is_live: bool) -> void:
+	if options.is_empty():
+		return
+
 	var opt := OptionButton.new()
 	opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	opt.add_theme_font_size_override("font_size", 9)
-	var sel_idx := 0
+	var sel_idx := -1
 	for i in range(options.size()):
 		var item = options[i]
-		var val_str: String = item["value"] if item is Dictionary else str(item)
-		var label_str: String = item["label"] if item is Dictionary else str(item)
+		var val_str: String = item.get("value", "") if item is Dictionary else str(item)
+		var label_str: String = item.get("label", val_str) if item is Dictionary else str(item)
 		opt.add_item(label_str, i)
 		if val_str == str(cur_val):
 			sel_idx = i
 
-	opt.select(sel_idx)
+	if opt.item_count > 0:
+		if sel_idx < 0:
+			sel_idx = 0
+		opt.select(sel_idx)
+
 	opt.item_selected.connect(func(idx):
-		var sel_item = options[idx]
-		var val_str: String = sel_item["value"] if sel_item is Dictionary else str(sel_item)
-		doc_store.set_element_property(elem.id, prop_key, val_str)
+		if idx >= 0 and idx < options.size():
+			var sel_item = options[idx]
+			var val_str: String = sel_item.get("value", "") if sel_item is Dictionary else str(sel_item)
+			doc_store.set_element_property(elem.id, prop_key, val_str)
 	)
 	if is_sim_running and not is_live:
 		opt.disabled = true

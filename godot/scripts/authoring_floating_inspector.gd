@@ -370,20 +370,30 @@ func _build_schema_widget(elem: SceneTypes.SceneElement, schema: Dictionary) -> 
 	if p_type == "distribution":
 		_build_distribution_widget(elem, key, cur_val)
 	elif p_type == "enum":
-		var opts: Array = schema.get("enum_options", [])
-		var opt_btn := OptionButton.new()
-		opt_btn.custom_minimum_size.x = 180
-		opt_btn.add_theme_font_size_override("font_size", 9)
-		for i in range(opts.size()):
-			var o: Dictionary = opts[i]
-			opt_btn.add_item(o.get("label", str(o.get("value"))), i)
-			if str(cur_val) == str(o.get("value")):
-				opt_btn.selected = i
-		opt_btn.item_selected.connect(func(idx):
-			var chosen = opts[idx].get("value")
-			doc_store.set_element_property(elem.id, key, chosen)
-		)
-		_pages_container.add_child(opt_btn)
+		var opts: Array = schema.get("enum_options", schema.get("options", []))
+		if not opts.is_empty():
+			var opt_btn := OptionButton.new()
+			opt_btn.custom_minimum_size.x = 180
+			opt_btn.add_theme_font_size_override("font_size", 9)
+			var sel_idx := -1
+			for i in range(opts.size()):
+				var item = opts[i]
+				var val_str: String = item.get("value", "") if item is Dictionary else str(item)
+				var label_str: String = item.get("label", val_str) if item is Dictionary else str(item)
+				opt_btn.add_item(label_str, i)
+				if str(cur_val) == val_str:
+					sel_idx = i
+			if opt_btn.item_count > 0:
+				if sel_idx < 0:
+					sel_idx = 0
+				opt_btn.select(sel_idx)
+			opt_btn.item_selected.connect(func(idx):
+				if idx >= 0 and idx < opts.size():
+					var sel_item = opts[idx]
+					var chosen = sel_item.get("value", str(sel_item)) if sel_item is Dictionary else str(sel_item)
+					doc_store.set_element_property(elem.id, key, chosen)
+			)
+			_pages_container.add_child(opt_btn)
 	elif p_type == "bool":
 		var chk := CheckBox.new()
 		chk.text = "Enabled"

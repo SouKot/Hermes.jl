@@ -359,7 +359,7 @@ func _register_defaults() -> void:
 		{"key": "agent_count", "display_name": "Target Agent Count", "type": "int", "default_value": 50, "unit": "peds", "range": [1, 100000, 10], "runtime_editable": false, "group": "Population", "description": "Total number of agents to generate."},
 		{"key": "spawn_rate", "display_name": "Spawn Rate", "type": "float", "default_value": 2.0, "unit": "ped/s", "range": [0.1, 100.0, 0.5], "runtime_editable": true, "group": "Ingress Dynamics", "description": "Frequency of pedestrian entry into the simulation space."},
 		{"key": "initial_speed", "display_name": "Initial Velocity", "type": "float", "default_value": 1.34, "unit": "m/s", "range": [0.2, 5.0, 0.1], "runtime_editable": true, "group": "Ingress Dynamics", "description": "Initial desired velocity assigned to newly spawned agents."},
-		{"key": "spawn_distribution", "display_name": "Inter-Arrival Pattern", "type": "enum", "default_value": "constant", "options": ["constant", "poisson", "burst"], "runtime_editable": true, "group": "Ingress Dynamics", "description": "Statistical arrival distribution for spawned pedestrians."}
+		{"key": "spawn_distribution", "display_name": "Inter-Arrival Pattern", "type": "enum", "default_value": "constant", "enum_options": [{"value": "constant", "label": "Constant Rate"}, {"value": "poisson", "label": "Poisson Random"}, {"value": "burst", "label": "Periodic Burst"}], "runtime_editable": true, "group": "Ingress Dynamics", "description": "Statistical arrival distribution for spawned pedestrians."}
 	]
 	spawner.default_properties = {
 		"agent_count": 50,
@@ -464,7 +464,7 @@ func _register_defaults() -> void:
 		{"id": "throughput", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Throughput"}
 	]
 	portal.property_schemas = [
-		{"key": "conversion_mode", "display_name": "Conversion Paradigm", "type": "enum", "default_value": "des_to_crowd", "options": ["des_to_crowd", "crowd_to_des"], "runtime_editable": false, "group": "Hybrid Coupling", "description": "Direction of conversion between discrete items and continuous agents."},
+		{"key": "conversion_mode", "display_name": "Conversion Paradigm", "type": "enum", "default_value": "des_to_crowd", "enum_options": [{"value": "des_to_crowd", "label": "DES Item → Continuous Pedestrian"}, {"value": "crowd_to_des", "label": "Continuous Pedestrian → DES Item"}], "runtime_editable": false, "group": "Hybrid Coupling", "description": "Direction of conversion between discrete items and continuous agents."},
 		{"key": "initial_speed", "display_name": "Egress Pedestrian Speed", "type": "float", "default_value": 1.2, "unit": "m/s", "range": [0.2, 3.0, 0.1], "runtime_editable": true, "group": "Hybrid Coupling", "description": "Initial walking velocity imparted to pedestrians as they leave the turnstile."},
 		{"key": "gate_latency_sec", "display_name": "Handshake Latency", "type": "float", "default_value": 0.5, "unit": "s", "range": [0.0, 10.0, 0.1], "runtime_editable": true, "group": "Hybrid Coupling", "description": "Physical transaction delay at turnstile badge scanner before admission."}
 	]
