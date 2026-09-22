@@ -17,7 +17,9 @@ var active_document: SceneTypes.SceneDocument
 var file_path: String = ""
 var is_dirty: bool = false
 var selected_id: String = ""
-var selected_type: String = "" # "element", "connection", "level", ""
+var selected_type: String = "" # "element", "connection", "level", "port", ""
+var selected_port_id: String = ""
+var selected_elements: Array[String] = []
 
 var _undo_stack: Array = []
 var _redo_stack: Array = []
@@ -118,11 +120,80 @@ func save_to_file(path: String = "") -> bool:
 func select(id_val: String, type_val: String = "element") -> void:
 	selected_id = id_val
 	selected_type = type_val
+	selected_port_id = ""
+	if type_val == "element" and not id_val.is_empty():
+		selected_elements = [id_val]
+	else:
+		selected_elements.clear()
 	selection_changed.emit(selected_id, selected_type)
+
+func select_port(elem_id: String, port_id: String) -> void:
+	selected_id = elem_id
+	selected_port_id = port_id
+	selected_type = "port"
+	selected_elements.clear()
+	selection_changed.emit(selected_id, selected_type)
+
+func get_selected_port() -> SceneTypes.ScenePort:
+	if selected_type != "port" or selected_port_id.is_empty():
+		return null
+	var elem := get_element(selected_id)
+	if elem == null:
+		return null
+	for p in elem.input_ports:
+		if p.id == selected_port_id:
+			return p
+	for p in elem.output_ports:
+		if p.id == selected_port_id:
+			return p
+	for p in elem.metric_ports:
+		if p.id == selected_port_id:
+			return p
+	return null
+
+func toggle_select_element(id_val: String) -> void:
+	if id_val.is_empty():
+		return
+	if selected_type != "element":
+		selected_elements.clear()
+		selected_type = "element"
+	selected_port_id = ""
+	if selected_elements.has(id_val):
+		selected_elements.erase(id_val)
+		if selected_elements.is_empty():
+			clear_selection()
+			return
+		else:
+			selected_id = selected_elements[-1]
+	else:
+		selected_elements.append(id_val)
+		selected_id = id_val
+	selection_changed.emit(selected_id, selected_type)
+
+func set_selected_elements(ids: Array[String]) -> void:
+	selected_elements = ids.duplicate()
+	selected_port_id = ""
+	if selected_elements.is_empty():
+		clear_selection()
+	else:
+		selected_id = selected_elements[-1]
+		selected_type = "element"
+		selection_changed.emit(selected_id, selected_type)
+
+func select_multiple(ids: Array) -> void:
+	var typed_ids: Array[String] = []
+	for id in ids:
+		typed_ids.append(str(id))
+	set_selected_elements(typed_ids)
+
+func is_element_selected(id_val: String) -> bool:
+	return selected_type == "element" and selected_elements.has(id_val)
 
 func clear_selection() -> void:
 	selected_id = ""
 	selected_type = ""
+	selected_port_id = ""
+	selected_elements.clear()
 	selection_changed.emit("", "")
 
 func validate() -> Array:
@@ -177,20 +248,79 @@ func add_element(elem: SceneTypes.SceneElement) -> void:
 	document_modified.emit()
 
 func remove_element(elem_id: String) -> void:
+	remove_elements([elem_id])
+
+func remove_elements(ids: Array) -> void:
+	if active_document == null or ids.is_empty():
+		return
 	_record_undo()
+	var id_set := {}
+	for id in ids:
+		id_set[str(id)] = true
+
 	for i in range(active_document.elements.size() - 1, -1, -1):
-		if active_document.elements[i].id == elem_id:
+		if id_set.has(active_document.elements[i].id):
 			active_document.elements.remove_at(i)
-			break
-	# Remove connected links
+
 	for i in range(active_document.connections.size() - 1, -1, -1):
 		var conn: SceneTypes.SceneConnection = active_document.connections[i]
-		if conn.source_element == elem_id or conn.target_element == elem_id:
+		if id_set.has(conn.source_element) or id_set.has(conn.target_element):
 			active_document.connections.remove_at(i)
-	if selected_id == elem_id:
+
+	if id_set.has(selected_id) or selected_type == "element":
 		clear_selection()
+
 	validate()
 	document_modified.emit()
+
+func duplicate_element(elem_id: String) -> SceneTypes.SceneElement:
+	var elem := get_element(elem_id)
+	if elem == null or active_document == null:
+		return null
+
+	_record_undo()
+	var clone := elem.clone()
+
+	# Generate unique ID
+	var base_id := elem.id
+	var new_id := base_id + "_copy"
+	var counter := 1
+	var existing_ids := {}
+	for e in active_document.elements:
+		existing_ids[e.id] = true
+	while existing_ids.has(new_id):
+		counter += 1
+		new_id = "%s_copy%02d" % [base_id, counter]
+
+	clone.id = new_id
+	clone.name = new_id
+
+	# Offset physical position (+2.0m along X and +2.0m along Y)
+	clone.transform.position.x += 2.0
+	clone.transform.position.y += 2.0
+	clone.editor.graph_position = Vector2(clone.transform.position.x * 20.0, clone.transform.position.y * 20.0)
+
+	active_document.elements.append(clone)
+	select(clone.id, "element")
+	validate()
+	document_modified.emit()
+	return clone
+
+func set_element_rotation(elem_id: String, angle_deg: float) -> bool:
+	var elem := get_element(elem_id)
+	if elem == null:
+		return false
+	_record_undo()
+	elem.transform.rotation.z = fposmod(angle_deg, 360.0)
+	validate()
+	document_modified.emit()
+	return true
+
+func rotate_element(elem_id: String, delta_deg: float = 45.0) -> bool:
+	var elem := get_element(elem_id)
+	if elem == null:
+		return false
+	return set_element_rotation(elem_id, elem.transform.rotation.z + delta_deg)
 
 func get_element(elem_id: String) -> SceneTypes.SceneElement:
 	if active_document == null:
@@ -352,3 +482,155 @@ func disconnect_port(elem_id: String, port_id: String) -> int:
 		document_modified.emit()
 
 	return removed_count
+
+func set_element_property(elem_id: String, prop_key: String, value: Variant) -> bool:
+	var elem := get_element(elem_id)
+	if elem == null:
+		return false
+	_record_undo()
+	elem.properties[prop_key] = value
+	validate()
+	document_modified.emit()
+	return true
+
+func set_elements_property_batch(elem_ids: Array, prop_key: String, value: Variant) -> bool:
+	if elem_ids.is_empty() or active_document == null:
+		return false
+	_record_undo()
+	var any_updated := false
+	for eid in elem_ids:
+		var elem := get_element(str(eid))
+		if elem != null:
+			elem.properties[prop_key] = value
+			any_updated = true
+	if any_updated:
+		validate()
+		document_modified.emit()
+		return true
+	return false
+
+func update_port_properties(elem_id: String, port_id: String, props: Dictionary) -> bool:
+	var elem := get_element(elem_id)
+	if elem == null:
+		return false
+	var target_port: SceneTypes.ScenePort = null
+	for p in elem.input_ports:
+		if p.id == port_id:
+			target_port = p
+			break
+	if target_port == null:
+		for p in elem.output_ports:
+			if p.id == port_id:
+				target_port = p
+				break
+	if target_port == null:
+		for p in elem.metric_ports:
+			if p.id == port_id:
+				target_port = p
+				break
+	if target_port == null:
+		return false
+
+	_record_undo()
+	for k in props.keys():
+		var sk := str(k)
+		var val = props[k]
+		if sk in ["cardinality", "required", "unit", "description", "data_type", "name"]:
+			target_port.set(sk, val)
+		else:
+			target_port.set_extension(sk, val)
+
+	validate()
+	document_modified.emit()
+	return true
+
+func update_connection_condition(conn_id: String, condition_dict: Dictionary) -> bool:
+	if active_document == null:
+		return false
+	var target_conn: SceneTypes.SceneConnection = null
+	for c in active_document.connections:
+		if c.id == conn_id:
+			target_conn = c
+			break
+	if target_conn == null:
+		return false
+
+	_record_undo()
+	target_conn.condition = condition_dict.duplicate(true)
+	validate()
+	document_modified.emit()
+	return true
+
+func auto_layout_dag(spacing_x: float = 240.0, spacing_y: float = 120.0) -> bool:
+	if active_document == null or active_document.elements.is_empty():
+		return false
+
+	var elems: Array = active_document.elements
+	var in_degree := {}
+	var adj := {}
+	var elem_map := {}
+
+	for elem in elems:
+		in_degree[elem.id] = 0
+		adj[elem.id] = []
+		elem_map[elem.id] = elem
+
+	for conn in active_document.connections:
+		var src: String = conn.source_element
+		var tgt: String = conn.target_element
+		if elem_map.has(src) and elem_map.has(tgt):
+			if not adj[src].has(tgt):
+				adj[src].append(tgt)
+				in_degree[tgt] = in_degree.get(tgt, 0) + 1
+
+	# Assign layers using BFS / longest path from roots (in_degree == 0 or kind == "source")
+	var layers := {}
+	var queue: Array = []
+	for elem in elems:
+		if in_degree[elem.id] == 0 or elem.kind == "source":
+			layers[elem.id] = 0
+			queue.append(elem.id)
+
+	# If all nodes are in a cycle or no root found, pick first element
+	if queue.is_empty() and not elems.is_empty():
+		var first_id: String = elems[0].id
+		layers[first_id] = 0
+		queue.append(first_id)
+
+	var max_layer := 0
+	while not queue.is_empty():
+		var u: String = queue.pop_front()
+		var u_layer: int = layers.get(u, 0)
+		for v in adj.get(u, []):
+			var v_layer: int = max(layers.get(v, 0), u_layer + 1)
+			layers[v] = v_layer
+			max_layer = max(max_layer, v_layer)
+			if not queue.has(v):
+				queue.append(v)
+
+	# Group elements by layer
+	var layer_groups := {}
+	for elem in elems:
+		var l: int = layers.get(elem.id, 0)
+		if not layer_groups.has(l):
+			layer_groups[l] = []
+		layer_groups[l].append(elem)
+
+	_record_undo()
+	# Position elements cleanly along layers
+	var base_x := 40.0
+	var base_y := 40.0
+	for l in range(max_layer + 1):
+		if not layer_groups.has(l):
+			continue
+		var group: Array = layer_groups[l]
+		for i in range(group.size()):
+			var elem: SceneTypes.SceneElement = group[i]
+			var gx: float = base_x + float(l) * spacing_x
+			var gy: float = base_y + float(i) * spacing_y
+			elem.editor.graph_position = Vector2(gx, gy)
+			elem.transform.position = Vector3(gx / 20.0, gy / 20.0, elem.transform.position.z)
+
+	validate()
+	document_modified.emit()
+	return true

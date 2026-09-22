@@ -470,7 +470,7 @@ class SceneConnection extends SceneExtensible:
 		c.link_type = link_type
 		c.enabled = enabled
 		c.ordering = ordering
-		c.condition = condition
+		c.condition = condition.duplicate(true) if condition is Dictionary else condition
 		c.latency = latency
 		c.capacity = capacity
 		c.extensions = extensions.duplicate(true)

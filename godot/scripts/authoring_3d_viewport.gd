@@ -7,6 +7,8 @@ const SceneTypes := preload("res://scripts/scenespec_types.gd")
 const DocumentStore := preload("res://scripts/authoring_document_store.gd")
 const MeshFactory := preload("res://scripts/authoring_mesh_factory.gd")
 
+signal floating_properties_requested(elem_id: String, screen_pos: Vector2)
+
 var doc_store: DocumentStore
 
 var _sub_viewport: SubViewport
@@ -23,6 +25,7 @@ var _cam_yaw: float = 0.55     # Radians horizontal azimuth
 var _is_orbiting: bool = false
 var _is_panning: bool = false
 var _last_mouse_pos: Vector2 = Vector2.ZERO
+var _selection_indicator: Node3D = null
 
 func _init(p_store: DocumentStore = null) -> void:
 	doc_store = p_store
@@ -140,6 +143,22 @@ func _setup_ui_overlay() -> void:
 	hbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	overlay.add_child(hbox)
 
+	var ortho_btn := Button.new()
+	ortho_btn.text = "Perspective"
+	ortho_btn.add_theme_font_size_override("font_size", 11)
+	ortho_btn.mouse_filter = Control.MOUSE_FILTER_STOP
+	ortho_btn.pressed.connect(func():
+		if _camera != null:
+			if _camera.projection == Camera3D.PROJECTION_PERSPECTIVE:
+				_camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+				_camera.size = _cam_distance * 0.75
+				ortho_btn.text = "Orthographic"
+			else:
+				_camera.projection = Camera3D.PROJECTION_PERSPECTIVE
+				ortho_btn.text = "Perspective"
+	)
+	hbox.add_child(ortho_btn)
+
 	var reset_btn := Button.new()
 	reset_btn.text = "⛶ Frame All / Reset View"
 	reset_btn.add_theme_font_size_override("font_size", 11)
@@ -160,17 +179,25 @@ func rebuild_3d_scene() -> void:
 		return
 
 	for elem in doc_store.active_document.elements:
-		var node_3d := MeshFactory.create_3d_node_for_element(elem)
-		_entities_root.add_child(node_3d)
+		var anchor := Node3D.new()
+		anchor.name = "ElemAnchor_" + elem.id
+		anchor.set_meta("element_id", elem.id)
 
-		# Position in 3D: SceneSpec X, Y, Z maps to Godot 3D (X, Z, -Y)
-		# Top-Left Datum: px is Left, py is Top. Model local Z is centered [-W/2, +W/2],
-		# so placing at -py - (dims.y * 0.5) aligns the top edge exactly at -py.
 		var px: float = float(elem.transform.position[0])
 		var py: float = float(elem.transform.position[1])
 		var pz: float = float(elem.transform.position[2])
 		var dims: Vector3 = MeshFactory.get_dims(elem, Vector3(2.0, 1.5, 1.0))
-		node_3d.position = Vector3(px, pz, -py - (dims.y * 0.5))
+		anchor.position = Vector3(px, pz, -py)
+		anchor.rotation_degrees.y = -float(elem.transform.rotation.z)
+
+		var node_3d := MeshFactory.create_3d_node_for_element(elem)
+		node_3d.name = "Elem3D_" + elem.id
+		node_3d.position = Vector3(0, 0, -dims.y * 0.5)
+		anchor.add_child(node_3d)
+
+		_entities_root.add_child(anchor)
+
+	_update_selection_indicator()
 
 func frame_scene() -> void:
 	_ensure_setup()
@@ -216,7 +243,25 @@ func frame_scene() -> void:
 	_cam_distance = clamp(max_span * 1.8 + 12.0, 12.0, 160.0)
 	_cam_pitch = 0.65 # ~37 degrees elevation angle
 	_cam_yaw = 0.55   # angled isometric perspective
+	if _camera != null and _camera.projection == Camera3D.PROJECTION_ORTHOGONAL:
+		_camera.size = _cam_distance * 0.75
 	_update_camera_transform()
+
+func frame_selection() -> void:
+	_ensure_setup()
+	if doc_store != null and doc_store.selected_type == "element" and not doc_store.selected_id.is_empty():
+		var elem := doc_store.get_element(doc_store.selected_id)
+		if elem != null:
+			var px: float = float(elem.transform.position[0])
+			var py: float = float(elem.transform.position[1])
+			var dims: Vector3 = MeshFactory.get_dims(elem, Vector3(2.0, 1.5, 1.0))
+			_cam_pivot.position = Vector3(px + dims.x * 0.5, 0.8, -py - dims.y * 0.5)
+			_cam_distance = clamp(max(dims.x, dims.y) * 2.2 + 6.0, 6.0, 80.0)
+			if _camera != null and _camera.projection == Camera3D.PROJECTION_ORTHOGONAL:
+				_camera.size = _cam_distance * 0.75
+			_update_camera_transform()
+			return
+	frame_scene()
 
 func _reset_camera_default() -> void:
 	_ensure_setup()
@@ -226,6 +271,8 @@ func _reset_camera_default() -> void:
 	_cam_distance = 30.0
 	_cam_pitch = 0.65
 	_cam_yaw = 0.55
+	if _camera != null and _camera.projection == Camera3D.PROJECTION_ORTHOGONAL:
+		_camera.size = _cam_distance * 0.75
 	_update_camera_transform()
 
 func _on_document_reloaded(_doc: SceneTypes.SceneDocument) -> void:
@@ -236,7 +283,115 @@ func _on_document_modified() -> void:
 	rebuild_3d_scene()
 
 func _on_selection_changed(_sel_id: String, _sel_type: String) -> void:
-	pass
+	_update_selection_indicator()
+
+func _update_selection_indicator() -> void:
+	if _selection_indicator != null:
+		if is_instance_valid(_selection_indicator):
+			_selection_indicator.queue_free()
+		_selection_indicator = null
+
+	if doc_store == null or doc_store.selected_type != "element" or doc_store.selected_id.is_empty():
+		return
+
+	var elem := doc_store.get_element(doc_store.selected_id)
+	if elem == null:
+		return
+
+	var anchor: Node3D = _entities_root.get_node_or_null("ElemAnchor_" + elem.id)
+	if anchor == null:
+		return
+
+	var dims: Vector3 = MeshFactory.get_dims(elem, Vector3(2.0, 1.5, 1.0))
+	var max_h: float = max(dims.z, 2.0)
+	if elem.kind == "conveyor":
+		var z_s: float = float(elem.geometry.get("elevation_start", 0.8))
+		var z_e: float = float(elem.geometry.get("elevation_end", z_s))
+		max_h = max(max_h, max(z_s, z_e) + 0.5)
+
+	_selection_indicator = Node3D.new()
+	_selection_indicator.name = "SelectionIndicator"
+
+	var sel_mat := StandardMaterial3D.new()
+	sel_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	sel_mat.albedo_color = Color("#52c7a5")
+
+	var arr_mesh := ArrayMesh.new()
+	var verts := PackedVector3Array()
+	var min_x := -0.05
+	var max_x := dims.x + 0.05
+	var min_y := 0.0
+	var max_y := max_h + 0.1
+	var min_z := -dims.y - 0.05
+	var max_z := 0.05
+
+	var edges := [
+		Vector3(min_x, min_y, min_z), Vector3(max_x, min_y, min_z),
+		Vector3(max_x, min_y, min_z), Vector3(max_x, min_y, max_z),
+		Vector3(max_x, min_y, max_z), Vector3(min_x, min_y, max_z),
+		Vector3(min_x, min_y, max_z), Vector3(min_x, min_y, min_z),
+
+		Vector3(min_x, max_y, min_z), Vector3(max_x, max_y, min_z),
+		Vector3(max_x, max_y, min_z), Vector3(max_x, max_y, max_z),
+		Vector3(max_x, max_y, max_z), Vector3(min_x, max_y, max_z),
+		Vector3(min_x, max_y, max_z), Vector3(min_x, max_y, min_z),
+
+		Vector3(min_x, min_y, min_z), Vector3(min_x, max_y, min_z),
+		Vector3(max_x, min_y, min_z), Vector3(max_x, max_y, min_z),
+		Vector3(max_x, min_y, max_z), Vector3(max_x, max_y, max_z),
+		Vector3(min_x, min_y, max_z), Vector3(min_x, max_y, max_z)
+	]
+	for v in edges:
+		verts.append(v)
+
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_LINES, arrays)
+	arr_mesh.surface_set_material(0, sel_mat)
+
+	var mi := MeshInstance3D.new()
+	mi.mesh = arr_mesh
+	_selection_indicator.add_child(mi)
+
+	anchor.add_child(_selection_indicator)
+
+func pick_element_at(screen_pos: Vector2) -> String:
+	if _camera == null or doc_store == null or doc_store.active_document == null:
+		return ""
+
+	var ray_origin := _camera.project_ray_origin(screen_pos)
+	var ray_dir := _camera.project_ray_normal(screen_pos)
+
+	var best_dist := 1e9
+	var hit_elem_id := ""
+
+	for elem in doc_store.active_document.elements:
+		var anchor: Node3D = _entities_root.get_node_or_null("ElemAnchor_" + elem.id)
+		if anchor == null:
+			continue
+		var dims: Vector3 = MeshFactory.get_dims(elem, Vector3(2.0, 1.5, 1.0))
+		var max_h: float = max(dims.z, 2.0)
+		if elem.kind == "conveyor":
+			var z_s: float = float(elem.geometry.get("elevation_start", 0.8))
+			var z_e: float = float(elem.geometry.get("elevation_end", z_s))
+			max_h = max(max_h, max(z_s, z_e) + 0.5)
+
+		# Transform ray into anchor's local coordinate space
+		var inv_t: Transform3D = anchor.global_transform.affine_inverse()
+		var local_orig: Vector3 = inv_t * ray_origin
+		var local_dir: Vector3 = inv_t.basis * ray_dir
+
+		# Local box bounds: X in [0, dims.x], Y in [0, max_h], Z in [-dims.y, 0]
+		var aabb := AABB(Vector3(0, 0, -dims.y), Vector3(dims.x, max_h, dims.y))
+		var hit_t = aabb.intersects_ray(local_orig, local_dir)
+		if hit_t != null:
+			var dist: float = local_orig.distance_to(local_orig + local_dir * hit_t)
+			if dist < best_dist:
+				best_dist = dist
+				hit_elem_id = elem.id
+
+	return hit_elem_id
 
 func _update_camera_transform() -> void:
 	if _camera == null or _cam_pivot == null:
@@ -250,12 +405,41 @@ func _update_camera_transform() -> void:
 	var target_pos := _cam_pivot.position
 	var eye_pos := target_pos + Vector3(off_x, off_y, off_z)
 	_camera.look_at_from_position(eye_pos, target_pos, Vector3.UP)
+	if _camera.projection == Camera3D.PROJECTION_ORTHOGONAL:
+		_camera.size = _cam_distance * 0.75
 
 func _gui_input(event: InputEvent) -> void:
+	if event is InputEventKey:
+		var ik := event as InputEventKey
+		if ik.pressed and ik.keycode == KEY_F:
+			frame_selection()
+			accept_event()
+			return
+
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
-		if mb.button_index == MOUSE_BUTTON_RIGHT:
+		if mb.button_index == MOUSE_BUTTON_LEFT:
+			if mb.pressed:
+				_last_mouse_pos = mb.position
+				accept_event()
+			else:
+				# Click without drag (threshold 6px) -> Pick element
+				if mb.position.distance_to(_last_mouse_pos) < 6.0:
+					var hit_elem := pick_element_at(mb.position)
+					if doc_store != null:
+						if not hit_elem.is_empty():
+							doc_store.select(hit_elem, "element")
+						else:
+							doc_store.clear_selection()
+					accept_event()
+		elif mb.button_index == MOUSE_BUTTON_RIGHT:
 			_is_orbiting = mb.pressed
+			if not mb.pressed and mb.position.distance_to(_last_mouse_pos) < 6.0:
+				var hit_elem := pick_element_at(mb.position)
+				if not hit_elem.is_empty():
+					if doc_store != null:
+						doc_store.select(hit_elem, "element")
+					floating_properties_requested.emit(hit_elem, mb.global_position)
 			_last_mouse_pos = mb.position
 			accept_event()
 		elif mb.button_index == MOUSE_BUTTON_MIDDLE:
@@ -264,10 +448,14 @@ func _gui_input(event: InputEvent) -> void:
 			accept_event()
 		elif mb.button_index == MOUSE_BUTTON_WHEEL_UP:
 			_cam_distance = clamp(_cam_distance * 0.88, 2.0, 200.0)
+			if _camera != null and _camera.projection == Camera3D.PROJECTION_ORTHOGONAL:
+				_camera.size = _cam_distance * 0.75
 			_update_camera_transform()
 			accept_event()
 		elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			_cam_distance = clamp(_cam_distance * 1.14, 2.0, 200.0)
+			if _camera != null and _camera.projection == Camera3D.PROJECTION_ORTHOGONAL:
+				_camera.size = _cam_distance * 0.75
 			_update_camera_transform()
 			accept_event()
 
