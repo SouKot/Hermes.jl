@@ -67,6 +67,9 @@ func _init() -> void:
 	# Subsystem Encapsulation, 4-Corner Resizing & Internal Manifest (User Feedback)
 	test_subsystem_resizing_encapsulation_and_manifest()
 
+	# Subsystem Group to Template Packaging & Cloned Entity Instantiation (User Issue Fix)
+	test_subsystem_template_packaging_and_full_instantiation()
+
 	print("============================================================")
 	if _failures == 0:
 		print("● ALL %d TEST SUITES PASSED CLEANLY (Phase 7D-07 through 7D-10 Verified)" % _tests_run)
@@ -1883,9 +1886,110 @@ func test_subsystem_resizing_encapsulation_and_manifest() -> void:
 	_assert(store.get_scoped_subgraphs().size() == 0, "0 subgraphs remaining at root scope")
 
 	# Verify wire c_ext rewired back to srv_sub
-	_assert(ext_conn.source_element == "srv_sub", "External wire connection restored to original element source 'srv_sub'")
+	var cur_ext_conn: SceneTypes.SceneConnection = null
+	for conn in store.active_document.connections:
+		if conn.id == "c_ext":
+			cur_ext_conn = conn
+			break
+	_assert(cur_ext_conn != null and cur_ext_conn.source_element == "srv_sub", "External wire connection restored to original element source 'srv_sub'")
 
 	block.free()
+	shell.free()
+
+func test_subsystem_template_packaging_and_full_instantiation() -> void:
+	_tests_run += 1
+	print("\n[Suite 31: Subsystem Group-to-Template Packaging & Cloned Entity Instantiation]")
+	var shell := AuthoringShell.new()
+	shell._ready()
+
+	var cat: Catalog = shell.catalog
+	var store: DocumentStore = shell.doc_store
+
+	# 1. Place a Server, a Queue, and a Conveyor
+	var q := cat.create_element_instance("queue", "q_cell", Vector2(10, 10))
+	var srv := cat.create_element_instance("server", "srv_cell", Vector2(25, 10))
+	var conv := cat.create_element_instance("conveyor", "conv_cell", Vector2(40, 10))
+	store.add_element(q)
+	store.add_element(srv)
+	store.add_element(conv)
+
+	store.add_connection_direct("c_q_srv", "q_cell", "flow_out", "srv_cell", "flow_in")
+	store.add_connection_direct("c_srv_conv", "srv_cell", "flow_out", "conv_cell", "flow_in")
+
+	# 2. Group all 3 into a subsystem group
+	var grp: SceneTypes.SceneSubgraph = store.group_elements(["q_cell", "srv_cell", "conv_cell"], "Packaging Cell", "group")
+	_assert(grp != null, "Packaging Cell group created")
+	_assert(grp.elements.size() == 3, "Group contains 3 entities (queue, server, conveyor)")
+	_assert(grp.connections.size() == 2, "Group contains 2 internal wires")
+
+	# 3. Test Template Dialog populates correctly from the Group
+	var dlg = shell._template_dialog
+	dlg.open_for_selection([grp.id])
+	_assert(dlg.visible, "Template dialog opened for group")
+	_assert(dlg._name_edit.text == "Packaging Cell Template", "Dialog defaulted template name to group name + 'Template'")
+	_assert(dlg._desc_edit.text.contains("3 elements"), "Dialog description accurately reports 3 elements")
+	_assert(dlg._detected_ports.size() >= 2, "Dialog detected exposed boundary ports from internal elements")
+
+	# 4. Package as reusable template
+	var tmpl := store.package_as_template([grp.id], "tpl_packaging_cell", "Packaging Cell Template", "1.0.0", "Full 3-unit workcell")
+	_assert(tmpl != null, "Template packaged successfully from group")
+	_assert(tmpl.role == "template", "Template subgraph assigned role 'template'")
+	var proto_elems = tmpl.get_extension("prototype_elements", [])
+	var proto_conns = tmpl.get_extension("prototype_connections", [])
+	_assert(proto_elems.size() == 3, "Template stored 3 serialized prototype elements")
+	_assert(proto_conns.size() == 2, "Template stored 2 serialized prototype connections")
+
+	# Register into catalog
+	cat.register_template_entry(tmpl)
+	_assert(cat.get_entry("tpl_packaging_cell") != null, "Template registered in catalog")
+
+	# 5. Instantiate a NEW entity from the template!
+	var new_comp: SceneTypes.SceneSubgraph = store.instantiate_template("tpl_packaging_cell", "Line 1 Station", Vector3(100.0, 50.0, 0.0))
+	_assert(new_comp != null, "Template instantiated into compound entity")
+	_assert(new_comp.role == "compound", "Instantiated entity is a compound subgraph")
+	_assert(new_comp.elements.size() == 3, "Instantiated compound contains all 3 entities (queue, server, conveyor)")
+	_assert(new_comp.connections.size() == 2, "Instantiated compound contains 2 internal wires")
+
+	# 6. Verify that internal cloned entities actually exist in active_document
+	for cloned_eid in new_comp.elements:
+		var cloned_elem = store.get_element(str(cloned_eid))
+		_assert(cloned_elem != null, "Cloned entity '%s' exists in active document" % str(cloned_eid))
+		_assert(cloned_elem.transform.position.x >= 100.0, "Cloned entity positioned relative to instance world_pos (x >= 100.0)")
+
+	# Verify root scope encapsulation (cloned entities are hidden from root canvas, compound block rendered)
+	var root_elems := store.get_scoped_elements()
+	for cloned_eid in new_comp.elements:
+		var found_at_root := false
+		for re in root_elems:
+			if re.id == str(cloned_eid):
+				found_at_root = true
+				break
+		_assert(not found_at_root, "Cloned member '%s' is encapsulated and hidden from root scope" % str(cloned_eid))
+
+	# 7. Verify compound block visual manifest and inspector
+	var comp_block := BlockNode.new(null, new_comp)
+	comp_block._ready()
+	_assert(comp_block.subgraph.elements.size() == 3, "BlockNode sees 3 elements for compound manifest preview")
+
+	# 8. Verify drill-down into new compound instance
+	store.enter_subgraph_scope(new_comp.id)
+	var scoped_internal := store.get_scoped_elements()
+	_assert(scoped_internal.size() == 3, "Drill-down into compound scope reveals exactly 3 internal member entities")
+	store.exit_to_root_scope()
+
+	# 9. Verify moving compound block shifts internal entities
+	var orig_elem0_pos: Vector3 = store.get_element(str(new_comp.elements[0])).transform.position
+	store.set_subgraph_position(new_comp.id, Vector3(120.0, 60.0, 0.0))
+	var shifted_elem0_pos: Vector3 = store.get_element(str(new_comp.elements[0])).transform.position
+	_assert(abs((shifted_elem0_pos.x - orig_elem0_pos.x) - 20.0) < 0.01, "Moving compound block shifted internal member entity position by +20m in tandem")
+
+	# 10. Verify detach policy preserves all 3 entities as independent group
+	var detach_ok := store.detach_subgraph(new_comp.id)
+	_assert(detach_ok, "Detaching compound from template succeeded")
+	_assert(new_comp.role == "group", "Detached compound converted to group")
+	_assert(new_comp.elements.size() == 3, "Group retains all 3 entities without duplicates or empty members")
+
+	comp_block.free()
 	shell.free()
 
 

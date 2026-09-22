@@ -171,19 +171,25 @@ func open_for_selection(element_ids: Array) -> void:
 	if _target_element_ids.is_empty():
 		return
 
-	# Generate default template name from elements
+	# Generate default template name from elements or group
 	var def_name := "Workstation"
+	var elem_count := _target_element_ids.size()
 	if _target_element_ids.size() == 1:
-		var elem = doc_store.get_element(_target_element_ids[0])
-		if elem != null:
-			def_name = "%s Subsystem" % elem.name
+		var sub := doc_store.get_subgraph(str(_target_element_ids[0])) if doc_store != null else null
+		if sub != null:
+			def_name = "%s Template" % sub.name
+			elem_count = sub.elements.size()
+		else:
+			var elem = doc_store.get_element(str(_target_element_ids[0])) if doc_store != null else null
+			if elem != null:
+				def_name = "%s Subsystem" % elem.name
 	elif _target_element_ids.size() > 1:
 		def_name = "Cell with %d Units" % _target_element_ids.size()
 
 	_name_edit.text = def_name
 	_id_edit.text = "tpl_" + def_name.to_snake_case()
 	_version_edit.text = "1.0.0"
-	_desc_edit.text = "Reusable template comprising %d elements." % _target_element_ids.size()
+	_desc_edit.text = "Reusable template comprising %d elements." % elem_count
 
 	_populate_ports()
 	visible = true
@@ -200,7 +206,15 @@ func _populate_ports() -> void:
 	if doc_store == null:
 		return
 
-	_detected_ports = doc_store._synthesize_exposed_ports(_target_element_ids)
+	if _target_element_ids.size() == 1 and doc_store.get_subgraph(str(_target_element_ids[0])) != null:
+		var sub := doc_store.get_subgraph(str(_target_element_ids[0]))
+		if not sub.exposed_ports.is_empty():
+			_detected_ports = sub.exposed_ports.duplicate(true)
+		else:
+			_detected_ports = doc_store._synthesize_exposed_ports(sub.elements)
+	else:
+		_detected_ports = doc_store._synthesize_exposed_ports(_target_element_ids)
+
 	if _detected_ports.is_empty():
 		var empty_lbl := Label.new()
 		empty_lbl.text = "No open boundary ports detected."
@@ -242,7 +256,16 @@ func _on_save_pressed() -> void:
 		version = "1.0.0"
 	var desc: String = _desc_edit.text.strip_edges()
 
-	var tmpl := doc_store.package_as_template(_target_element_ids, tmpl_id, tmpl_name, version, desc)
+	var chosen_ports: Array = []
+	var rows := _ports_container.get_children()
+	for i in range(mini(rows.size(), _detected_ports.size())):
+		var row := rows[i]
+		if row.get_child_count() > 0 and row.get_child(0) is CheckBox:
+			var chk := row.get_child(0) as CheckBox
+			if chk.button_pressed:
+				chosen_ports.append(_detected_ports[i])
+
+	var tmpl := doc_store.package_as_template(_target_element_ids, tmpl_id, tmpl_name, version, desc, chosen_ports)
 	if tmpl != null:
 		template_created.emit(tmpl)
 

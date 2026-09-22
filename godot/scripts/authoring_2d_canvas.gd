@@ -306,15 +306,25 @@ func _on_block_moved(elem_id: String, new_pos: Vector2) -> void:
 			doc_store.document_modified.emit()
 		_redraw_all()
 	elif sub != null:
+		var prev_x: float = float(sub.transform.position.x)
+		var prev_y: float = float(sub.transform.position.y)
 		var unscaled: Vector2 = (new_pos - pan_offset) / max(zoom_level, 0.01)
 		var target_x: float = snapped(unscaled.x / 20.0, 0.05)
 		var target_y: float = snapped(unscaled.y / 20.0, 0.05)
+		var delta_x: float = target_x - prev_x
+		var delta_y: float = target_y - prev_y
 		sub.transform.position.x = target_x
 		sub.transform.position.y = target_y
 		sub.editor.graph_position = Vector2(target_x * 20.0, target_y * 20.0)
 		if _block_nodes.has(elem_id):
 			_block_nodes[elem_id].position = pan_offset + (sub.editor.graph_position * zoom_level)
 		if doc_store != null:
+			for eid in sub.elements:
+				var m_elem := doc_store.get_element(str(eid))
+				if m_elem != null:
+					m_elem.transform.position.x += delta_x
+					m_elem.transform.position.y += delta_y
+					m_elem.editor.graph_position = Vector2(m_elem.transform.position.x * 20.0, m_elem.transform.position.y * 20.0)
 			doc_store.is_dirty = true
 			doc_store.validate()
 			doc_store.document_modified.emit()

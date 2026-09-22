@@ -70,6 +70,9 @@ var _btn_abm: Button
 var _abm_status_pill: Label
 
 # Backwards compatibility getters/setters
+var inspector: Inspector:
+	get:
+		return _inspector_panel
 var _inspector_container: VBoxContainer:
 	get:
 		return _inspector_panel._container if _inspector_panel != null else null

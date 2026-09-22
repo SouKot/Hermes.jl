@@ -839,12 +839,30 @@ func remove_subgraph(sub_id: String) -> bool:
 		return false
 
 	_record_undo()
+	var sub: SceneTypes.SceneSubgraph = active_document.subgraphs[found_idx] if active_document.subgraphs[found_idx] is SceneTypes.SceneSubgraph else SceneTypes.SceneSubgraph.from_dict(active_document.subgraphs[found_idx])
 	active_document.subgraphs.remove_at(found_idx)
 
-	for i in range(active_document.connections.size() - 1, -1, -1):
-		var c: SceneTypes.SceneConnection = active_document.connections[i]
-		if c.source_element == sub_id or c.target_element == sub_id:
-			active_document.connections.remove_at(i)
+	# Clean up encapsulated elements and internal connections
+	if sub != null:
+		var del_elem_set := {}
+		for eid in sub.elements:
+			del_elem_set[str(eid)] = true
+		for i in range(active_document.elements.size() - 1, -1, -1):
+			if del_elem_set.has(active_document.elements[i].id):
+				active_document.elements.remove_at(i)
+
+		var del_conn_set := {}
+		for cid in sub.connections:
+			del_conn_set[str(cid)] = true
+		for i in range(active_document.connections.size() - 1, -1, -1):
+			var c: SceneTypes.SceneConnection = active_document.connections[i]
+			if del_conn_set.has(c.id) or c.source_element == sub_id or c.target_element == sub_id or del_elem_set.has(c.source_element) or del_elem_set.has(c.target_element):
+				active_document.connections.remove_at(i)
+	else:
+		for i in range(active_document.connections.size() - 1, -1, -1):
+			var c: SceneTypes.SceneConnection = active_document.connections[i]
+			if c.source_element == sub_id or c.target_element == sub_id:
+				active_document.connections.remove_at(i)
 
 	if selected_id == sub_id:
 		clear_selection()
@@ -1040,7 +1058,7 @@ func ungroup(subgraph_id: String) -> bool:
 	document_modified.emit()
 	return true
 
-func package_as_template(target_ids: Array, tmpl_id: String, tmpl_name: String, version: String = "1.0.0", description: String = "") -> SceneTypes.SceneSubgraph:
+func package_as_template(target_ids: Array, tmpl_id: String, tmpl_name: String, version: String = "1.0.0", description: String = "", custom_exposed_ports: Array = []) -> SceneTypes.SceneSubgraph:
 	if active_document == null or target_ids.is_empty():
 		return null
 
@@ -1049,12 +1067,17 @@ func package_as_template(target_ids: Array, tmpl_id: String, tmpl_name: String, 
 	var elem_ids: Array = []
 	var internal_conn_ids: Array = []
 	var exposed_ports: Array = []
+	var bbox_w: float = 0.0
+	var bbox_h: float = 0.0
 
 	if target_ids.size() == 1 and get_subgraph(str(target_ids[0])) != null:
 		var src_sub := get_subgraph(str(target_ids[0]))
 		elem_ids = src_sub.elements.duplicate(true)
 		internal_conn_ids = src_sub.connections.duplicate(true)
-		exposed_ports = src_sub.exposed_ports.duplicate(true)
+		exposed_ports = custom_exposed_ports if not custom_exposed_ports.is_empty() else src_sub.exposed_ports.duplicate(true)
+		if src_sub.transform != null and src_sub.transform.scale.x > 0.1:
+			bbox_w = float(src_sub.transform.scale.x)
+			bbox_h = float(src_sub.transform.scale.y)
 	else:
 		elem_ids = target_ids.duplicate(true)
 		var id_set := {}
@@ -1063,7 +1086,44 @@ func package_as_template(target_ids: Array, tmpl_id: String, tmpl_name: String, 
 		for c in active_document.connections:
 			if id_set.has(c.source_element) and id_set.has(c.target_element):
 				internal_conn_ids.append(c.id)
-		exposed_ports = _synthesize_exposed_ports(elem_ids)
+		exposed_ports = custom_exposed_ports if not custom_exposed_ports.is_empty() else _synthesize_exposed_ports(elem_ids)
+
+	var proto_elems_data: Array = []
+	var proto_conns_data: Array = []
+	var min_px: float = 999999.0
+	var min_py: float = 999999.0
+	var max_px: float = -999999.0
+	var max_py: float = -999999.0
+
+	for eid in elem_ids:
+		var elem := get_element(str(eid))
+		if elem != null:
+			proto_elems_data.append(elem.to_dict())
+			var ex: float = float(elem.transform.position.x)
+			var ey: float = float(elem.transform.position.y)
+			var ew: float = 4.0
+			var eh: float = 2.0
+			if elem.geometry.has("dimensions") and elem.geometry["dimensions"] is Array and elem.geometry["dimensions"].size() >= 2:
+				ew = float(elem.geometry["dimensions"][0])
+				eh = float(elem.geometry["dimensions"][1])
+			min_px = min(min_px, ex)
+			min_py = min(min_py, ey)
+			max_px = max(max_px, ex + ew)
+			max_py = max(max_py, ey + eh)
+
+	for cid in internal_conn_ids:
+		for c in active_document.connections:
+			if c.id == str(cid):
+				proto_conns_data.append(c.to_dict())
+				break
+
+	if bbox_w <= 1.0 or bbox_h <= 1.0:
+		if min_px < 900000.0:
+			bbox_w = maxf(8.0, snapped(max_px - min_px + 1.0, 0.5))
+			bbox_h = maxf(4.0, snapped(max_py - min_py + 1.0, 0.5))
+		else:
+			bbox_w = 8.0
+			bbox_h = 4.0
 
 	var tmpl := SceneTypes.SceneSubgraph.new()
 	tmpl.id = tmpl_id
@@ -1073,6 +1133,14 @@ func package_as_template(target_ids: Array, tmpl_id: String, tmpl_name: String, 
 	tmpl.elements = elem_ids
 	tmpl.connections = internal_conn_ids
 	tmpl.exposed_ports = exposed_ports
+	tmpl.transform.scale = Vector3(bbox_w, bbox_h, 2.0)
+	if tmpl.editor != null:
+		tmpl.editor.extensions["dimensions"] = [bbox_w, bbox_h, 2.0]
+	tmpl.set_extension("dimensions", [bbox_w, bbox_h, 2.0])
+	if min_px < 900000.0:
+		tmpl.set_extension("base_anchor", [min_px, min_py, 0.0])
+	tmpl.set_extension("prototype_elements", proto_elems_data)
+	tmpl.set_extension("prototype_connections", proto_conns_data)
 	if not description.is_empty():
 		tmpl.set_extension("description", description)
 
@@ -1131,6 +1199,195 @@ func instantiate_template(template_id: String, instance_name: String = "", world
 	inst.elements = []
 	inst.connections = []
 
+	# Gather prototype elements to clone
+	var proto_elements_list: Array = []
+	var proto_conns_list: Array = []
+
+	var ext_protos = tmpl.get_extension("prototype_elements", [])
+	if ext_protos is Array and not ext_protos.is_empty():
+		for pdata in ext_protos:
+			if pdata is Dictionary:
+				proto_elements_list.append(SceneTypes.SceneElement.from_dict(pdata))
+			elif pdata is SceneTypes.SceneElement:
+				proto_elements_list.append(pdata)
+
+	var ext_conns = tmpl.get_extension("prototype_connections", [])
+	if ext_conns is Array and not ext_conns.is_empty():
+		for cdata in ext_conns:
+			if cdata is Dictionary:
+				proto_conns_list.append(SceneTypes.SceneConnection.from_dict(cdata))
+			elif cdata is SceneTypes.SceneConnection:
+				proto_conns_list.append(cdata)
+
+	# Fallback to looking up tmpl.elements in active_document if not serialized in extensions
+	if proto_elements_list.is_empty():
+		for eid in tmpl.elements:
+			var elem := get_element(str(eid))
+			if elem != null:
+				proto_elements_list.append(elem)
+
+	if proto_conns_list.is_empty():
+		for cid in tmpl.connections:
+			for c in active_document.connections:
+				if c.id == str(cid):
+					proto_conns_list.append(c)
+					break
+
+	# Special fallback for built-in queue_server_station if empty
+	if proto_elements_list.is_empty() and template_id == "queue_server_station":
+		var q_elem := SceneTypes.SceneElement.new()
+		q_elem.id = "q_in"
+		q_elem.name = "Infeed Queue"
+		q_elem.kind = "queue"
+		q_elem.transform.position = Vector3(0, 0, 0)
+		q_elem.geometry["dimensions"] = [4.0, 2.0, 1.0]
+		var q_in_p := SceneTypes.ScenePort.new()
+		q_in_p.id = "flow_in"
+		q_in_p.name = "Flow In"
+		q_in_p.kind = "flow"
+		q_in_p.direction = "input"
+		var q_out_p := SceneTypes.ScenePort.new()
+		q_out_p.id = "flow_out"
+		q_out_p.name = "Flow Out"
+		q_out_p.kind = "flow"
+		q_out_p.direction = "output"
+		q_elem.input_ports = [q_in_p]
+		q_elem.output_ports = [q_out_p]
+		q_elem.properties = {"capacity": 50, "discipline": "fifo"}
+
+		var srv_elem := SceneTypes.SceneElement.new()
+		srv_elem.id = "srv_core"
+		srv_elem.name = "Process Server"
+		srv_elem.kind = "server"
+		srv_elem.transform.position = Vector3(6, 0, 0)
+		srv_elem.geometry["dimensions"] = [4.0, 2.0, 1.0]
+		var s_in_p := SceneTypes.ScenePort.new()
+		s_in_p.id = "flow_in"
+		s_in_p.name = "Flow In"
+		s_in_p.kind = "flow"
+		s_in_p.direction = "input"
+		var s_out_p := SceneTypes.ScenePort.new()
+		s_out_p.id = "flow_out"
+		s_out_p.name = "Flow Out"
+		s_out_p.kind = "flow"
+		s_out_p.direction = "output"
+		var s_met_p := SceneTypes.ScenePort.new()
+		s_met_p.id = "utilization"
+		s_met_p.name = "Utilization"
+		s_met_p.kind = "metric"
+		s_met_p.direction = "output"
+		srv_elem.input_ports = [s_in_p]
+		srv_elem.output_ports = [s_out_p]
+		srv_elem.metric_ports = [s_met_p]
+		srv_elem.properties = {"service_time": 2.5, "capacity": 1}
+
+		proto_elements_list = [q_elem, srv_elem]
+
+		var internal_c := SceneTypes.SceneConnection.new()
+		internal_c.id = "c_q_to_srv"
+		internal_c.source_element = "q_in"
+		internal_c.source_port = "flow_out"
+		internal_c.target_element = "srv_core"
+		internal_c.target_port = "flow_in"
+		internal_c.link_type = "flow"
+		proto_conns_list = [internal_c]
+
+	# Compute base anchor for relative placement
+	var base_anchor: Vector3 = Vector3.ZERO
+	var has_anchor: bool = false
+	var ext_anchor = tmpl.get_extension("base_anchor", null)
+	if ext_anchor is Array and ext_anchor.size() >= 2:
+		base_anchor = Vector3(float(ext_anchor[0]), float(ext_anchor[1]), 0.0)
+		has_anchor = true
+	else:
+		var min_x: float = 999999.0
+		var min_y: float = 999999.0
+		for p_elem in proto_elements_list:
+			min_x = min(min_x, float(p_elem.transform.position.x))
+			min_y = min(min_y, float(p_elem.transform.position.y))
+		if min_x < 900000.0:
+			base_anchor = Vector3(min_x, min_y, 0.0)
+			has_anchor = true
+
+	# Clone elements into active document
+	var elem_map: Dictionary = {} # proto.id -> new_eid
+	var instantiated_elem_ids: Array = []
+
+	for p_elem in proto_elements_list:
+		var clone: SceneTypes.SceneElement = p_elem.clone()
+		var clean_proto_id: String = p_elem.id.replace("tpl_", "")
+		var new_eid := "%s_%s" % [new_id, clean_proto_id]
+		var eid_counter := 1
+		while existing_ids.has(new_eid):
+			eid_counter += 1
+			new_eid = "%s_%s_%02d" % [new_id, clean_proto_id, eid_counter]
+		existing_ids[new_eid] = true
+
+		clone.id = new_eid
+		clone.name = "%s %s" % [inst.name, p_elem.name]
+		var rel_pos: Vector3 = (p_elem.transform.position - base_anchor) if has_anchor else p_elem.transform.position
+		clone.transform.position = world_pos + rel_pos
+		clone.editor.graph_position = Vector2(clone.transform.position.x * 20.0, clone.transform.position.y * 20.0)
+
+		# Apply overrides
+		for k in overrides.keys():
+			var sk := str(k)
+			if sk.begins_with(p_elem.id + "."):
+				var prop_name := sk.substr(p_elem.id.length() + 1)
+				clone.properties[prop_name] = overrides[k]
+			elif sk == p_elem.id and overrides[k] is Dictionary:
+				for p in overrides[k].keys():
+					clone.properties[p] = overrides[k][p]
+
+		active_document.elements.append(clone)
+		instantiated_elem_ids.append(new_eid)
+		elem_map[p_elem.id] = new_eid
+
+	# Clone internal connections
+	var instantiated_conn_ids: Array = []
+	for p_conn in proto_conns_list:
+		if elem_map.has(p_conn.source_element) and elem_map.has(p_conn.target_element):
+			var conn_clone: SceneTypes.SceneConnection = p_conn.clone()
+			var clean_cid: String = p_conn.id.replace("tpl_", "")
+			var new_cid := "%s_%s" % [new_id, clean_cid]
+			var cid_counter := 1
+			while existing_ids.has(new_cid):
+				cid_counter += 1
+				new_cid = "%s_%s_%02d" % [new_id, clean_cid, cid_counter]
+			existing_ids[new_cid] = true
+
+			conn_clone.id = new_cid
+			conn_clone.source_element = elem_map[p_conn.source_element]
+			conn_clone.target_element = elem_map[p_conn.target_element]
+			active_document.connections.append(conn_clone)
+			instantiated_conn_ids.append(new_cid)
+
+	# Remap exposed ports targets to new cloned elements
+	for ep in inst.exposed_ports:
+		var orig_telem: String = str(ep.get("target_element", ep.get("internal_element_id", "")))
+		if elem_map.has(orig_telem):
+			ep["target_element"] = elem_map[orig_telem]
+			if ep.has("internal_element_id"):
+				ep["internal_element_id"] = elem_map[orig_telem]
+
+	inst.elements = instantiated_elem_ids
+	inst.connections = instantiated_conn_ids
+
+	# Set compound bounding dimensions
+	var bbox_w: float = 8.0
+	var bbox_h: float = 4.0
+	var ext_dims = tmpl.get_extension("dimensions", null)
+	if ext_dims is Array and ext_dims.size() >= 2:
+		bbox_w = float(ext_dims[0])
+		bbox_h = float(ext_dims[1])
+	elif tmpl.transform != null and tmpl.transform.scale.x > 0.1:
+		bbox_w = float(tmpl.transform.scale.x)
+		bbox_h = float(tmpl.transform.scale.y)
+
+	inst.transform.scale = Vector3(bbox_w, bbox_h, 2.0)
+	if inst.editor != null:
+		inst.editor.extensions["dimensions"] = [bbox_w, bbox_h, 2.0]
+
 	active_document.subgraphs.append(inst)
 	select(inst.id, "subgraph")
 	validate()
@@ -1149,6 +1406,50 @@ func detach_subgraph(subgraph_id: String) -> bool:
 
 	_record_undo()
 
+	# If the compound instance already has its elements instantiated:
+	if not sub.elements.is_empty():
+		for eid in sub.elements:
+			var elem := get_element(str(eid))
+			if elem == null:
+				continue
+			for k in sub.parameter_overrides.keys():
+				var sk := str(k)
+				if sk.begins_with("tpl_"):
+					var clean_k := sk.replace("tpl_", "")
+					if elem.id.ends_with("_" + clean_k.split(".")[0]):
+						var prop := clean_k.substr(clean_k.find(".") + 1)
+						elem.properties[prop] = sub.parameter_overrides[k]
+				elif sk.contains("."):
+					var parts := sk.split(".")
+					if elem.id.ends_with("_" + parts[0]):
+						elem.properties[parts[1]] = sub.parameter_overrides[k]
+
+		for ep in sub.exposed_ports:
+			var exp_id: String = str(ep.get("id", ep.get("port_id", "")))
+			var telem: String = str(ep.get("target_element", ep.get("internal_element_id", "")))
+			var tport: String = str(ep.get("target_port", ep.get("internal_port_id", "")))
+			if not exp_id.is_empty() and not telem.is_empty() and not tport.is_empty():
+				for conn in active_document.connections:
+					if conn.source_element == subgraph_id and conn.source_port == exp_id:
+						conn.source_element = telem
+						conn.source_port = tport
+					if conn.target_element == subgraph_id and conn.target_port == exp_id:
+						conn.target_element = telem
+						conn.target_port = tport
+
+		sub.role = "group"
+		sub.template_id = null
+		sub.template_version = null
+		sub.exposed_ports = []
+		sub.parameter_overrides = {}
+
+		select(sub.id, "subgraph")
+		validate()
+		subgraphs_modified.emit()
+		document_modified.emit()
+		return true
+
+	# Fallback if sub.elements was empty (legacy fixtures):
 	var elem_map := {}
 	var created_elem_ids: Array = []
 	for proto_id in tmpl.elements:
@@ -1220,8 +1521,17 @@ func set_subgraph_position(sub_id: String, new_pos: Vector3) -> bool:
 	if sub == null:
 		return false
 	_record_undo()
+	var delta_pos: Vector3 = new_pos - sub.transform.position
 	sub.transform.position = new_pos
 	sub.editor.graph_position = Vector2(new_pos.x * 20.0, new_pos.y * 20.0)
+
+	if delta_pos.length_squared() > 0.0001:
+		for eid in sub.elements:
+			var elem := get_element(str(eid))
+			if elem != null:
+				elem.transform.position += delta_pos
+				elem.editor.graph_position = Vector2(elem.transform.position.x * 20.0, elem.transform.position.y * 20.0)
+
 	validate()
 	subgraphs_modified.emit()
 	document_modified.emit()
@@ -1256,13 +1566,21 @@ func update_subgraph_geometry_and_position(sub_id: String, new_dims: Vector3, ne
 	sub.transform.scale = dims
 	if sub.editor != null:
 		sub.editor.extensions["dimensions"] = [dims.x, dims.y, dims.z]
+	var delta_pos: Vector3 = Vector3(new_pos.x, new_pos.y, max(0.0, new_pos.z)) - sub.transform.position
 	sub.transform.position = Vector3(new_pos.x, new_pos.y, max(0.0, new_pos.z))
 	sub.editor.graph_position = Vector2(new_pos.x * 20.0, new_pos.y * 20.0)
+
+	if delta_pos.length_squared() > 0.0001:
+		for eid in sub.elements:
+			var elem := get_element(str(eid))
+			if elem != null:
+				elem.transform.position += delta_pos
+				elem.editor.graph_position = Vector2(elem.transform.position.x * 20.0, elem.transform.position.y * 20.0)
+
 	validate()
 	subgraphs_modified.emit()
 	document_modified.emit()
 	return true
-
 
 func set_subgraph_override(sub_id: String, target_elem_id: String, prop_key: String = "", value: Variant = null) -> bool:
 	var sub := get_subgraph(sub_id)
@@ -1273,6 +1591,17 @@ func set_subgraph_override(sub_id: String, target_elem_id: String, prop_key: Str
 	if not prop_key.is_empty():
 		full_key = "%s.%s" % [target_elem_id, prop_key]
 	sub.parameter_overrides[full_key] = value
+
+	if not prop_key.is_empty():
+		var clean_target: String = target_elem_id.replace("tpl_", "")
+		for eid in sub.elements:
+			var sid: String = str(eid)
+			if sid.ends_with("_" + clean_target) or sid == target_elem_id or sid.ends_with("_" + target_elem_id):
+				var elem := get_element(sid)
+				if elem != null:
+					elem.properties[prop_key] = value
+					break
+
 	validate()
 	subgraphs_modified.emit()
 	document_modified.emit()
