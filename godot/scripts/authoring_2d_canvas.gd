@@ -350,55 +350,77 @@ func _on_port_drag_started(elem_id: String, port_id: String, port_kind: String, 
 	_wire_is_compatible = false
 	_redraw_all()
 
-func _input(event: InputEvent) -> void:
-	if event is InputEventKey:
-		var ik := event as InputEventKey
-		if ik.pressed:
-			if ik.keycode == KEY_ESCAPE:
-				if _is_dragging_wire:
-					_cancel_wire_drag()
-					if is_inside_tree() and get_viewport() != null:
-						get_viewport().set_input_as_handled()
-				elif doc_store != null and (doc_store.selected_type == "connection" or doc_store.selected_type == "element"):
-					doc_store.clear_selection()
-					_redraw_all()
-					if is_inside_tree() and get_viewport() != null:
-						get_viewport().set_input_as_handled()
+var _force_text_focus_for_test: bool = false
 
-			elif ik.keycode in [KEY_DELETE, KEY_BACKSPACE]:
-				if doc_store != null:
-					if doc_store.selected_type == "connection" and not doc_store.selected_id.is_empty():
-						doc_store.remove_connection(doc_store.selected_id)
-						_redraw_all()
-						if is_inside_tree() and get_viewport() != null:
-							get_viewport().set_input_as_handled()
-					elif doc_store.selected_type == "element":
-						if doc_store.selected_elements.size() > 1:
-							doc_store.remove_elements(doc_store.selected_elements)
-						elif not doc_store.selected_id.is_empty():
-							doc_store.remove_element(doc_store.selected_id)
-						rebuild_blocks()
-						if is_inside_tree() and get_viewport() != null:
-							get_viewport().set_input_as_handled()
+func _is_text_input_focused() -> bool:
+	if _force_text_focus_for_test:
+		return true
+	if not is_inside_tree():
+		return false
+	var vp := get_viewport()
+	if vp == null:
+		return false
+	var focus_owner := vp.gui_get_focus_owner()
+	if focus_owner == null:
+		return false
+	return (focus_owner is LineEdit) or (focus_owner is TextEdit) or (focus_owner is CodeEdit) or (focus_owner is SpinBox)
 
-			elif ik.keycode == KEY_D and (ik.ctrl_pressed or ik.meta_pressed):
-				if doc_store != null and doc_store.selected_type == "element" and not doc_store.selected_id.is_empty():
-					doc_store.duplicate_element(doc_store.selected_id)
-					rebuild_blocks()
-					if is_inside_tree() and get_viewport() != null:
-						get_viewport().set_input_as_handled()
+func _handle_key_input(ik: InputEventKey) -> void:
+	if not ik.pressed or ik.echo:
+		return
+	if _is_text_input_focused():
+		return
 
-			elif ik.keycode == KEY_R and not (ik.ctrl_pressed or ik.meta_pressed):
-				if doc_store != null and doc_store.selected_type == "element" and not doc_store.selected_id.is_empty():
-					var delta: float = 15.0 if ik.shift_pressed else 45.0
-					doc_store.rotate_element(doc_store.selected_id, delta)
-					if is_inside_tree() and get_viewport() != null:
-						get_viewport().set_input_as_handled()
+	if ik.keycode == KEY_ESCAPE:
+		if _is_dragging_wire:
+			_cancel_wire_drag()
+			if is_inside_tree() and get_viewport() != null:
+				get_viewport().set_input_as_handled()
+		elif doc_store != null and (doc_store.selected_type == "connection" or doc_store.selected_type == "element" or doc_store.selected_type == "subgraph"):
+			doc_store.clear_selection()
+			_redraw_all()
+			if is_inside_tree() and get_viewport() != null:
+				get_viewport().set_input_as_handled()
 
-			elif ik.keycode == KEY_F and not (ik.ctrl_pressed or ik.meta_pressed):
-				frame_all()
+	elif ik.keycode in [KEY_DELETE, KEY_BACKSPACE]:
+		if doc_store != null:
+			if doc_store.selected_type == "connection" and not doc_store.selected_id.is_empty():
+				doc_store.remove_connection(doc_store.selected_id)
+				_redraw_all()
 				if is_inside_tree() and get_viewport() != null:
 					get_viewport().set_input_as_handled()
+			elif doc_store.selected_type == "element":
+				if doc_store.selected_elements.size() > 1:
+					doc_store.remove_elements(doc_store.selected_elements)
+				elif not doc_store.selected_id.is_empty():
+					doc_store.remove_element(doc_store.selected_id)
+				rebuild_blocks()
+				if is_inside_tree() and get_viewport() != null:
+					get_viewport().set_input_as_handled()
+
+	elif ik.keycode == KEY_D and (ik.ctrl_pressed or ik.meta_pressed):
+		if doc_store != null and doc_store.selected_type == "element" and not doc_store.selected_id.is_empty():
+			doc_store.duplicate_element(doc_store.selected_id)
+			rebuild_blocks()
+			if is_inside_tree() and get_viewport() != null:
+				get_viewport().set_input_as_handled()
+
+	elif ik.keycode == KEY_R and not (ik.ctrl_pressed or ik.meta_pressed):
+		if doc_store != null and doc_store.selected_type == "element" and not doc_store.selected_id.is_empty():
+			var delta: float = 15.0 if ik.shift_pressed else 45.0
+			doc_store.rotate_element(doc_store.selected_id, delta)
+			if is_inside_tree() and get_viewport() != null:
+				get_viewport().set_input_as_handled()
+
+	elif ik.keycode == KEY_F and not (ik.ctrl_pressed or ik.meta_pressed):
+		frame_all()
+		if is_inside_tree() and get_viewport() != null:
+			get_viewport().set_input_as_handled()
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventKey:
+		_handle_key_input(event as InputEventKey)
+		return
 
 	if not _is_dragging_wire:
 		return

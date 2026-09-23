@@ -645,7 +645,7 @@ func _ensure_abm_config_struct() -> void:
 	if not (doc.abm_config.get("parameters") is Dictionary):
 		doc.abm_config["parameters"] = {}
 
-func _on_doc_reloaded() -> void:
+func _on_doc_reloaded(_doc: Variant = null) -> void:
 	refresh_from_document()
 
 func _on_doc_modified() -> void:

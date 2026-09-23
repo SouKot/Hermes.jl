@@ -405,10 +405,17 @@ func _gui_input(event: InputEvent) -> void:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT:
 			if mb.pressed:
-				if mb.double_click and subgraph != null:
-					subgraph_drilldown_requested.emit(nid)
-					accept_event()
-					return
+				if mb.double_click:
+					if subgraph != null:
+						subgraph_drilldown_requested.emit(nid)
+						accept_event()
+						return
+					elif element != null:
+						block_selected.emit(nid)
+						var mouse_pos: Vector2 = mb.global_position if mb.global_position != Vector2.ZERO else (get_global_mouse_position() if is_inside_tree() else mb.position)
+						floating_properties_requested.emit(nid, mouse_pos)
+						accept_event()
+						return
 
 				# 1. Check if clicked on a port socket
 				var hit_port := _hit_test_port(mb.position)
@@ -682,6 +689,16 @@ func _get_tooltip(at_position: Vector2) -> String:
 		else:
 			base_tip = "%s %s: %s\nID: %s" % [kind_str, dir_str, p_name, hit_port]
 		return base_tip + "\n(Right-click to disconnect wires)"
+
+	if element != null:
+		var name_str := element.name if not element.name.is_empty() else element.id
+		var dims := _get_physical_dimensions()
+		var tip := "%s [%s]\nID: %s\nSize: %.1fm × %.1fm" % [name_str, element.kind.capitalize(), element.id, dims.x, dims.y]
+		return tip + "\n(Double-click or Right-click to edit properties)"
+	elif subgraph != null:
+		var name_str := subgraph.name if not subgraph.name.is_empty() else subgraph.id
+		return "%s [%s]\nID: %s\n(Double-click to drill down)" % [name_str, subgraph.role.capitalize(), subgraph.id]
+
 	return ""
 
 func _draw() -> void:
@@ -722,12 +739,15 @@ func _draw() -> void:
 	if element != null:
 		var dims := _get_physical_dimensions()
 		var dim_str := "%.1fm × %.1fm" % [dims.x, dims.y]
-		var title: String = element.id
+		var title: String = element.name if not element.name.is_empty() else element.id
 		var cur_rot: float = fposmod(float(element.transform.rotation.z), 360.0) if element.transform != null else 0.0
 
 		if mid_w >= 70.0:
 			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 24.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 12, TEXT_COLOR)
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 40.0), element.kind.to_upper(), HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 9, MUTED_COLOR)
+			var sub_str: String = element.kind.to_upper()
+			if not element.name.is_empty() and element.name != element.id:
+				sub_str = "%s (%s)" % [element.kind.to_upper(), element.id]
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 40.0), sub_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 9, MUTED_COLOR)
 			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 56.0), dim_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 10, COLOR_FLOW)
 
 			if cur_rot > 0.05:

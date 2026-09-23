@@ -247,7 +247,8 @@ func open_for_element(elem_id: String, screen_pos: Vector2 = Vector2.ZERO) -> vo
 		return
 
 	# Update title & badge
-	_title_label.text = "Properties: %s" % elem.id
+	var title_text: String = elem.name if not elem.name.is_empty() else elem.id
+	_title_label.text = "Properties: %s" % title_text
 	_kind_pill.text = "[%s]" % elem.kind.to_upper()
 	_dot_rect.color = Color(elem.editor.color) if not elem.editor.color.is_empty() else ACCENT
 
@@ -315,6 +316,46 @@ func refresh() -> void:
 # Tab 0: Process & DES Parameters
 # ============================================================================
 func _render_process_tab(elem: SceneTypes.SceneElement) -> void:
+	# Block Identity (Name & ID)
+	var id_box := VBoxContainer.new()
+	id_box.add_theme_constant_override("separation", 3)
+
+	var id_hdr := HBoxContainer.new()
+	var name_lbl := Label.new()
+	name_lbl.text = "BLOCK NAME / LABEL"
+	name_lbl.add_theme_font_size_override("font_size", 10)
+	name_lbl.add_theme_color_override("font_color", MUTED)
+	id_hdr.add_child(name_lbl)
+
+	var id_note := Label.new()
+	id_note.text = "(ID: %s)" % elem.id
+	id_note.add_theme_font_size_override("font_size", 9)
+	id_note.add_theme_color_override("font_color", Color(0.5, 0.6, 0.7, 0.8))
+	id_hdr.add_child(id_note)
+	id_box.add_child(id_hdr)
+
+	var name_input := LineEdit.new()
+	name_input.text = elem.name if not elem.name.is_empty() else elem.id
+	name_input.placeholder_text = "Enter block display name..."
+	name_input.custom_minimum_size.y = 26
+	name_input.add_theme_font_size_override("font_size", 11)
+	name_input.text_submitted.connect(func(new_text: String):
+		var trimmed := new_text.strip_edges()
+		if not trimmed.is_empty() and trimmed != elem.name:
+			doc_store.rename_element(elem.id, trimmed)
+			_title_label.text = "Properties: %s" % trimmed
+	)
+	name_input.focus_exited.connect(func():
+		if name_input != null and is_instance_valid(name_input) and not name_input.is_queued_for_deletion():
+			var trimmed := name_input.text.strip_edges()
+			if not trimmed.is_empty() and trimmed != elem.name:
+				doc_store.rename_element(elem.id, trimmed)
+				_title_label.text = "Properties: %s" % trimmed
+	)
+	id_box.add_child(name_input)
+	_pages_container.add_child(id_box)
+	_pages_container.add_child(HSeparator.new())
+
 	var entry: Catalog.CatalogEntry = catalog.get_entry(elem.kind) if catalog != null else null
 	if entry == null or entry.property_schemas.is_empty():
 		var no_props := Label.new()
@@ -743,7 +784,7 @@ func _render_ports_tab(elem: SceneTypes.SceneElement) -> void:
 			doc_store.update_port_properties(elem.id, pid_name, {"name": new_text})
 		)
 		name_edit.focus_exited.connect(func():
-			if name_edit.text != p.name:
+			if name_edit != null and is_instance_valid(name_edit) and not name_edit.is_queued_for_deletion() and name_edit.text != p.name:
 				doc_store.update_port_properties(elem.id, pid_name, {"name": name_edit.text})
 		)
 		r2.add_child(name_edit)
@@ -1102,7 +1143,7 @@ func _on_header_gui_input(event: InputEvent) -> void:
 		position = new_pos
 		accept_event()
 
-func _input(event: InputEvent) -> void:
+func _unhandled_key_input(event: InputEvent) -> void:
 	if visible and event is InputEventKey:
 		var ik := event as InputEventKey
 		if ik.pressed and ik.keycode == KEY_ESCAPE:
@@ -1111,9 +1152,9 @@ func _input(event: InputEvent) -> void:
 
 func _on_document_modified() -> void:
 	if visible and not current_elem_id.is_empty():
-		refresh()
+		call_deferred("refresh")
 
 func _on_selection_changed(sel_id: String, sel_type: String) -> void:
 	if visible and sel_type == "element" and not sel_id.is_empty() and sel_id != current_elem_id:
 		current_elem_id = sel_id
-		refresh()
+		call_deferred("refresh")

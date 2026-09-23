@@ -6,6 +6,7 @@ extends RefCounted
 const SceneTypes := preload("res://scripts/scenespec_types.gd")
 const SceneCodec := preload("res://scripts/scenespec_codec.gd")
 const SceneValidator := preload("res://scripts/scenespec_validator.gd")
+const SceneRepository := preload("res://scripts/scenespec_repository.gd")
 
 signal document_loaded(doc: SceneTypes.SceneDocument)
 signal document_saved(path: String)
@@ -14,6 +15,8 @@ signal diagnostics_updated(diagnostics: Array, is_valid: bool)
 signal selection_changed(selected_id: String, selected_type: String)
 signal scope_changed(scope_id: String, scope_name: String)
 signal subgraphs_modified()
+signal autosave_completed(path: String, timestamp: float)
+signal recovery_detected(recovery_info: Dictionary)
 
 var active_document: SceneTypes.SceneDocument
 var file_path: String = ""
@@ -23,6 +26,13 @@ var selected_type: String = "" # "element", "connection", "level", "port", "subg
 var selected_port_id: String = ""
 var selected_elements: Array[String] = []
 var current_scope_id: String = "" # "" denotes root scene
+
+var repository := SceneRepository.new()
+var autosave_enabled: bool = true
+var autosave_interval_sec: float = 45.0
+var _autosave_timer: float = 0.0
+var last_autosave_time: float = 0.0
+var last_autosave_path: String = ""
 
 var _undo_stack: Array = []
 var _redo_stack: Array = []
@@ -76,17 +86,42 @@ func new_document() -> void:
 	scope_changed.emit("", "Root")
 	document_loaded.emit(active_document)
 
+static func clean_file_basename(path: String) -> String:
+	var fname := path.get_file()
+	for ext in [".scenespec.mp", ".scenespec", ".json", ".mp", ".simviz"]:
+		if fname.ends_with(ext):
+			fname = fname.trim_suffix(ext)
+			break
+	return fname
+
+func get_display_title() -> String:
+	if not file_path.is_empty():
+		return file_path.get_file()
+	var sname: String = str(active_document.scene.get("name", "")).strip_edges() if active_document != null else ""
+	return sname if not sname.is_empty() else "Untitled Simulation"
+
 func load_from_file(path: String) -> bool:
+	if path.ends_with(".simviz") or (DirAccess.dir_exists_absolute(path) and FileAccess.file_exists(path.path_join("project.json"))):
+		return load_from_bundle(path)
+
 	if not FileAccess.file_exists(path):
 		return false
-	var f := FileAccess.open(path, FileAccess.READ)
-	if f == null:
-		return false
-	var text := f.get_as_text()
-	f.close()
 
 	var codec := SceneCodec.new()
-	var doc = codec.load_document(text)
+	var doc: SceneTypes.SceneDocument = null
+	var fmt_type := "canonical_json"
+
+	if path.ends_with(".mp") or path.ends_with(".scenespec.mp"):
+		doc = codec.load_from_msgpack_file(path)
+		fmt_type = "msgpack"
+	else:
+		var f := FileAccess.open(path, FileAccess.READ)
+		if f == null:
+			return false
+		var text := f.get_as_text()
+		f.close()
+		doc = codec.load_document(text)
+
 	if doc == null:
 		return false
 
@@ -98,38 +133,365 @@ func load_from_file(path: String) -> bool:
 	_redo_stack.clear()
 	selected_id = ""
 	selected_type = ""
+	var cur_sname: String = str(active_document.scene.get("name", "")).strip_edges()
+	if cur_sname.is_empty() or cur_sname in ["Untitled Simulation", "Untitled Scene", "Untitled"]:
+		var base := clean_file_basename(path)
+		if not base.is_empty():
+			active_document.scene["name"] = base.replace("_", " ").capitalize()
+	repository.add_recent_scene(path, active_document.scene.get("name", ""), fmt_type, active_document.elements.size(), active_document.subgraphs.size())
 	validate()
 	scope_changed.emit("", "Root")
 	document_loaded.emit(active_document)
 	return true
 
-func save_to_file(path: String = "") -> bool:
+func save_to_file(path: String = "", format_hint: String = "auto") -> bool:
 	var target_path := path if not path.is_empty() else file_path
 	if target_path.is_empty():
 		return false
 
+	if active_document != null:
+		var cur_sname: String = str(active_document.scene.get("name", "")).strip_edges()
+		if cur_sname.is_empty() or cur_sname in ["Untitled Simulation", "Untitled Scene", "Untitled"]:
+			var base := clean_file_basename(target_path)
+			if not base.is_empty():
+				active_document.scene["name"] = base.replace("_", " ").capitalize()
+
+	if target_path.ends_with(".simviz") or format_hint == "bundle":
+		return save_to_bundle(target_path, true)
+
+	var is_msgpack := (target_path.ends_with(".mp") or target_path.ends_with(".scenespec.mp") or format_hint == "msgpack")
 	var codec := SceneCodec.new()
-	var text := codec.save_document(active_document, true)
+
+	if is_msgpack:
+		var ok := codec.save_to_msgpack_file(active_document, target_path)
+		if ok:
+			file_path = target_path
+			is_dirty = false
+			clear_autosave(target_path)
+			repository.add_recent_scene(target_path, active_document.scene.get("name", ""), "msgpack", active_document.elements.size(), active_document.subgraphs.size())
+			document_saved.emit(target_path)
+			return true
+		return false
+
+	# Canonical JSON with atomic multi-stage write & backup protection
+	var text := codec.save_canonical_document(active_document, true)
 	if text.is_empty():
 		return false
 
-	# Atomic write: save to .tmp then rename
 	var tmp_path := target_path + ".tmp"
 	var f := FileAccess.open(tmp_path, FileAccess.WRITE)
 	if f == null:
 		return false
 	f.store_string(text)
+	f.flush()
 	f.close()
 
+	var bak_path := target_path + ".bak"
 	if FileAccess.file_exists(target_path):
-		DirAccess.remove_absolute(target_path)
-	var err := DirAccess.rename_absolute(tmp_path, target_path)
-	if err == OK:
+		var err_bak := DirAccess.rename_absolute(target_path, bak_path)
+		if err_bak != OK:
+			DirAccess.remove_absolute(tmp_path)
+			return false
+
+	var err_rename := DirAccess.rename_absolute(tmp_path, target_path)
+	if err_rename == OK:
+		if FileAccess.file_exists(bak_path):
+			DirAccess.remove_absolute(bak_path)
 		file_path = target_path
 		is_dirty = false
+		clear_autosave(target_path)
+		repository.add_recent_scene(target_path, active_document.scene.get("name", ""), "canonical_json", active_document.elements.size(), active_document.subgraphs.size())
 		document_saved.emit(target_path)
 		return true
+	else:
+		if FileAccess.file_exists(bak_path):
+			DirAccess.rename_absolute(bak_path, target_path)
+		DirAccess.remove_absolute(tmp_path)
+		return false
+
+func save_to_bundle(bundle_dir: String, shard_subgraphs: bool = true) -> bool:
+	if bundle_dir.is_empty():
+		return false
+	if active_document != null:
+		var cur_sname: String = str(active_document.scene.get("name", "")).strip_edges()
+		if cur_sname.is_empty() or cur_sname in ["Untitled Simulation", "Untitled Scene", "Untitled"]:
+			var base := clean_file_basename(bundle_dir)
+			if not base.is_empty():
+				active_document.scene["name"] = base.replace("_", " ").capitalize()
+	if not repository.create_bundle_skeleton(bundle_dir, active_document.scene.get("name", "Untitled")):
+		return false
+
+	var codec := SceneCodec.new()
+	var root_doc_dict: Dictionary = active_document.to_dict()
+
+	if shard_subgraphs and not active_document.subgraphs.is_empty():
+		var subgraphs_dir := bundle_dir.path_join("graph").path_join("subgraphs")
+		DirAccess.make_dir_recursive_absolute(subgraphs_dir)
+		for sub in active_document.subgraphs:
+			if sub is SceneTypes.SceneSubgraph:
+				var sub_path := subgraphs_dir.path_join(sub.id + ".scenespec")
+				var sub_json := codec.save_to_canonical_json_string(sub.to_dict(), true)
+				var sf := FileAccess.open(sub_path, FileAccess.WRITE)
+				if sf != null:
+					sf.store_string(sub_json)
+					sf.flush()
+					sf.close()
+
+	var root_path := bundle_dir.path_join("graph").path_join("root.scenespec")
+	var root_json := codec.save_to_canonical_json_string(root_doc_dict, true)
+	var rf := FileAccess.open(root_path, FileAccess.WRITE)
+	if rf == null:
+		return false
+	rf.store_string(root_json)
+	rf.flush()
+	rf.close()
+
+	file_path = bundle_dir
+	is_dirty = false
+	clear_autosave(bundle_dir)
+	repository.add_recent_scene(bundle_dir, active_document.scene.get("name", ""), "bundle", active_document.elements.size(), active_document.subgraphs.size())
+	document_saved.emit(bundle_dir)
+	return true
+
+func load_from_bundle(bundle_dir: String) -> bool:
+	var root_path := bundle_dir.path_join("graph").path_join("root.scenespec")
+	if not FileAccess.file_exists(root_path):
+		root_path = bundle_dir.path_join("root.scenespec")
+	if not FileAccess.file_exists(root_path):
+		return false
+
+	var f := FileAccess.open(root_path, FileAccess.READ)
+	if f == null:
+		return false
+	var text := f.get_as_text()
+	f.close()
+
+	var codec := SceneCodec.new()
+	var doc = codec.load_document(text)
+	if doc == null:
+		return false
+
+	var subgraphs_dir := bundle_dir.path_join("graph").path_join("subgraphs")
+	if DirAccess.dir_exists_absolute(subgraphs_dir):
+		var dir := DirAccess.open(subgraphs_dir)
+		if dir != null:
+			dir.list_dir_begin()
+			var fn := dir.get_next()
+			while not fn.is_empty():
+				if not dir.current_is_dir() and fn.ends_with(".scenespec"):
+					var sp := subgraphs_dir.path_join(fn)
+					var sf := FileAccess.open(sp, FileAccess.READ)
+					if sf != null:
+						var st := sf.get_as_text()
+						sf.close()
+						var s_dict := codec.load_from_json_string(st)
+						if not s_dict.is_empty():
+							var sub_id := str(s_dict.get("id", ""))
+							var found := false
+							for existing_sub in doc.subgraphs:
+								if existing_sub is SceneTypes.SceneSubgraph and existing_sub.id == sub_id:
+									found = true
+									break
+							if not found:
+								doc.subgraphs.append(SceneTypes.SceneSubgraph.from_dict(s_dict))
+				fn = dir.get_next()
+			dir.list_dir_end()
+
+	active_document = doc
+	file_path = bundle_dir
+	is_dirty = false
+	current_scope_id = ""
+	_undo_stack.clear()
+	_redo_stack.clear()
+	selected_id = ""
+	selected_type = ""
+	var cur_sname: String = str(active_document.scene.get("name", "")).strip_edges()
+	if cur_sname.is_empty() or cur_sname in ["Untitled Simulation", "Untitled Scene", "Untitled"]:
+		var base := clean_file_basename(bundle_dir)
+		if not base.is_empty():
+			active_document.scene["name"] = base.replace("_", " ").capitalize()
+	repository.add_recent_scene(bundle_dir, active_document.scene.get("name", ""), "bundle", active_document.elements.size(), active_document.subgraphs.size())
+	validate()
+	scope_changed.emit("", "Root")
+	document_loaded.emit(active_document)
+	return true
+
+func merge_document(source_doc: Variant, position_offset: Vector3 = Vector3.ZERO, namespace_prefix: String = "") -> Dictionary:
+	var src_doc: SceneTypes.SceneDocument
+	if source_doc is SceneTypes.SceneDocument:
+		src_doc = source_doc
+	elif source_doc is Dictionary:
+		src_doc = SceneTypes.SceneDocument.from_dict(source_doc)
+	else:
+		return {"error": "Invalid source document"}
+
+	var prefix := namespace_prefix
+	if prefix.is_empty():
+		prefix = "m_" + str(src_doc.scene.get("id", "scene")).substr(0, 8) + "_"
+
+	_record_undo()
+
+	var existing_elem_ids := {}
+	for e in active_document.elements:
+		if e is SceneTypes.SceneElement:
+			existing_elem_ids[e.id] = true
+
+	var id_remap := {}
+	var added_elements: Array[String] = []
+	for e in src_doc.elements:
+		if e is SceneTypes.SceneElement:
+			var target_id: String = e.id
+			if existing_elem_ids.has(target_id) or not namespace_prefix.is_empty():
+				target_id = prefix + e.id
+			id_remap[e.id] = target_id
+
+			var new_elem: SceneTypes.SceneElement = e.clone()
+			new_elem.id = target_id
+			if new_elem.transform != null:
+				new_elem.transform.position += position_offset
+			active_document.elements.append(new_elem)
+			added_elements.append(target_id)
+
+	var added_connections: Array[String] = []
+	for c in src_doc.connections:
+		if c is SceneTypes.SceneConnection:
+			var new_conn: SceneTypes.SceneConnection = c.clone()
+			var target_conn_id: String = c.id
+			if active_document.get_connection(target_conn_id) != null or not namespace_prefix.is_empty():
+				target_conn_id = prefix + c.id
+			new_conn.id = target_conn_id
+			if id_remap.has(c.source_element):
+				new_conn.source_element = id_remap[c.source_element]
+			if id_remap.has(c.target_element):
+				new_conn.target_element = id_remap[c.target_element]
+			active_document.connections.append(new_conn)
+			added_connections.append(target_conn_id)
+
+	var added_subgraphs: Array[String] = []
+	for s in src_doc.subgraphs:
+		if s is SceneTypes.SceneSubgraph:
+			var new_sub: SceneTypes.SceneSubgraph = s.clone()
+			var target_sub_id: String = s.id
+			if active_document.get_subgraph(target_sub_id) != null or not namespace_prefix.is_empty():
+				target_sub_id = prefix + s.id
+			new_sub.id = target_sub_id
+			active_document.subgraphs.append(new_sub)
+			added_subgraphs.append(target_sub_id)
+
+	is_dirty = true
+	validate()
+	document_modified.emit()
+	return {
+		"added_elements": added_elements.size(),
+		"added_connections": added_connections.size(),
+		"added_subgraphs": added_subgraphs.size(),
+		"prefix": prefix
+	}
+
+# ============================================================================
+# Autosave & Crash Recovery Engine
+# ============================================================================
+
+func tick_autosave(delta: float) -> void:
+	if not autosave_enabled or not is_dirty:
+		return
+	_autosave_timer += delta
+	if _autosave_timer >= autosave_interval_sec:
+		_autosave_timer = 0.0
+		trigger_autosave()
+
+func get_autosave_path(for_path: String = "") -> String:
+	var target := for_path if not for_path.is_empty() else file_path
+	if not target.is_empty():
+		return target + ".autosave.json"
+	var draft_id := str(active_document.scene.get("id", "draft")) if active_document != null else "draft"
+	return "user://autosaves/untitled_" + draft_id + ".autosave.json"
+
+func trigger_autosave() -> bool:
+	if not is_dirty or active_document == null:
+		return false
+	var auto_path := get_autosave_path(file_path)
+	var parent_dir := auto_path.get_base_dir()
+	if not DirAccess.dir_exists_absolute(parent_dir):
+		DirAccess.make_dir_recursive_absolute(parent_dir)
+
+	var codec := SceneCodec.new()
+	var json_str := codec.save_canonical_document(active_document, true)
+	if json_str.is_empty():
+		return false
+
+	var tmp_path := auto_path + ".tmp"
+	var f := FileAccess.open(tmp_path, FileAccess.WRITE)
+	if f == null:
+		return false
+	f.store_string(json_str)
+	f.flush()
+	f.close()
+
+	if FileAccess.file_exists(auto_path):
+		DirAccess.remove_absolute(auto_path)
+	var err := DirAccess.rename_absolute(tmp_path, auto_path)
+	if err == OK:
+		last_autosave_time = Time.get_unix_time_from_system()
+		last_autosave_path = auto_path
+		autosave_completed.emit(auto_path, last_autosave_time)
+		return true
 	return false
+
+func check_recovery_available(for_path: String) -> Dictionary:
+	var auto_path := get_autosave_path(for_path)
+	if not FileAccess.file_exists(auto_path):
+		return {"available": false}
+
+	var auto_mod := FileAccess.get_modified_time(auto_path)
+	var file_mod: int = 0
+	if FileAccess.file_exists(for_path):
+		file_mod = FileAccess.get_modified_time(for_path)
+
+	if auto_mod > file_mod:
+		var f := FileAccess.open(auto_path, FileAccess.READ)
+		if f != null:
+			var text := f.get_as_text()
+			f.close()
+			var codec := SceneCodec.new()
+			var auto_doc = codec.load_document(text)
+			if auto_doc != null:
+				return {
+					"available": true,
+					"autosave_path": auto_path,
+					"autosave_time": auto_mod,
+					"file_time": file_mod,
+					"file_path": for_path,
+					"scene_name": auto_doc.scene.get("name", "Untitled"),
+					"element_count": auto_doc.elements.size(),
+					"autosave_document": auto_doc
+				}
+	return {"available": false}
+
+func recover_from_autosave(autosave_path: String) -> bool:
+	if not FileAccess.file_exists(autosave_path):
+		return false
+	var f := FileAccess.open(autosave_path, FileAccess.READ)
+	if f == null:
+		return false
+	var text := f.get_as_text()
+	f.close()
+
+	var codec := SceneCodec.new()
+	var doc = codec.load_document(text)
+	if doc == null:
+		return false
+
+	active_document = doc
+	is_dirty = true
+	validate()
+	document_loaded.emit(active_document)
+	return true
+
+func clear_autosave(for_path: String = "") -> void:
+	var auto_path := get_autosave_path(for_path)
+	if FileAccess.file_exists(auto_path):
+		DirAccess.remove_absolute(auto_path)
 
 func select(id_val: String, type_val: String = "element") -> void:
 	selected_id = id_val
@@ -237,7 +599,6 @@ func _record_undo() -> void:
 		_undo_stack.pop_front()
 	_redo_stack.clear()
 	is_dirty = true
-	document_modified.emit()
 
 func undo() -> bool:
 	if _undo_stack.is_empty():
@@ -348,6 +709,93 @@ func get_element(elem_id: String) -> SceneTypes.SceneElement:
 		if elem.id == elem_id:
 			return elem
 	return null
+
+func rename_element(elem_id: String, new_name: String) -> bool:
+	var elem := get_element(elem_id)
+	if elem == null:
+		return false
+	var clean := new_name.strip_edges()
+	if clean.is_empty() or clean == elem.name:
+		return false
+	_record_undo()
+	elem.name = clean
+	validate()
+	document_modified.emit()
+	return true
+
+func rename_element_id(old_id: String, new_id: String) -> bool:
+	if active_document == null:
+		return false
+	var clean_id := new_id.strip_edges()
+	if clean_id.is_empty() or clean_id == old_id:
+		return false
+	for elem in active_document.elements:
+		if elem.id == clean_id:
+			return false
+	for sub in active_document.subgraphs:
+		if sub.id == clean_id:
+			return false
+	var target_elem := get_element(old_id)
+	if target_elem == null:
+		return false
+
+	_record_undo()
+	target_elem.id = clean_id
+
+	for conn in active_document.connections:
+		if conn.source_element == old_id:
+			conn.source_element = clean_id
+		if conn.target_element == old_id:
+			conn.target_element = clean_id
+
+	for sub in active_document.subgraphs:
+		for i in range(sub.elements.size()):
+			if sub.elements[i] == old_id:
+				sub.elements[i] = clean_id
+
+	if selected_id == old_id:
+		selected_id = clean_id
+
+	validate()
+	document_modified.emit()
+	return true
+
+func rename_subgraph(sub_id: String, new_name: String) -> bool:
+	var sub := get_subgraph(sub_id)
+	if sub == null:
+		return false
+	var clean := new_name.strip_edges()
+	if clean.is_empty() or clean == sub.name:
+		return false
+	_record_undo()
+	sub.name = clean
+	validate()
+	document_modified.emit()
+	return true
+
+func set_scene_name(new_name: String) -> bool:
+	if active_document == null:
+		return false
+	var clean := new_name.strip_edges()
+	if clean.is_empty() or clean == active_document.scene.get("name", ""):
+		return false
+	_record_undo()
+	active_document.scene["name"] = clean
+	validate()
+	document_modified.emit()
+	return true
+
+func set_scene_author(new_author: String) -> bool:
+	if active_document == null:
+		return false
+	var clean := new_author.strip_edges()
+	if clean == active_document.scene.get("author", ""):
+		return false
+	_record_undo()
+	active_document.scene["author"] = clean
+	validate()
+	document_modified.emit()
+	return true
 
 func update_element_geometry(elem_id: String, new_dims: Vector3, elev_start: float = -999.0, elev_end: float = -999.0) -> bool:
 	var elem := get_element(elem_id)

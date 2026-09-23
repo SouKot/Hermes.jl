@@ -14,6 +14,11 @@ const RuleBuilder := preload("res://scripts/authoring_rule_builder.gd")
 const FloatingInspector := preload("res://scripts/authoring_floating_inspector.gd")
 const ABMDialog := preload("res://scripts/authoring_abm_dialog.gd")
 const TemplateDialog := preload("res://scripts/authoring_template_dialog.gd")
+const DiffDialog := preload("res://scripts/authoring_diff_dialog.gd")
+const AutosaveDialog := preload("res://scripts/authoring_autosave_dialog.gd")
+const UnsavedChangesDialog := preload("res://scripts/authoring_unsaved_changes_dialog.gd")
+const SceneDiff := preload("res://scripts/scenespec_diff.gd")
+const SceneCodec := preload("res://scripts/scenespec_codec.gd")
 
 enum ViewMode { VIEW_2D, VIEW_3D }
 
@@ -39,6 +44,18 @@ var current_view: ViewMode = ViewMode.VIEW_2D
 
 # UI References
 var _doc_title_label: Label
+var _autosave_status_label: Label
+var _file_menu: MenuButton
+var _recent_menu: PopupMenu
+var _file_dialog: FileDialog
+var _diff_dialog: DiffDialog
+var _autosave_dialog: AutosaveDialog
+var _unsaved_dialog: UnsavedChangesDialog
+var _file_dialog_action: String = ""
+var _after_save_action: Dictionary = {}
+var _pending_import_path: String = ""
+var _pending_import_doc: Variant = null
+
 var _btn_view_2d: Button
 var _btn_view_3d: Button
 var _outer_split: HSplitContainer
@@ -116,12 +133,23 @@ func _init() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 func _ready() -> void:
+	if DisplayServer.get_name() != "headless":
+		get_tree().set_auto_accept_quit(false)
 	_build_ui()
 	_connect_signals()
 	_update_view_toggle_ui()
+	_update_title()
 	_populate_catalog()
 	_populate_inspector()
 	_update_abm_status_pill()
+	_check_startup_recovery()
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		if doc_store != null and doc_store.is_dirty:
+			_request_action_guarded({"action": "quit"})
+		else:
+			get_tree().quit()
 
 func _connect_signals() -> void:
 	doc_store.document_loaded.connect(_on_document_loaded)
@@ -131,6 +159,8 @@ func _connect_signals() -> void:
 	doc_store.diagnostics_updated.connect(_on_diagnostics_updated)
 	doc_store.scope_changed.connect(_on_scope_changed)
 	doc_store.subgraphs_modified.connect(_on_subgraphs_modified)
+	doc_store.autosave_completed.connect(_on_autosave_completed)
+	doc_store.recovery_detected.connect(_on_recovery_detected)
 	_diagnostics_panel.diagnostic_focused.connect(_on_diagnostic_focused)
 	_diagnostics_panel.fix_requested.connect(_on_diagnostic_fix_requested)
 	if _canvas_2d != null:
@@ -144,6 +174,8 @@ func _process(delta: float) -> void:
 	if is_sim_running:
 		sim_time += delta * sim_speed
 		_clock_label.text = "t = %.2f s" % sim_time
+	if doc_store != null:
+		doc_store.tick_autosave(delta)
 
 func _build_ui() -> void:
 	var bg_rect := ColorRect.new()
@@ -248,6 +280,50 @@ func _build_ui() -> void:
 	)
 	add_child(_template_dialog)
 
+	# 8. Diff Dialog
+	_diff_dialog = DiffDialog.new()
+	_diff_dialog.visible = false
+	_diff_dialog.merge_confirmed.connect(_on_diff_dialog_confirmed)
+	add_child(_diff_dialog)
+
+	# 9. Autosave Recovery Dialog
+	_autosave_dialog = AutosaveDialog.new()
+	_autosave_dialog.visible = false
+	_autosave_dialog.recover_selected.connect(func(p: String):
+		doc_store.recover_from_autosave(p)
+		_update_title()
+	)
+	_autosave_dialog.discard_selected.connect(func(_p: String):
+		doc_store.clear_autosave(doc_store.file_path)
+	)
+	_autosave_dialog.preview_selected.connect(func(p: String):
+		var codec := SceneCodec.new()
+		var auto_bytes := FileAccess.get_file_as_bytes(p)
+		var auto_doc = codec.load_document(auto_bytes.get_string_from_utf8())
+		if auto_doc != null:
+			var diff = SceneDiff.diff_documents(doc_store.active_document, auto_doc)
+			_diff_dialog.set_diff(diff)
+			_diff_dialog.popup_centered()
+	)
+	add_child(_autosave_dialog)
+
+	# 10. FileDialog
+	_file_dialog = FileDialog.new()
+	_file_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	_file_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	_file_dialog.file_selected.connect(_on_file_selected)
+	_file_dialog.dir_selected.connect(_on_dir_selected)
+	_file_dialog.canceled.connect(_on_file_dialog_canceled)
+	add_child(_file_dialog)
+
+	# 11. Unsaved Changes Guard Dialog
+	_unsaved_dialog = UnsavedChangesDialog.new()
+	_unsaved_dialog.visible = false
+	_unsaved_dialog.save_confirmed.connect(_on_unsaved_save_confirmed)
+	_unsaved_dialog.discard_confirmed.connect(_on_unsaved_discard_confirmed)
+	_unsaved_dialog.action_canceled.connect(_on_unsaved_action_canceled)
+	add_child(_unsaved_dialog)
+
 func _build_header() -> Control:
 	var panel := PanelContainer.new()
 	panel.custom_minimum_size.y = 52
@@ -258,7 +334,7 @@ func _build_header() -> Control:
 	panel.add_theme_stylebox_override("panel", style)
 
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 14)
+	row.add_theme_constant_override("separation", 12)
 	row.add_theme_constant_override("margin_left", 14)
 	row.add_theme_constant_override("margin_right", 14)
 	panel.add_child(row)
@@ -272,23 +348,49 @@ func _build_header() -> Control:
 
 	# Document Name & Dirty Star
 	_doc_title_label = Label.new()
-	_doc_title_label.text = "Untitled Scene"
+	_doc_title_label.text = "Untitled Simulation"
 	_doc_title_label.add_theme_font_size_override("font_size", 13)
-	_doc_title_label.add_theme_color_override("font_color", MUTED)
+	_doc_title_label.add_theme_color_override("font_color", Color("#d8dee9"))
+	_doc_title_label.tooltip_text = "Current simulation file and scene name. Select empty canvas to view and edit Scene Properties."
 	row.add_child(_doc_title_label)
+
+	# Autosave Status
+	_autosave_status_label = Label.new()
+	_autosave_status_label.text = ""
+	_autosave_status_label.add_theme_font_size_override("font_size", 11)
+	_autosave_status_label.add_theme_color_override("font_color", Color("#52c7a5"))
+	row.add_child(_autosave_status_label)
 
 	row.add_child(VSeparator.new())
 
-	# File Actions
-	var btn_new := Button.new()
-	btn_new.text = "New"
-	btn_new.pressed.connect(func(): doc_store.new_document())
-	row.add_child(btn_new)
+	# File MenuButton
+	_file_menu = MenuButton.new()
+	_file_menu.text = "File"
+	_file_menu.flat = false
+	var popup: PopupMenu = _file_menu.get_popup()
+	popup.add_item("New Scene", 1)
+	popup.add_item("Open Scene...", 2)
+	popup.add_item("Open SimViz Bundle...", 3)
 
-	var btn_save := Button.new()
-	btn_save.text = "Save"
-	btn_save.pressed.connect(func(): _on_save_clicked())
-	row.add_child(btn_save)
+	_recent_menu = PopupMenu.new()
+	_recent_menu.name = "RecentMenu"
+	_recent_menu.id_pressed.connect(_on_recent_item_pressed)
+	popup.add_child(_recent_menu)
+	popup.add_submenu_item("Recent Projects", "RecentMenu", 4)
+
+	popup.add_separator()
+	popup.add_item("Save", 10)
+	popup.add_item("Save As...", 11)
+	popup.add_separator()
+	popup.add_item("Export Canonical JSON (.scenespec)...", 20)
+	popup.add_item("Export Binary MessagePack (.scenespec.mp)...", 21)
+	popup.add_item("Export SimViz Bundle (.simviz)...", 22)
+	popup.add_separator()
+	popup.add_item("Import & Merge Scene...", 30)
+
+	popup.id_pressed.connect(_on_file_menu_id_pressed)
+	popup.about_to_popup.connect(_refresh_recent_menu)
+	row.add_child(_file_menu)
 
 	var btn_val := Button.new()
 	btn_val.text = "Validate"
@@ -661,6 +763,9 @@ func _open_rule_builder(conn_id: String) -> void:
 func _on_document_loaded(doc: SceneTypes.SceneDocument) -> void:
 	_update_title()
 	_update_abm_status_pill()
+	if _autosave_status_label != null:
+		_autosave_status_label.text = "● Saved"
+		_autosave_status_label.add_theme_color_override("font_color", Color("#52c7a5"))
 	_diagnostics_panel.update_diagnostics(doc_store.last_diagnostics, doc_store.is_document_valid)
 	_canvas_2d.rebuild_blocks()
 	_viewport_3d.rebuild_3d_scene()
@@ -668,6 +773,9 @@ func _on_document_loaded(doc: SceneTypes.SceneDocument) -> void:
 func _on_document_modified() -> void:
 	_update_title()
 	_update_abm_status_pill()
+	if _autosave_status_label != null and doc_store != null and doc_store.is_dirty:
+		_autosave_status_label.text = "● Unsaved Changes"
+		_autosave_status_label.add_theme_color_override("font_color", Color("#f1c40f"))
 	_diagnostics_panel.update_diagnostics(doc_store.last_diagnostics, doc_store.is_document_valid)
 	if _viewport_3d != null:
 		_viewport_3d.rebuild_3d_scene()
@@ -685,6 +793,9 @@ func _on_document_modified() -> void:
 
 func _on_document_saved(_path: String) -> void:
 	_update_title()
+	if _autosave_status_label != null:
+		_autosave_status_label.text = "● Saved"
+		_autosave_status_label.add_theme_color_override("font_color", Color("#52c7a5"))
 
 func _on_selection_changed(_id_val: String, _type_val: String) -> void:
 	_insp_spin_px = null
@@ -718,17 +829,22 @@ func _on_diagnostic_fix_requested(diag: Dictionary) -> void:
 			_viewport_3d.rebuild_3d_scene()
 
 func _update_title() -> void:
-	var doc_name := "Untitled Scene"
-	if doc_store != null and doc_store.active_document != null:
-		doc_name = str(doc_store.active_document.scene.get("name", "Untitled Scene"))
+	var display_title := "Untitled Simulation"
+	if doc_store != null:
+		display_title = doc_store.get_display_title()
 	var star := " *" if (doc_store != null and doc_store.is_dirty) else ""
-	_doc_title_label.text = "%s%s" % [doc_name, star]
+	if _doc_title_label != null:
+		_doc_title_label.text = "%s%s" % [display_title, star]
+	if is_inside_tree() and DisplayServer.get_name() != "headless":
+		DisplayServer.window_set_title("%s%s — Antigravity SimViz" % [display_title, star])
 
 func _on_save_clicked() -> void:
-	var save_path := doc_store.file_path
-	if save_path.is_empty():
-		save_path = "user://authored_scene.json"
-	doc_store.save_to_file(save_path)
+	if doc_store == null:
+		return
+	if doc_store.file_path.is_empty():
+		_open_file_dialog(FileDialog.FILE_MODE_SAVE_FILE, PackedStringArray(["*.scenespec ; Canonical JSON", "*.scenespec.mp ; MessagePack", "*.simviz ; SimViz Bundle"]), "save_file")
+	else:
+		doc_store.save_to_file(doc_store.file_path)
 
 func _duplicate_element(eid: String) -> void:
 	doc_store.duplicate_element(eid)
@@ -857,4 +973,197 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.ctrl_pressed and event.keycode == KEY_G:
 			_on_group_clicked()
 			get_viewport().set_input_as_handled()
+		elif event.ctrl_pressed and event.keycode == KEY_S:
+			_on_save_clicked()
+			get_viewport().set_input_as_handled()
+		elif event.ctrl_pressed and event.keycode == KEY_O:
+			_request_action_guarded({"action": "open_file"})
+			get_viewport().set_input_as_handled()
+		elif event.ctrl_pressed and event.keycode == KEY_N:
+			_request_action_guarded({"action": "new_scene"})
+			get_viewport().set_input_as_handled()
+		elif event.keycode == KEY_F2:
+			if _inspector_panel != null:
+				_inspector_panel.focus_name_input()
+				get_viewport().set_input_as_handled()
+
+func _check_startup_recovery() -> void:
+	if doc_store == null:
+		return
+	var rec := doc_store.check_recovery_available(doc_store.file_path)
+	if rec.get("available", false):
+		_on_recovery_detected(rec)
+
+func _on_autosave_completed(_path: String, _time: float) -> void:
+	if _autosave_status_label != null:
+		_autosave_status_label.text = "● Autosaved"
+		_autosave_status_label.add_theme_color_override("font_color", Color("#52c7a5"))
+
+func _on_recovery_detected(info: Dictionary) -> void:
+	if _autosave_dialog != null:
+		_autosave_dialog.set_recovery_info(info)
+		_autosave_dialog.popup_centered()
+
+func _refresh_recent_menu() -> void:
+	if _recent_menu == null or doc_store == null or doc_store.repository == null:
+		return
+	_recent_menu.clear()
+	var recents: Array = doc_store.repository.get_recent_scenes()
+	if recents.is_empty():
+		_recent_menu.add_item("No Recent Projects")
+		_recent_menu.set_item_disabled(0, true)
+	else:
+		for i in range(recents.size()):
+			var r: Dictionary = recents[i]
+			var name_str := str(r.get("name", "Scene"))
+			var path_str := str(r.get("path", ""))
+			var fmt := str(r.get("format_type", ""))
+			_recent_menu.add_item("%s [%s]" % [name_str, fmt], i)
+			_recent_menu.set_item_tooltip(i, path_str)
+
+func _on_recent_item_pressed(idx: int) -> void:
+	if doc_store == null or doc_store.repository == null:
+		return
+	var recents: Array = doc_store.repository.get_recent_scenes()
+	if idx >= 0 and idx < recents.size():
+		var path: String = str(recents[idx].get("path", ""))
+		var name_str: String = str(recents[idx].get("name", path.get_file()))
+		if not path.is_empty():
+			_request_action_guarded({"action": "open_recent", "path": path, "target_name": name_str})
+
+func _open_file_dialog(mode: FileDialog.FileMode, filters: PackedStringArray, action: String) -> void:
+	_file_dialog_action = action
+	_file_dialog.file_mode = mode
+	_file_dialog.filters = filters
+	_file_dialog.popup_centered(Vector2i(700, 500))
+
+func _on_file_dialog_canceled() -> void:
+	_after_save_action.clear()
+
+func _on_file_selected(path: String) -> void:
+	match _file_dialog_action:
+		"open_file":
+			doc_store.load_from_file(path)
+		"save_file":
+			var ok := doc_store.save_to_file(path)
+			if ok and not _after_save_action.is_empty():
+				var action_data := _after_save_action.duplicate()
+				_after_save_action.clear()
+				_execute_guarded_action(action_data)
+		"export_json":
+			doc_store.save_to_file(path, "canonical_json")
+		"export_msgpack":
+			doc_store.save_to_file(path, "msgpack")
+		"import_merge":
+			_handle_import_merge(path)
+
+func _on_dir_selected(dir_path: String) -> void:
+	match _file_dialog_action:
+		"open_bundle":
+			doc_store.load_from_bundle(dir_path)
+		"export_bundle":
+			doc_store.save_to_bundle(dir_path, true)
+
+func _handle_import_merge(path: String) -> void:
+	var codec := SceneCodec.new()
+	var candidate: SceneTypes.SceneDocument = null
+	if path.ends_with(".mp") or path.ends_with(".scenespec.mp"):
+		candidate = codec.load_from_msgpack_file(path)
+	elif path.ends_with(".simviz") or DirAccess.dir_exists_absolute(path):
+		var root_f := path.path_join("graph/root.scenespec")
+		if not FileAccess.file_exists(root_f): root_f = path.path_join("root.scenespec")
+		if FileAccess.file_exists(root_f):
+			var f := FileAccess.open(root_f, FileAccess.READ)
+			if f != null:
+				candidate = codec.load_document(f.get_as_text())
+				f.close()
+	else:
+		var f := FileAccess.open(path, FileAccess.READ)
+		if f != null:
+			candidate = codec.load_document(f.get_as_text())
+			f.close()
+
+	if candidate == null:
+		return
+
+	_pending_import_path = path
+	_pending_import_doc = candidate
+	var diff: Dictionary = SceneDiff.diff_documents(doc_store.active_document, candidate)
+	_diff_dialog.set_diff(diff)
+	_diff_dialog.popup_centered()
+
+func _on_diff_dialog_confirmed(replace: bool) -> void:
+	if replace:
+		doc_store.load_from_file(_pending_import_path)
+	else:
+		doc_store.merge_document(_pending_import_doc, Vector3(10.0, 0.0, 0.0))
+		if _canvas_2d != null: _canvas_2d.rebuild_blocks()
+		if _viewport_3d != null: _viewport_3d.rebuild_3d_scene()
+
+func _on_file_menu_id_pressed(id: int) -> void:
+	match id:
+		1:
+			_request_action_guarded({"action": "new_scene"})
+		2:
+			_request_action_guarded({"action": "open_file"})
+		3:
+			_request_action_guarded({"action": "open_bundle"})
+		10:
+			_on_save_clicked()
+		11:
+			_open_file_dialog(FileDialog.FILE_MODE_SAVE_FILE, PackedStringArray(["*.scenespec ; Canonical JSON", "*.scenespec.mp ; MessagePack", "*.simviz ; SimViz Bundle"]), "save_file")
+		20:
+			_open_file_dialog(FileDialog.FILE_MODE_SAVE_FILE, PackedStringArray(["*.scenespec, *.json ; Canonical SceneSpec JSON"]), "export_json")
+		21:
+			_open_file_dialog(FileDialog.FILE_MODE_SAVE_FILE, PackedStringArray(["*.scenespec.mp, *.mp ; Binary MessagePack"]), "export_msgpack")
+		22:
+			_open_file_dialog(FileDialog.FILE_MODE_OPEN_DIR, PackedStringArray(["* ; SimViz Bundle Directory"]), "export_bundle")
+		30:
+			_open_file_dialog(FileDialog.FILE_MODE_OPEN_FILE, PackedStringArray(["*.scenespec, *.json ; SceneSpec JSON", "*.scenespec.mp, *.mp ; MessagePack"]), "import_merge")
+
+func _request_action_guarded(action_data: Dictionary) -> void:
+	if doc_store != null and doc_store.is_dirty:
+		var scene_name: String = "Untitled Scene"
+		if doc_store.active_document != null and doc_store.active_document.scene.has("name"):
+			scene_name = str(doc_store.active_document.scene.get("name", "Untitled Scene"))
+		if not doc_store.file_path.is_empty():
+			scene_name = doc_store.file_path.get_file()
+		_unsaved_dialog.prompt_unsaved(scene_name, action_data)
+	else:
+		_execute_guarded_action(action_data)
+
+func _execute_guarded_action(action_data: Dictionary) -> void:
+	var action: String = str(action_data.get("action", ""))
+	match action:
+		"new_scene":
+			doc_store.new_document()
+		"open_file":
+			_open_file_dialog(FileDialog.FILE_MODE_OPEN_FILE, PackedStringArray(["*.scenespec, *.json ; SceneSpec Files", "*.scenespec.mp, *.mp ; MessagePack Files", "*.* ; All Files"]), "open_file")
+		"open_bundle":
+			_open_file_dialog(FileDialog.FILE_MODE_OPEN_DIR, PackedStringArray(["* ; Directories"]), "open_bundle")
+		"open_recent":
+			var path: String = str(action_data.get("path", ""))
+			if not path.is_empty():
+				doc_store.load_from_file(path)
+		"quit":
+			get_tree().quit()
+
+func _on_unsaved_save_confirmed(action_context: Dictionary) -> void:
+	if doc_store == null:
+		return
+	if doc_store.file_path.is_empty():
+		_after_save_action = action_context.duplicate()
+		_open_file_dialog(FileDialog.FILE_MODE_SAVE_FILE, PackedStringArray(["*.scenespec ; Canonical JSON", "*.scenespec.mp ; MessagePack", "*.simviz ; SimViz Bundle"]), "save_file")
+	else:
+		var ok := doc_store.save_to_file(doc_store.file_path)
+		if ok:
+			_execute_guarded_action(action_context)
+
+func _on_unsaved_discard_confirmed(action_context: Dictionary) -> void:
+	_execute_guarded_action(action_context)
+
+func _on_unsaved_action_canceled(_action_context: Dictionary) -> void:
+	_after_save_action.clear()
+
+
 

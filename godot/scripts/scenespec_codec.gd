@@ -43,8 +43,254 @@ func save_document(doc: RefCounted, pretty: bool = true) -> String:
 		return ""
 	return save_to_json_string(doc.to_dict(), pretty)
 
+const ROOT_CANONICAL_KEYS := [
+	"spec_version", "scene", "simulation", "abm_config", "spatial",
+	"elements", "connections", "subgraphs", "overlays", "validation_metadata",
+	"extensions", "editor"
+]
+
+const ELEMENT_CANONICAL_KEYS := [
+	"id", "name", "type_name", "category", "level_id", "transform",
+	"spatial", "process", "display", "extensions"
+]
+
+const CONNECTION_CANONICAL_KEYS := [
+	"id", "source_element", "source_port", "target_element", "target_port",
+	"link_type", "enabled", "ordering", "condition", "latency", "capacity", "extensions"
+]
+
+const SUBGRAPH_CANONICAL_KEYS := [
+	"id", "name", "description", "interface_ports", "elements", "connections",
+	"internal_elements", "internal_connections", "external_ref", "extensions"
+]
+
+const TRANSFORM_CANONICAL_KEYS := [
+	"position", "rotation", "rotation_deg", "scale"
+]
+
+func canonicalize_float(f: float) -> float:
+	if is_nan(f):
+		return 0.0
+	if is_inf(f):
+		return 999999.0 if f > 0.0 else -999999.0
+	var snapped_val: float = snappedf(f, 0.000001)
+	if abs(snapped_val) < 1e-9:
+		return 0.0
+	return snapped_val
+
+func canonicalize_value(val: Variant, sort_keyed: bool = true) -> Variant:
+	if val is float:
+		return canonicalize_float(val)
+	elif val is Dictionary:
+		return canonicalize_dictionary(val, sort_keyed)
+	elif val is Array:
+		return canonicalize_array(val, sort_keyed)
+	elif val is Vector3:
+		return [canonicalize_float(val.x), canonicalize_float(val.y), canonicalize_float(val.z)]
+	elif val is Vector2:
+		return [canonicalize_float(val.x), canonicalize_float(val.y)]
+	return val
+
+func canonicalize_array(arr: Array, sort_keyed: bool = true) -> Array:
+	var copy: Array = []
+	for item in arr:
+		copy.append(canonicalize_value(item, sort_keyed))
+	if sort_keyed and _is_keyed_collection(copy):
+		copy = _sort_keyed_array(copy)
+	return copy
+
+func canonicalize_dictionary(dict: Dictionary, sort_keyed: bool = true) -> Dictionary:
+	var preferred_order: Array = []
+	if dict.has("spec_version"):
+		preferred_order = ROOT_CANONICAL_KEYS
+	elif dict.has("type_name") and dict.has("id"):
+		preferred_order = ELEMENT_CANONICAL_KEYS
+	elif dict.has("source_element") and dict.has("target_element"):
+		preferred_order = CONNECTION_CANONICAL_KEYS
+	elif dict.has("interface_ports") and dict.has("id"):
+		preferred_order = SUBGRAPH_CANONICAL_KEYS
+	elif dict.has("position") and (dict.has("rotation") or dict.has("rotation_deg")):
+		preferred_order = TRANSFORM_CANONICAL_KEYS
+
+	var remaining_keys: Array = []
+	for k in dict.keys():
+		if not preferred_order.has(str(k)):
+			remaining_keys.append(str(k))
+	remaining_keys.sort()
+
+	var ordered_keys: Array = []
+	for k in preferred_order:
+		if dict.has(k):
+			ordered_keys.append(k)
+	for k in remaining_keys:
+		ordered_keys.append(k)
+
+	var canonical := {}
+	for k in ordered_keys:
+		canonical[k] = canonicalize_value(dict[k], sort_keyed)
+	return canonical
+
+func save_to_canonical_json_string(spec: Dictionary, pretty: bool = true) -> String:
+	var canonical := canonicalize_dictionary(spec, true)
+	var indent := "  " if pretty else ""
+	return JSON.stringify(canonical, indent, false)
+
+func save_canonical_document(doc: RefCounted, pretty: bool = true) -> String:
+	if doc == null or not doc.has_method("to_dict"):
+		return ""
+	return save_to_canonical_json_string(doc.to_dict(), pretty)
+
+func save_to_msgpack_file(doc: RefCounted, path: String) -> bool:
+	if doc == null:
+		return false
+	var bytes := encode_document_msgpack(doc)
+	if bytes.is_empty():
+		return false
+	var tmp_path := path + ".tmp"
+	var f := FileAccess.open(tmp_path, FileAccess.WRITE)
+	if f == null:
+		return false
+	f.store_buffer(bytes)
+	f.flush()
+	f.close()
+
+	var bak_path := path + ".bak"
+	if FileAccess.file_exists(path):
+		var err_bak := DirAccess.rename_absolute(path, bak_path)
+		if err_bak != OK:
+			DirAccess.remove_absolute(tmp_path)
+			return false
+	var err_rename := DirAccess.rename_absolute(tmp_path, path)
+	if err_rename == OK:
+		if FileAccess.file_exists(bak_path):
+			DirAccess.remove_absolute(bak_path)
+		return true
+	else:
+		if FileAccess.file_exists(bak_path):
+			DirAccess.rename_absolute(bak_path, path)
+		DirAccess.remove_absolute(tmp_path)
+		return false
+
+func load_from_msgpack_file(path: String) -> RefCounted:
+	if not FileAccess.file_exists(path):
+		return null
+	var bytes := FileAccess.get_file_as_bytes(path)
+	if bytes.is_empty():
+		return null
+	return decode_document_msgpack(bytes)
+
+func encode_transport_envelope(doc: Variant, message_id: String = "") -> PackedByteArray:
+	var payload_dict: Dictionary = {}
+	if doc != null and doc.has_method("to_dict"):
+		payload_dict = doc.to_dict()
+	elif doc is Dictionary:
+		payload_dict = doc
+	var msg_id := message_id if not message_id.is_empty() else ("msg_scenespec_" + str(Time.get_ticks_msec()))
+	var envelope := {
+		"envelope_version": "1.0",
+		"message_id": msg_id,
+		"timestamp": Time.get_unix_time_from_system() * 1000.0,
+		"sender": "godot_gui",
+		"target": "julia_runtime",
+		"kind": "scene_spec",
+		"payload": payload_dict
+	}
+	return encode_msgpack(envelope)
+
+func decode_transport_envelope(bytes: PackedByteArray) -> Dictionary:
+	var raw: Dictionary = decode_msgpack(bytes)
+	if raw.is_empty():
+		return {}
+	return raw
+
+func resolve_data_uri(uri: String, project_root: String) -> String:
+	if uri.begins_with("data://"):
+		var rel := uri.substr(7)
+		return project_root.path_join("data").path_join(rel)
+	elif uri.begins_with("asset://"):
+		var rel := uri.substr(8)
+		return project_root.path_join("assets").path_join(rel)
+	elif uri.begins_with("subgraph://"):
+		var rel := uri.substr(11)
+		return project_root.path_join("graph").path_join("subgraphs").path_join(rel)
+	return uri
+
+func migrate_document(doc_dict: Dictionary) -> Dictionary:
+	var changes: Array[String] = []
+	var migrated := doc_dict.duplicate(true)
+	var orig_version: String = str(migrated.get("spec_version", ""))
+	if orig_version.is_empty():
+		orig_version = "0.0.0"
+		changes.append("Missing spec_version; set to 1.0.0")
+		migrated["spec_version"] = "1.0.0"
+	elif orig_version != "1.0.0":
+		changes.append("Migrated spec_version from '%s' to '1.0.0'" % orig_version)
+		migrated["spec_version"] = "1.0.0"
+
+	if not migrated.has("spatial") or not (migrated["spatial"] is Dictionary) or migrated["spatial"].is_empty():
+		migrated["spatial"] = {
+			"coordinate_system": "right_handed_z_up",
+			"length_unit": "meters",
+			"origin": [0.0, 0.0, 0.0],
+			"levels": [
+				{
+					"id": "level_ground",
+					"name": "Ground Floor",
+					"elevation": 0.0,
+					"default_height": 3.0,
+					"visible": true
+				}
+			]
+		}
+		changes.append("Synthesized default spatial coordinates and ground level")
+	else:
+		var sp: Dictionary = migrated["spatial"]
+		if not sp.has("coordinate_system"):
+			sp["coordinate_system"] = "right_handed_z_up"
+			changes.append("Set spatial coordinate_system to right_handed_z_up")
+		if not sp.has("length_unit"):
+			sp["length_unit"] = "meters"
+			changes.append("Set spatial length_unit to meters")
+		if not sp.has("levels") or not (sp["levels"] is Array) or sp["levels"].is_empty():
+			sp["levels"] = [
+				{
+					"id": "level_ground",
+					"name": "Ground Floor",
+					"elevation": 0.0,
+					"default_height": 3.0,
+					"visible": true
+				}
+			]
+			changes.append("Created default level_ground in spatial")
+
+	var elems = migrated.get("elements", [])
+	if elems is Array:
+		for i in range(elems.size()):
+			var elem = elems[i]
+			if elem is Dictionary:
+				if not elem.has("level_id") or str(elem["level_id"]).is_empty():
+					elem["level_id"] = "level_ground"
+					changes.append("Element '%s' assigned to level_ground" % str(elem.get("id", i)))
+				if not elem.has("transform") or not (elem["transform"] is Dictionary):
+					elem["transform"] = {
+						"position": [0.0, 0.0, 0.0],
+						"rotation": [0.0, 0.0, 0.0],
+						"scale": [1.0, 1.0, 1.0]
+					}
+					changes.append("Element '%s' initialized with default transform" % str(elem.get("id", i)))
+
+	if not migrated.has("subgraphs") or not (migrated["subgraphs"] is Array):
+		migrated["subgraphs"] = []
+
+	return {
+		"document": migrated,
+		"changes": changes,
+		"from_version": orig_version,
+		"to_version": "1.0.0"
+	}
+
 func decode_document_msgpack(bytes: PackedByteArray) -> RefCounted:
-	var dict := decode_msgpack(bytes)
+	var dict: Dictionary = decode_msgpack(bytes)
 	if dict.is_empty():
 		return null
 	return SCENE_TYPES.SceneDocument.from_dict(dict)

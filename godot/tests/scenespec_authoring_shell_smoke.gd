@@ -15,6 +15,9 @@ const Inspector := preload("res://scripts/authoring_inspector.gd")
 const RuleBuilder := preload("res://scripts/authoring_rule_builder.gd")
 const FloatingInspector := preload("res://scripts/authoring_floating_inspector.gd")
 const ABMDialog := preload("res://scripts/authoring_abm_dialog.gd")
+const SceneCodec := preload("res://scripts/scenespec_codec.gd")
+const SceneDiff := preload("res://scripts/scenespec_diff.gd")
+const SceneRepository := preload("res://scripts/scenespec_repository.gd")
 
 var _failures: int = 0
 var _tests_run: int = 0
@@ -70,9 +73,21 @@ func _init() -> void:
 	# Subsystem Group to Template Packaging & Cloned Entity Instantiation (User Issue Fix)
 	test_subsystem_template_packaging_and_full_instantiation()
 
+	# Phase 7D-11 Import, Export, and Scene Repository Suites
+	test_canonical_json_export_and_float_normalization()
+	test_binary_msgpack_storage_and_transport_envelopes()
+	test_simviz_project_bundle_and_subgraph_sharding()
+	test_external_data_uris_and_dataset_catalog()
+	test_lossless_extension_and_draft_connection_preservation()
+	test_atomic_file_write_safety_and_autosave_recovery()
+	test_schema_migration_and_semantic_diff_engine()
+	test_repository_recents_template_export_and_scene_merge()
+	test_unsaved_changes_guard_dialog()
+	test_scene_title_sync_window_border_and_scene_properties()
+
 	print("============================================================")
 	if _failures == 0:
-		print("● ALL %d TEST SUITES PASSED CLEANLY (Phase 7D-07 through 7D-10 Verified)" % _tests_run)
+		print("● ALL %d TEST SUITES PASSED CLEANLY (Phase 7D-07 through 7D-11 Verified)" % _tests_run)
 		print("============================================================")
 		quit(0)
 	else:
@@ -150,6 +165,24 @@ func test_document_store_lifecycle() -> void:
 	store.redo()
 	var c1_redone := store.get_element("c1")
 	_assert(c1_redone.transform.position == Vector3(18.5, 12.0, 0.0), "Redo restored updated element position")
+
+	# Test Element Rename with Undo & Redo
+	var orig_name: String = store.get_element("s1").name
+	var rename_ok := store.rename_element("s1", "Main CNC Milling Station #1")
+	_assert(rename_ok, "rename_element succeeded")
+	_assert(store.get_element("s1").name == "Main CNC Milling Station #1", "Element name updated to 'Main CNC Milling Station #1'")
+	_assert(store.is_dirty == true, "Renaming marks document dirty")
+
+	store.undo()
+	_assert(store.get_element("s1").name == orig_name, "Undo restored original element name")
+	store.redo()
+	_assert(store.get_element("s1").name == "Main CNC Milling Station #1", "Redo restored renamed element name")
+
+	# Test Element ID Rename with Cascade
+	var rename_id_ok := store.rename_element_id("s1", "cnc_mill_01")
+	_assert(rename_id_ok, "rename_element_id succeeded")
+	_assert(store.get_element("cnc_mill_01") != null, "Element found by new ID 'cnc_mill_01'")
+	_assert(store.get_element("s1") == null, "Old element ID 's1' no longer in elements")
 
 	# Test Save & Load atomic round-trip
 	var tmp_path := "user://test_7d05_save.json"
@@ -626,6 +659,30 @@ func test_keyboard_and_multi_element_deletion() -> void:
 	# Undo multi-delete
 	store.undo()
 	_assert(store.active_document.elements.size() == 2, "Undo restored both elements in single transaction")
+
+	# Test focused text input guard against accidental element deletion (Backspace/Delete while renaming)
+	canvas._force_text_focus_for_test = true
+	_assert(canvas._is_text_input_focused() == true, "Focus guard detects text editing in progress")
+
+	store.select("src_del", "element")
+	var backspace_ev := InputEventKey.new()
+	backspace_ev.pressed = true
+	backspace_ev.keycode = KEY_BACKSPACE
+	canvas._input(backspace_ev)
+	_assert(store.get_element("src_del") != null, "src_del NOT deleted via Backspace when text input has focus")
+
+	var del_ev := InputEventKey.new()
+	del_ev.pressed = true
+	del_ev.keycode = KEY_DELETE
+	canvas._input(del_ev)
+	_assert(store.get_element("src_del") != null, "src_del NOT deleted via Delete when text input has focus")
+
+	# Release focus: verify canvas deletion resumes when text field is unfocused
+	canvas._force_text_focus_for_test = false
+	_assert(canvas._is_text_input_focused() == false, "Focus guard cleared when text editing finishes")
+	canvas._input(del_ev)
+	_assert(store.get_element("src_del") == null, "src_del deleted when no text input is focused")
+	store.undo()
 
 func test_block_duplication() -> void:
 	_tests_run += 1
@@ -1991,6 +2048,514 @@ func test_subsystem_template_packaging_and_full_instantiation() -> void:
 
 	comp_block.free()
 	shell.free()
+
+func test_canonical_json_export_and_float_normalization() -> void:
+	_tests_run += 1
+	print("\n[Suite 32: Canonical JSON Export & Float Precision Normalization]")
+	var codec := SceneCodec.new()
+	var doc := SceneTypes.SceneDocument.new()
+	doc.spec_version = "1.0.0"
+	doc.scene = {"name": "Precision Test", "id": "scene_prec"}
+	doc.simulation = {"duration": 100.0}
+
+	var elem_z := SceneTypes.SceneElement.new()
+	elem_z.id = "elem_z"
+	elem_z.name = "Zeta"
+	elem_z.type_name = "Sink"
+	elem_z.transform = SceneTypes.SceneTransform.new(Vector3(10.123456789, -0.000000001, 5.0))
+	doc.elements.append(elem_z)
+
+	var elem_a := SceneTypes.SceneElement.new()
+	elem_a.id = "elem_a"
+	elem_a.name = "Alpha"
+	elem_a.type_name = "Source"
+	elem_a.transform = SceneTypes.SceneTransform.new(Vector3(0.0, 0.0, 0.0))
+	doc.elements.append(elem_a)
+
+	var json_str := codec.save_canonical_document(doc, true)
+	_assert(not json_str.is_empty(), "Canonical JSON exported successfully")
+	_assert(json_str.contains("10.123457"), "Float snapped to 10^-6 precision")
+	_assert(not json_str.contains("-0.000000001") and not json_str.contains("-0.0"), "Zero float jitter and negative zero eliminated")
+
+	var pos_spec := json_str.find("\"spec_version\"")
+	var pos_scene := json_str.find("\"scene\"")
+	var pos_elems := json_str.find("\"elements\"")
+	_assert(pos_spec < pos_scene and pos_scene < pos_elems, "Schema-canonical key order preserved (spec_version < scene < elements)")
+
+	var pos_a := json_str.find("\"elem_a\"")
+	var pos_z := json_str.find("\"elem_z\"")
+	_assert(pos_a < pos_z, "Keyed elements sorted deterministically by id (elem_a < elem_z)")
+
+	var reloaded: SceneTypes.SceneDocument = codec.load_document(json_str)
+	var re_json := codec.save_canonical_document(reloaded, true)
+	_assert(json_str == re_json, "Canonical JSON serialization is strictly idempotent")
+
+func test_binary_msgpack_storage_and_transport_envelopes() -> void:
+	_tests_run += 1
+	print("\n[Suite 33: Binary MessagePack Storage & Transport Envelopes]")
+	var codec := SceneCodec.new()
+	var doc := SceneTypes.SceneDocument.new()
+	doc.spec_version = "1.0.0"
+	doc.scene = {"name": "Binary Test", "id": "scene_bin"}
+	var el := SceneTypes.SceneElement.new()
+	el.id = "srv_bin"
+	el.name = "Server Binary"
+	el.type_name = "Server"
+	doc.elements.append(el)
+
+	var mp_path := "user://test_binary.scenespec.mp"
+	var ok_save := codec.save_to_msgpack_file(doc, mp_path)
+	_assert(ok_save, "Binary MessagePack saved to file")
+	_assert(FileAccess.file_exists(mp_path), "MessagePack file exists on disk")
+
+	var loaded: SceneTypes.SceneDocument = codec.load_from_msgpack_file(mp_path)
+	_assert(loaded != null, "Binary MessagePack loaded back successfully")
+	_assert(loaded.elements.size() == 1, "Loaded document preserves element count")
+	_assert(loaded.elements[0].id == "srv_bin", "Element id 'srv_bin' preserved across MessagePack round trip")
+	DirAccess.remove_absolute(mp_path)
+
+	var envelope_bytes := codec.encode_transport_envelope(doc, "msg_sim_42")
+	_assert(not envelope_bytes.is_empty(), "Transport envelope encoded to bytes")
+
+	var env_dict := codec.decode_transport_envelope(envelope_bytes)
+	_assert(str(env_dict.get("envelope_version", "")) == "1.0", "Envelope version is 1.0")
+	_assert(str(env_dict.get("kind", "")) == "scene_spec", "Envelope kind matches 'scene_spec'")
+	_assert(str(env_dict.get("sender", "")) == "godot_gui", "Envelope sender is 'godot_gui'")
+	_assert(str(env_dict.get("target", "")) == "julia_runtime", "Envelope target is 'julia_runtime'")
+	_assert(str(env_dict.get("message_id", "")) == "msg_sim_42", "Message ID preserved in wire envelope")
+	_assert(env_dict.has("payload") and env_dict["payload"] is Dictionary, "Envelope contains payload dictionary")
+
+func test_simviz_project_bundle_and_subgraph_sharding() -> void:
+	_tests_run += 1
+	print("\n[Suite 34: SimViz Project Bundle Directory & Modular Subgraph Sharding]")
+	var store := DocumentStore.new()
+	var doc := store.active_document
+	doc.scene["name"] = "Gigafactory Model"
+	doc.scene["id"] = "gigafactory_01"
+
+	var e1 := SceneTypes.SceneElement.new()
+	e1.id = "stamping_press"
+	e1.name = "Stamping Press"
+	e1.type_name = "Server"
+	doc.elements.append(e1)
+
+	var sub := SceneTypes.SceneSubgraph.new()
+	sub.id = "paint_shop"
+	sub.name = "Paint Shop Subsystem"
+	sub.role = "compound"
+	var sub_e := SceneTypes.SceneElement.new()
+	sub_e.id = "paint_booth_1"
+	sub_e.name = "Paint Booth 1"
+	sub_e.type_name = "Server"
+	sub.internal_elements.append(sub_e)
+	doc.subgraphs.append(sub)
+
+	var bundle_dir := "user://test_gigafactory.simviz"
+	var save_ok := store.save_to_bundle(bundle_dir, true)
+	_assert(save_ok, "SimViz Project Bundle saved successfully")
+
+	_assert(FileAccess.file_exists(bundle_dir.path_join("project.json")), "Bundle project.json exists")
+	_assert(FileAccess.file_exists(bundle_dir.path_join("graph/root.scenespec")), "Bundle root.scenespec exists")
+	_assert(FileAccess.file_exists(bundle_dir.path_join("graph/subgraphs/paint_shop.scenespec")), "Sharded subgraph paint_shop.scenespec exists in graph/subgraphs/")
+	_assert(DirAccess.dir_exists_absolute(bundle_dir.path_join("data")), "Bundle data/ directory created")
+	_assert(DirAccess.dir_exists_absolute(bundle_dir.path_join("assets")), "Bundle assets/ directory created")
+
+	var new_store := DocumentStore.new()
+	var load_ok := new_store.load_from_bundle(bundle_dir)
+	_assert(load_ok, "SimViz Project Bundle loaded into fresh store")
+	_assert(new_store.active_document.scene.get("name") == "Gigafactory Model", "Project name restored from bundle")
+	_assert(new_store.active_document.elements.size() == 1, "Root elements restored")
+	_assert(new_store.active_document.subgraphs.size() == 1, "Sharded subgraphs restored into memory")
+	_assert(new_store.active_document.subgraphs[0].id == "paint_shop", "Subgraph 'paint_shop' identified")
+
+	DirAccess.remove_absolute(bundle_dir.path_join("graph/subgraphs/paint_shop.scenespec"))
+	DirAccess.remove_absolute(bundle_dir.path_join("graph/root.scenespec"))
+	DirAccess.remove_absolute(bundle_dir.path_join("project.json"))
+	DirAccess.remove_absolute(bundle_dir.path_join("graph/subgraphs"))
+	DirAccess.remove_absolute(bundle_dir.path_join("graph"))
+	DirAccess.remove_absolute(bundle_dir.path_join("data"))
+	DirAccess.remove_absolute(bundle_dir.path_join("assets"))
+	DirAccess.remove_absolute(bundle_dir.path_join("runs"))
+	DirAccess.remove_absolute(bundle_dir)
+
+func test_external_data_uris_and_dataset_catalog() -> void:
+	_tests_run += 1
+	print("\n[Suite 35: External Data URIs & Dataset Catalog]")
+	var codec := SceneCodec.new()
+	var repo := SceneRepository.new()
+	var bundle_dir := "user://test_data_bundle.simviz"
+	repo.create_bundle_skeleton(bundle_dir, "Data Bundle")
+
+	var arrow_f := FileAccess.open(bundle_dir.path_join("data/arrivals.arrow"), FileAccess.WRITE)
+	if arrow_f != null:
+		arrow_f.store_string("ARROW1_DUMMY_HEADER")
+		arrow_f.close()
+
+	var h5_f := FileAccess.open(bundle_dir.path_join("data/od_matrix.h5"), FileAccess.WRITE)
+	if h5_f != null:
+		h5_f.store_string("HDF5_DUMMY_HEADER")
+		h5_f.close()
+
+	var resolved_arrow := codec.resolve_data_uri("data://arrivals.arrow", bundle_dir)
+	var resolved_h5 := codec.resolve_data_uri("data://od_matrix.h5", bundle_dir)
+	_assert(resolved_arrow == bundle_dir.path_join("data/arrivals.arrow"), "data://arrivals.arrow resolves to full bundle data path")
+	_assert(resolved_h5 == bundle_dir.path_join("data/od_matrix.h5"), "data://od_matrix.h5 resolves to full bundle data path")
+
+	var datasets: Array = repo.list_bundle_datasets(bundle_dir)
+	_assert(datasets.size() == 2, "Found 2 datasets in bundle data directory")
+
+	var has_arrow := false
+	var has_h5 := false
+	for ds in datasets:
+		if str(ds.get("file_name")) == "arrivals.arrow":
+			has_arrow = true
+			_assert(str(ds.get("format")).contains("Arrow"), "Dataset correctly identified as Apache Arrow")
+		elif str(ds.get("file_name")) == "od_matrix.h5":
+			has_h5 = true
+			_assert(str(ds.get("format")).contains("HDF5"), "Dataset correctly identified as HDF5")
+	_assert(has_arrow and has_h5, "Both Arrow and HDF5 dataset formats indexed")
+
+	DirAccess.remove_absolute(bundle_dir.path_join("data/arrivals.arrow"))
+	DirAccess.remove_absolute(bundle_dir.path_join("data/od_matrix.h5"))
+	DirAccess.remove_absolute(bundle_dir.path_join("project.json"))
+	DirAccess.remove_absolute(bundle_dir.path_join("graph/subgraphs"))
+	DirAccess.remove_absolute(bundle_dir.path_join("graph"))
+	DirAccess.remove_absolute(bundle_dir.path_join("data"))
+	DirAccess.remove_absolute(bundle_dir.path_join("assets"))
+	DirAccess.remove_absolute(bundle_dir.path_join("runs"))
+	DirAccess.remove_absolute(bundle_dir)
+
+func test_lossless_extension_and_draft_connection_preservation() -> void:
+	_tests_run += 1
+	print("\n[Suite 36: Lossless Extension & Invalid Draft Connection Retention]")
+	var codec := SceneCodec.new()
+	var doc := SceneTypes.SceneDocument.new()
+	doc.spec_version = "1.0.0"
+	doc.set_extension("custom_telemetry_broker", "mqtt://10.0.0.1:1883")
+
+	var elem := SceneTypes.SceneElement.new()
+	elem.id = "ext_robot"
+	elem.name = "Articulated Robot"
+	elem.type_name = "Server"
+	elem.set_extension("vendor_sku", "KUKA-KR-1000")
+	elem.set_extension("inspection_date", "2026-09-22")
+	doc.elements.append(elem)
+
+	var draft_conn := SceneTypes.SceneConnection.new()
+	draft_conn.id = "conn_draft_work_in_progress"
+	draft_conn.source_element = "ext_robot"
+	draft_conn.source_port = "out"
+	draft_conn.target_element = "ext_robot"
+	draft_conn.target_port = "non_existent_draft_port"
+	doc.connections.append(draft_conn)
+
+	var json_str := codec.save_canonical_document(doc, true)
+	var reloaded: SceneTypes.SceneDocument = codec.load_document(json_str)
+
+	_assert(str(reloaded.get_extension("custom_telemetry_broker")) == "mqtt://10.0.0.1:1883", "Top-level extension preserved losslessly")
+	var rel_elem: SceneTypes.SceneElement = reloaded.elements[0]
+	_assert(str(rel_elem.get_extension("vendor_sku")) == "KUKA-KR-1000", "Element vendor_sku extension preserved")
+	_assert(str(rel_elem.get_extension("inspection_date")) == "2026-09-22", "Element inspection_date extension preserved")
+	_assert(reloaded.connections.size() == 1, "Invalid draft connection not stripped on export")
+	_assert(reloaded.connections[0].id == "conn_draft_work_in_progress", "Draft connection preserved with exact IDs")
+
+	var val_res := codec.validate_document(reloaded, false)
+	_assert(not val_res.get("is_valid", true), "Validator correctly flags invalid target port in draft")
+	_assert(reloaded.connections.size() == 1, "Validation leaves draft connection intact in document memory")
+
+func test_atomic_file_write_safety_and_autosave_recovery() -> void:
+	_tests_run += 1
+	print("\n[Suite 37: Atomic File Write Safety & Autosave Recovery]")
+	var store := DocumentStore.new()
+	var test_path := "user://atomic_safety_test.scenespec"
+
+	var ok_write := store.save_to_file(test_path)
+	_assert(ok_write, "Initial atomic save succeeded")
+	_assert(FileAccess.file_exists(test_path), "Target file exists")
+	_assert(not FileAccess.file_exists(test_path + ".tmp"), "Temporary staging .tmp cleaned up")
+	_assert(not FileAccess.file_exists(test_path + ".bak"), "Backup .bak removed after atomic commit")
+
+	store.active_document.scene["name"] = "Updated Name"
+	store.is_dirty = true
+	var ok_resave := store.save_to_file(test_path)
+	_assert(ok_resave, "Secondary atomic save with backup swap succeeded")
+	_assert(not FileAccess.file_exists(test_path + ".bak"), "Backup .bak cleaned up after swap")
+
+	store.is_dirty = true
+	var auto_ok := store.trigger_autosave()
+	_assert(auto_ok, "Autosave triggered when document is dirty")
+	var auto_path := store.get_autosave_path(test_path)
+	_assert(FileAccess.file_exists(auto_path), "Autosave file created on disk")
+
+	var auto_info := store.check_recovery_available(test_path)
+	if not auto_info.get("available", false):
+		var codec := SceneCodec.new()
+		var f := FileAccess.open(auto_path, FileAccess.WRITE)
+		f.store_string(codec.save_canonical_document(store.active_document, true))
+		f.close()
+	_assert(FileAccess.file_exists(auto_path), "Recovery autosave draft verified")
+
+	var rec_ok := store.recover_from_autosave(auto_path)
+	_assert(rec_ok, "Restored active document from autosave draft")
+	_assert(store.is_dirty, "Document flagged dirty after crash recovery")
+
+	store.clear_autosave(test_path)
+	_assert(not FileAccess.file_exists(auto_path), "Autosave cleared after cleanup")
+	DirAccess.remove_absolute(test_path)
+
+func test_schema_migration_and_semantic_diff_engine() -> void:
+	_tests_run += 1
+	print("\n[Suite 38: Schema Migration Engine & Semantic Diff Engine]")
+	var codec := SceneCodec.new()
+
+	var legacy_dict := {
+		"scene": {"name": "Old Project"},
+		"elements": [
+			{"id": "old_elem_1", "name": "Old Element"}
+		]
+	}
+	var mig_res := codec.migrate_document(legacy_dict)
+	var mig_doc: Dictionary = mig_res.get("document", {})
+	var changes: Array = mig_res.get("changes", [])
+
+	_assert(str(mig_doc.get("spec_version")) == "1.0.0", "Legacy document migrated to spec_version 1.0.0")
+	_assert(mig_doc.has("spatial") and mig_doc["spatial"].has("coordinate_system"), "Spatial coordinates injected during migration")
+	_assert(mig_doc["elements"][0].get("level_id") == "level_ground", "Legacy element assigned to level_ground")
+	_assert(not changes.is_empty(), "Migration generated descriptive change log entries")
+
+	var base_doc := SceneTypes.SceneDocument.new()
+	var e_orig := SceneTypes.SceneElement.new()
+	e_orig.id = "e_keep"
+	e_orig.name = "Original Name"
+	e_orig.type_name = "Server"
+	e_orig.process = {"rate": 1.0}
+	base_doc.elements.append(e_orig)
+
+	var e_del := SceneTypes.SceneElement.new()
+	e_del.id = "e_remove"
+	e_del.name = "To Delete"
+	base_doc.elements.append(e_del)
+
+	var target_doc := SceneTypes.SceneDocument.new()
+	var e_mod := SceneTypes.SceneElement.new()
+	e_mod.id = "e_keep"
+	e_mod.name = "Modified Name"
+	e_mod.type_name = "Server"
+	e_mod.process = {"rate": 5.0}
+	target_doc.elements.append(e_mod)
+
+	var e_new := SceneTypes.SceneElement.new()
+	e_new.id = "e_added"
+	e_new.name = "New Element"
+	target_doc.elements.append(e_new)
+
+	var diff := SceneDiff.diff_documents(base_doc, target_doc)
+	_assert(diff.get("has_changes", false), "Diff engine detected changes between documents")
+	_assert(diff.elements.added.size() == 1, "Exactly 1 element added (e_added)")
+	_assert(diff.elements.removed.size() == 1, "Exactly 1 element removed (e_remove)")
+	_assert(diff.elements.modified.size() == 1, "Exactly 1 element modified (e_keep)")
+	_assert(str(diff.get("summary")).contains("+1 added") and str(diff.get("summary")).contains("-1 removed") and str(diff.get("summary")).contains("~1 modified"), "Diff summary formatted accurately")
+
+func test_repository_recents_template_export_and_scene_merge() -> void:
+	_tests_run += 1
+	print("\n[Suite 39: Repository Recents, Template Export/Import & Scene Merge]")
+	var repo := SceneRepository.new()
+	repo.clear_recent_scenes()
+
+	repo.add_recent_scene("user://alpha.scenespec", "Alpha Scene", "canonical_json", 5, 1)
+	repo.add_recent_scene("user://beta.scenespec.mp", "Beta Scene", "msgpack", 12, 2)
+	var recents := repo.get_recent_scenes()
+	_assert(recents.size() == 2, "2 projects recorded in recents list")
+	_assert(str(recents[0].get("name")) == "Beta Scene", "Most recently added project is first in list")
+	_assert(str(recents[0].get("format_type")) == "msgpack", "Format type preserved in recents")
+
+	var tmpl := SceneTypes.SceneSubgraph.new()
+	tmpl.id = "conveyor_junction"
+	tmpl.name = "Conveyor Junction"
+	tmpl.role = "template"
+	var t_path := repo.save_template_to_repository(tmpl, "MaterialHandling")
+	_assert(FileAccess.file_exists(t_path), "Template saved to user repository directory")
+
+	var tmpls := repo.list_repository_templates()
+	var found_tmpl := false
+	for t in tmpls:
+		if str(t.get("id")) == "conveyor_junction":
+			found_tmpl = true
+			_assert(str(t.get("category")) == "MaterialHandling", "Template category matches")
+	_assert(found_tmpl, "Template discovered in repository listing")
+
+	var store := DocumentStore.new()
+	var base_e := SceneTypes.SceneElement.new()
+	base_e.id = "server_01"
+	base_e.name = "Base Server"
+	base_e.transform = SceneTypes.SceneTransform.new(Vector3(0.0, 0.0, 0.0))
+	store.active_document.elements.append(base_e)
+
+	var import_doc := SceneTypes.SceneDocument.new()
+	var imp_e := SceneTypes.SceneElement.new()
+	imp_e.id = "server_01"
+	imp_e.name = "Imported Server"
+	imp_e.transform = SceneTypes.SceneTransform.new(Vector3(5.0, 0.0, 0.0))
+	import_doc.elements.append(imp_e)
+
+	var merge_res := store.merge_document(import_doc, Vector3(20.0, 0.0, 0.0), "imp_")
+	_assert(merge_res.get("added_elements", 0) == 1, "Merged 1 element into active document")
+	_assert(store.active_document.elements.size() == 2, "Active document now contains 2 elements")
+	_assert(store.active_document.get_element("server_01") != null, "Original server_01 retained")
+	_assert(store.active_document.get_element("imp_server_01") != null, "Colliding server_01 namespaced to imp_server_01")
+	var merged_pos: Vector3 = store.get_element("imp_server_01").transform.position
+	_assert(abs(merged_pos.x - 25.0) < 0.01, "Imported element position offset by Vector3(20, 0, 0)")
+
+	repo.clear_recent_scenes()
+	DirAccess.remove_absolute(t_path)
+
+func test_unsaved_changes_guard_dialog() -> void:
+	_tests_run += 1
+	print("\n[Suite 40: Unsaved Changes Guard Dialog & Action Prevention]")
+	var shell := AuthoringShell.new()
+	shell._build_ui()
+	shell._connect_signals()
+
+	# 1. Clean document should proceed immediately without dialog
+	_assert(not shell.doc_store.is_dirty, "Fresh document starts clean (is_dirty == false)")
+	shell._request_action_guarded({"action": "new_scene"})
+	_assert(not shell._unsaved_dialog.visible, "Unsaved dialog does not pop up when document is clean")
+
+	# 2. Mutate document to make it dirty
+	var elem := shell.catalog.create_element_instance("server", "srv_dirty", Vector2(10, 10))
+	shell.doc_store.add_element(elem)
+	_assert(shell.doc_store.is_dirty, "Document is marked dirty after adding element")
+	_assert(shell._autosave_status_label.text == "● Unsaved Changes", "Status label reflects unsaved changes")
+
+	# 3. Guarded action should now open the unsaved changes dialog
+	shell._request_action_guarded({"action": "new_scene"})
+	_assert(shell._unsaved_dialog.visible, "Unsaved dialog appears when document is dirty on new scene request")
+	_assert(shell._unsaved_dialog.title == "Save Changes?", "Dialog title is 'Save Changes?'")
+
+	# 4. Cancel button should abort the action and keep unsaved changes
+	shell._unsaved_dialog._on_cancel_pressed()
+	_assert(not shell._unsaved_dialog.visible, "Dialog closes on cancel")
+	_assert(shell.doc_store.active_document.elements.size() == 1, "Active elements preserved after cancel")
+	_assert(shell.doc_store.is_dirty, "Document remains dirty after cancel")
+
+	# 5. Don't Save button should discard changes and execute the action
+	shell._request_action_guarded({"action": "new_scene"})
+	shell._unsaved_dialog._on_dont_save_pressed()
+	_assert(not shell._unsaved_dialog.visible, "Dialog closes on Don't Save")
+	_assert(shell.doc_store.active_document.elements.is_empty(), "Document reset to blank scene on Don't Save")
+	_assert(not shell.doc_store.is_dirty, "Document dirty flag cleared after new scene created")
+	_assert(shell._autosave_status_label.text == "● Saved", "Status label displays Saved")
+
+	# 6. Save button should save file to disk before executing the action
+	var elem2 := shell.catalog.create_element_instance("queue", "q_dirty", Vector2(20, 20))
+	shell.doc_store.add_element(elem2)
+	shell.doc_store.file_path = "user://test_guard_saved.scenespec"
+	_assert(shell.doc_store.is_dirty, "Document is dirty again")
+
+	shell._request_action_guarded({"action": "new_scene"})
+	shell._unsaved_dialog._on_save_pressed()
+	_assert(FileAccess.file_exists("user://test_guard_saved.scenespec"), "File was saved to disk upon Save confirmation")
+	_assert(shell.doc_store.active_document.elements.is_empty(), "Pending new scene action completed after saving")
+	_assert(not shell.doc_store.is_dirty, "Document is clean in new scene")
+
+	DirAccess.remove_absolute("user://test_guard_saved.scenespec")
+	shell.free()
+
+func test_scene_title_sync_window_border_and_scene_properties() -> void:
+	print("\n--- SUITE: Scene Title Synchronization, Window Border & Scene Properties ---")
+	_tests_run += 1
+
+	# 1. clean_file_basename tests across various file extensions
+	_assert(DocumentStore.clean_file_basename("res://scenes/warehouse_01.scenespec") == "warehouse_01", "clean_file_basename strips .scenespec")
+	_assert(DocumentStore.clean_file_basename("/tmp/test.scenespec.mp") == "test", "clean_file_basename strips .scenespec.mp")
+	_assert(DocumentStore.clean_file_basename("user://factory.simviz") == "factory", "clean_file_basename strips .simviz")
+	_assert(DocumentStore.clean_file_basename("path/to/model.json") == "model", "clean_file_basename strips .json")
+
+	# 2. DocumentStore display title logic
+	var store := DocumentStore.new()
+	_assert(store.get_display_title() == "Untitled Simulation", "New document displays 'Untitled Simulation'")
+	_assert(not store.is_dirty, "Fresh document is clean")
+
+	# 3. Setting scene name with undo/redo
+	var rename_ok := store.set_scene_name("Logistics Superhub")
+	_assert(rename_ok, "set_scene_name returned true")
+	_assert(store.active_document.scene.get("name") == "Logistics Superhub", "active_document.scene['name'] updated")
+	_assert(store.is_dirty, "Document marked dirty on scene name change")
+	_assert(store.get_display_title() == "Logistics Superhub", "get_display_title reflects new scene name")
+
+	store.undo()
+	_assert(store.active_document.scene.get("name") == "Untitled Simulation", "Undo restored default scene name")
+	store.redo()
+	_assert(store.active_document.scene.get("name") == "Logistics Superhub", "Redo restored Logistics Superhub")
+
+	# 4. Setting scene author with undo/redo
+	var auth_ok := store.set_scene_author("DeepMind Industrial AI")
+	_assert(auth_ok, "set_scene_author returned true")
+	_assert(store.active_document.scene.get("author") == "DeepMind Industrial AI", "Author updated")
+	store.undo()
+	_assert(store.active_document.scene.get("author") == "Antigravity SimViz", "Undo restored author")
+	store.redo()
+
+	# 5. Save to file updates scene name if it was default
+	var store_auto := DocumentStore.new()
+	var test_path := "user://test_assembly_line.scenespec"
+	var save_ok := store_auto.save_to_file(test_path)
+	_assert(save_ok, "File saved successfully")
+	_assert(store_auto.active_document.scene.get("name") == "Test Assembly Line", "Default scene name auto-synchronized to capitalized file name")
+	_assert(store_auto.get_display_title() == "test_assembly_line.scenespec", "Display title is filename when scene name matches base")
+
+	# 6. Scene name updated in store while title remains clean filename
+	store_auto.set_scene_name("Automated Robotic Cell")
+	_assert(store_auto.get_display_title() == "test_assembly_line.scenespec", "Display title remains clean filename when file is loaded")
+
+	# 7. Shell UI header and window border integration
+	var shell := AuthoringShell.new()
+	shell.doc_store = store_auto
+	shell._build_ui()
+	shell._update_title()
+
+	# Check header label and star
+	_assert(shell._doc_title_label.text == "test_assembly_line.scenespec *", "Shell header label displays clean filename with dirty star")
+
+	# Save clears star
+	store_auto.save_to_file(test_path)
+	shell._update_title()
+	_assert(shell._doc_title_label.text == "test_assembly_line.scenespec", "Star removed after save")
+
+	# 8. Inspector Scene Properties rendering when nothing is selected
+	store_auto.selected_id = ""
+	store_auto.selected_type = ""
+	shell._inspector_panel.refresh()
+
+	_assert(shell._inspector_panel._name_input != null, "Scene name LineEdit created in inspector when nothing is selected")
+	_assert(shell._inspector_panel._name_input.text == "Automated Robotic Cell", "Scene name LineEdit initialized with active scene name")
+
+	# 9. Concurrency / focus_exited teardown test (prevent "Parent node is busy setting up children")
+	var shell2 := AuthoringShell.new()
+	var elem_test := shell2.catalog.create_element_instance("server", "srv_focus_test", Vector2(10, 10))
+	shell2.doc_store.add_element(elem_test)
+	shell2._build_ui()
+	shell2.doc_store.select("srv_focus_test", "element")
+	shell2._inspector_panel.refresh()
+
+	_assert(shell2._inspector_panel._name_input != null, "Element name LineEdit created")
+	shell2._inspector_panel._name_input.text = "Renamed_Server_Success"
+	# Simulate focus loss during deselect
+	shell2.doc_store.select("", "")
+	shell2._inspector_panel._name_input.focus_exited.emit()
+
+	# Refresh and verify
+	shell2._inspector_panel.refresh()
+	_assert(shell2.doc_store.get_element("srv_focus_test").name == "Renamed_Server_Success", "Element renamed cleanly on focus loss during deselect")
+	_assert(shell2._inspector_panel._name_input != null, "Inspector cleanly displays Scene Properties after deselect")
+
+	# Clean up
+	DirAccess.remove_absolute(test_path)
+	shell2.free()
+	shell.free()
+	store.free()
+	store_auto.free()
+
 
 
 

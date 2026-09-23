@@ -31,6 +31,9 @@ var _spin_px: SpinBox = null
 var _spin_py: SpinBox = null
 var _spin_pz: SpinBox = null
 var _spin_rot: SpinBox = null
+var _name_input: LineEdit = null
+var _is_refreshing: bool = false
+var _refresh_pending: bool = false
 
 func _init(p_store: DocumentStore = null, p_catalog: Catalog = null) -> void:
 	doc_store = p_store
@@ -59,12 +62,14 @@ func _is_multi_selection() -> bool:
 	return doc_store != null and doc_store.selected_elements.size() > 1
 
 func _on_selection_changed(_id: String, _type: String) -> void:
-	refresh()
+	call_deferred("refresh")
 
 func _on_document_modified() -> void:
 	if doc_store != null and doc_store.selected_type == "element" and not doc_store.selected_id.is_empty():
 		var sel_elem := doc_store.get_element(doc_store.selected_id)
 		if sel_elem != null and _spin_px != null and is_instance_valid(_spin_px):
+			if _name_input != null and is_instance_valid(_name_input) and not _name_input.has_focus():
+				_name_input.text = sel_elem.name if not sel_elem.name.is_empty() else sel_elem.id
 			if not _spin_px.has_focus():
 				_spin_px.set_value_no_signal(float(sel_elem.transform.position.x))
 			if _spin_py != null and is_instance_valid(_spin_py) and not _spin_py.has_focus():
@@ -75,15 +80,35 @@ func _on_document_modified() -> void:
 			if _spin_rot != null and is_instance_valid(_spin_rot) and not _spin_rot.has_focus():
 				_spin_rot.set_value_no_signal(fposmod(float(sel_elem.transform.rotation.z), 360.0))
 			return
-	refresh()
+	elif doc_store != null and doc_store.selected_id.is_empty() and _name_input != null and is_instance_valid(_name_input):
+		if _name_input.has_focus():
+			return
+	call_deferred("refresh")
+
+func focus_name_input() -> void:
+	if _name_input != null and is_instance_valid(_name_input):
+		_name_input.grab_focus()
+		_name_input.select_all()
 
 func refresh() -> void:
 	if _container == null:
 		return
+	if _is_refreshing:
+		_refresh_pending = true
+		return
+	_is_refreshing = true
+	_do_refresh()
+	_is_refreshing = false
+	if _refresh_pending:
+		_refresh_pending = false
+		call_deferred("refresh")
+
+func _do_refresh() -> void:
 	for child in _container.get_children():
 		child.queue_free()
 
 	_spin_rot = null
+	_name_input = null
 
 	if doc_store == null or doc_store.active_document == null:
 		_render_empty_state("No active document.")
@@ -101,7 +126,152 @@ func refresh() -> void:
 	elif doc_store.selected_type == "subgraph" and not doc_store.selected_id.is_empty():
 		_render_subgraph(doc_store.selected_id)
 	else:
-		_render_empty_state("Select an entity block or port on the canvas to inspect properties.")
+		_render_scene_properties()
+
+func _render_scene_properties() -> void:
+	if doc_store == null or doc_store.active_document == null:
+		_render_empty_state("No active document.")
+		return
+
+	var sname: String = str(doc_store.active_document.scene.get("name", "Untitled Simulation"))
+	var author: String = str(doc_store.active_document.scene.get("author", "Antigravity SimViz"))
+	var fpath: String = doc_store.file_path
+	var fname: String = fpath.get_file() if not fpath.is_empty() else "(Unsaved Scene)"
+
+	# 1. Header Box
+	var header := VBoxContainer.new()
+	header.add_theme_constant_override("separation", 2)
+
+	var title_row := HBoxContainer.new()
+	var dot := ColorRect.new()
+	dot.custom_minimum_size = Vector2(8, 8)
+	dot.color = ACCENT
+	title_row.add_child(dot)
+
+	var title_lbl := Label.new()
+	title_lbl.text = "SCENE PROPERTIES"
+	title_lbl.add_theme_font_size_override("font_size", 12)
+	title_lbl.add_theme_color_override("font_color", TEXT)
+	title_row.add_child(title_lbl)
+
+	var status_pill := Label.new()
+	status_pill.text = " [GLOBAL] "
+	status_pill.add_theme_font_size_override("font_size", 9)
+	status_pill.add_theme_color_override("font_color", LIVE_COLOR)
+	title_row.add_child(status_pill)
+	header.add_child(title_row)
+
+	var sub_lbl := Label.new()
+	sub_lbl.text = "%s • Spec v%s" % [fname, str(doc_store.active_document.spec_version)]
+	sub_lbl.add_theme_font_size_override("font_size", 10)
+	sub_lbl.add_theme_color_override("font_color", MUTED)
+	header.add_child(sub_lbl)
+	_container.add_child(header)
+
+	_container.add_child(HSeparator.new())
+
+	# 2. Scene / Simulation Name Input
+	var name_box := VBoxContainer.new()
+	name_box.add_theme_constant_override("separation", 2)
+
+	var name_lbl := Label.new()
+	name_lbl.text = "SCENE / SIMULATION NAME"
+	name_lbl.add_theme_font_size_override("font_size", 10)
+	name_lbl.add_theme_color_override("font_color", MUTED)
+	name_box.add_child(name_lbl)
+
+	_name_input = LineEdit.new()
+	_name_input.text = sname
+	_name_input.placeholder_text = "Enter simulation scene name..."
+	_name_input.custom_minimum_size.y = 26
+	_name_input.add_theme_font_size_override("font_size", 11)
+	_name_input.text_submitted.connect(func(new_text: String):
+		var trimmed := new_text.strip_edges()
+		if not trimmed.is_empty():
+			doc_store.set_scene_name(trimmed)
+	)
+	_name_input.focus_exited.connect(func():
+		if _name_input != null and is_instance_valid(_name_input) and not _name_input.is_queued_for_deletion():
+			var trimmed := _name_input.text.strip_edges()
+			if not trimmed.is_empty():
+				doc_store.set_scene_name(trimmed)
+	)
+	name_box.add_child(_name_input)
+	_container.add_child(name_box)
+
+	# 3. Author Input
+	var auth_box := VBoxContainer.new()
+	auth_box.add_theme_constant_override("separation", 2)
+
+	var auth_lbl := Label.new()
+	auth_lbl.text = "AUTHOR / ORGANIZATION"
+	auth_lbl.add_theme_font_size_override("font_size", 10)
+	auth_lbl.add_theme_color_override("font_color", MUTED)
+	auth_box.add_child(auth_lbl)
+
+	var auth_input := LineEdit.new()
+	auth_input.text = author
+	auth_input.placeholder_text = "Author or team name..."
+	auth_input.custom_minimum_size.y = 26
+	auth_input.add_theme_font_size_override("font_size", 11)
+	auth_input.text_submitted.connect(func(new_text: String):
+		doc_store.set_scene_author(new_text.strip_edges())
+	)
+	auth_input.focus_exited.connect(func():
+		if auth_input != null and is_instance_valid(auth_input) and not auth_input.is_queued_for_deletion():
+			doc_store.set_scene_author(auth_input.text.strip_edges())
+	)
+	auth_box.add_child(auth_input)
+	_container.add_child(auth_box)
+
+	# 4. File Location (Read-only)
+	var file_box := VBoxContainer.new()
+	file_box.add_theme_constant_override("separation", 2)
+	var file_lbl := Label.new()
+	file_lbl.text = "FILE LOCATION"
+	file_lbl.add_theme_font_size_override("font_size", 10)
+	file_lbl.add_theme_color_override("font_color", MUTED)
+	file_box.add_child(file_lbl)
+
+	var path_disp := LineEdit.new()
+	path_disp.text = fpath if not fpath.is_empty() else "(Unsaved - click File > Save to save)"
+	path_disp.editable = false
+	path_disp.custom_minimum_size.y = 24
+	path_disp.add_theme_font_size_override("font_size", 10)
+	path_disp.add_theme_color_override("font_color", MUTED)
+	file_box.add_child(path_disp)
+	_container.add_child(file_box)
+
+	_container.add_child(HSeparator.new())
+
+	# 5. Scene Statistics
+	var stats_box := VBoxContainer.new()
+	stats_box.add_theme_constant_override("separation", 4)
+	var stats_title := Label.new()
+	stats_title.text = "MODEL INVENTORY"
+	stats_title.add_theme_font_size_override("font_size", 10)
+	stats_title.add_theme_color_override("font_color", MUTED)
+	stats_box.add_child(stats_title)
+
+	var elem_cnt: int = doc_store.active_document.elements.size()
+	var conn_cnt: int = doc_store.active_document.connections.size()
+	var sub_cnt: int = doc_store.active_document.subgraphs.size()
+
+	var stat_row1 := Label.new()
+	stat_row1.text = "• Entity Blocks: %d\n• Flow Connections: %d\n• Subgraph Macros: %d" % [elem_cnt, conn_cnt, sub_cnt]
+	stat_row1.add_theme_font_size_override("font_size", 10)
+	stat_row1.add_theme_color_override("font_color", TEXT)
+	stats_box.add_child(stat_row1)
+	_container.add_child(stats_box)
+
+	_container.add_child(HSeparator.new())
+
+	var tip := Label.new()
+	tip.text = "Tip: Select any block or queue on the canvas to inspect its operational properties."
+	tip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	tip.add_theme_font_size_override("font_size", 10)
+	tip.add_theme_color_override("font_color", MUTED)
+	_container.add_child(tip)
 
 func _render_empty_state(msg: String) -> void:
 	var lbl := Label.new()
@@ -135,7 +305,7 @@ func _render_single_element(elem_id: String) -> void:
 	title_row.add_child(dot)
 
 	var title_lbl := Label.new()
-	title_lbl.text = elem.id
+	title_lbl.text = elem.name if not elem.name.is_empty() else elem.id
 	title_lbl.add_theme_font_size_override("font_size", 13)
 	title_lbl.add_theme_color_override("font_color", TEXT)
 	title_row.add_child(title_lbl)
@@ -148,11 +318,40 @@ func _render_single_element(elem_id: String) -> void:
 	header.add_child(title_row)
 
 	var sub_lbl := Label.new()
-	sub_lbl.text = "%s • %s" % [disp_name, cat_name]
+	sub_lbl.text = "%s • %s • ID: %s" % [disp_name, cat_name, elem.id]
 	sub_lbl.add_theme_font_size_override("font_size", 10)
 	sub_lbl.add_theme_color_override("font_color", MUTED)
 	header.add_child(sub_lbl)
 	_container.add_child(header)
+
+	# Name & Identification Section
+	var name_box := VBoxContainer.new()
+	name_box.add_theme_constant_override("separation", 2)
+
+	var name_lbl := Label.new()
+	name_lbl.text = "NAME / LABEL"
+	name_lbl.add_theme_font_size_override("font_size", 10)
+	name_lbl.add_theme_color_override("font_color", MUTED)
+	name_box.add_child(name_lbl)
+
+	_name_input = LineEdit.new()
+	_name_input.text = elem.name if not elem.name.is_empty() else elem.id
+	_name_input.placeholder_text = "Enter block display name..."
+	_name_input.custom_minimum_size.y = 26
+	_name_input.add_theme_font_size_override("font_size", 11)
+	_name_input.text_submitted.connect(func(new_text: String):
+		var trimmed := new_text.strip_edges()
+		if not trimmed.is_empty() and trimmed != elem.name:
+			doc_store.rename_element(elem.id, trimmed)
+	)
+	_name_input.focus_exited.connect(func():
+		if _name_input != null and is_instance_valid(_name_input) and not _name_input.is_queued_for_deletion():
+			var trimmed := _name_input.text.strip_edges()
+			if not trimmed.is_empty() and trimmed != elem.name:
+				doc_store.rename_element(elem.id, trimmed)
+	)
+	name_box.add_child(_name_input)
+	_container.add_child(name_box)
 
 	var open_float_btn := Button.new()
 	open_float_btn.text = "⛶ Open Floating Tabs (Right-Click)"
@@ -839,7 +1038,7 @@ func _render_subgraph(sub_id: String) -> void:
 	title_row.add_child(dot)
 
 	var title_lbl := Label.new()
-	title_lbl.text = sub.id
+	title_lbl.text = sub.name if not sub.name.is_empty() else sub.id
 	title_lbl.add_theme_font_size_override("font_size", 13)
 	title_lbl.add_theme_color_override("font_color", TEXT)
 	title_row.add_child(title_lbl)
@@ -856,13 +1055,40 @@ func _render_subgraph(sub_id: String) -> void:
 
 	header.add_child(title_row)
 
-	var sub_name_lbl := Label.new()
-	sub_name_lbl.text = sub.name
-	sub_name_lbl.add_theme_font_size_override("font_size", 10)
-	sub_name_lbl.add_theme_color_override("font_color", MUTED)
-	header.add_child(sub_name_lbl)
-
+	var sub_lbl := Label.new()
+	sub_lbl.text = "Subsystem • ID: %s" % sub.id
+	sub_lbl.add_theme_font_size_override("font_size", 10)
+	sub_lbl.add_theme_color_override("font_color", MUTED)
+	header.add_child(sub_lbl)
 	_container.add_child(header)
+
+	# Subgraph Name Edit Row
+	var name_box := VBoxContainer.new()
+	name_box.add_theme_constant_override("separation", 2)
+	var name_lbl := Label.new()
+	name_lbl.text = "SUBGRAPH NAME"
+	name_lbl.add_theme_font_size_override("font_size", 10)
+	name_lbl.add_theme_color_override("font_color", MUTED)
+	name_box.add_child(name_lbl)
+
+	var sub_name_input := LineEdit.new()
+	sub_name_input.text = sub.name if not sub.name.is_empty() else sub.id
+	sub_name_input.placeholder_text = "Subgraph display name..."
+	sub_name_input.custom_minimum_size.y = 26
+	sub_name_input.add_theme_font_size_override("font_size", 11)
+	sub_name_input.text_submitted.connect(func(new_text: String):
+		var trimmed := new_text.strip_edges()
+		if not trimmed.is_empty() and trimmed != sub.name:
+			doc_store.rename_subgraph(sub.id, trimmed)
+	)
+	sub_name_input.focus_exited.connect(func():
+		if sub_name_input != null and is_instance_valid(sub_name_input) and not sub_name_input.is_queued_for_deletion():
+			var trimmed := sub_name_input.text.strip_edges()
+			if not trimmed.is_empty() and trimmed != sub.name:
+				doc_store.rename_subgraph(sub.id, trimmed)
+	)
+	name_box.add_child(sub_name_input)
+	_container.add_child(name_box)
 	_container.add_child(HSeparator.new())
 
 	# 2. Action Buttons (Drill Down, Detach, Ungroup)
