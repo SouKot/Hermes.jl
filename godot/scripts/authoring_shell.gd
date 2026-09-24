@@ -260,6 +260,8 @@ func _build_ui() -> void:
 	)
 	add_child(_plot_studio)
 	_plot_studio.position = Vector2(100, 60)
+	# Detach to independent native OS desktop window so it can move anywhere on screen without bounds
+	_plot_studio.detach_to_os_window()
 
 	_inner_split.add_child(_build_right_dock())
 

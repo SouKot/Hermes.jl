@@ -191,8 +191,8 @@ func _build_ui() -> void:
 	btn_close.tooltip_text = "Close Plot Studio"
 	btn_close.mouse_filter = Control.MOUSE_FILTER_STOP
 	btn_close.pressed.connect(func():
-		if _is_detached:
-			dock_to_main_window()
+		if _is_detached and _os_window != null:
+			_os_window.hide()
 		visible = false
 		closed.emit()
 	)
@@ -1380,7 +1380,7 @@ func detach_to_os_window() -> void:
 	_os_window.exclusive = false
 	_os_window.wrap_controls = true
 	_os_window.close_requested.connect(func():
-		dock_to_main_window()
+		_os_window.hide()
 		visible = false
 		closed.emit()
 	)
@@ -1402,12 +1402,15 @@ func detach_to_os_window() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	position = Vector2.ZERO
 	custom_minimum_size = Vector2(520, 360)
-	_os_window.show()
+	if visible:
+		_os_window.show()
+	else:
+		_os_window.hide()
 
 	_is_detached = true
 	if _btn_detach != null:
 		_btn_detach.text = "🗗 Dock"
-		_btn_detach.tooltip_text = "Dock back into the primary application window"
+		_btn_detach.tooltip_text = "Dock back inside the primary application window"
 
 func dock_to_main_window() -> void:
 	if not _is_detached: return
@@ -1437,11 +1440,17 @@ func dock_to_main_window() -> void:
 func _on_header_gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_LEFT:
-			_is_dragging = event.pressed
-			if _is_detached and _os_window != null:
-				_drag_start_pos = event.global_position
+			if event.pressed:
+				if _is_detached and _os_window != null:
+					if DisplayServer.has_method("window_start_drag") and _os_window.get_window_id() != -1:
+						DisplayServer.window_start_drag(_os_window.get_window_id())
+						return
+					_drag_start_pos = event.global_position
+				else:
+					_drag_start_pos = event.global_position - position
+				_is_dragging = true
 			else:
-				_drag_start_pos = event.global_position - position
+				_is_dragging = false
 	elif event is InputEventMouseMotion and _is_dragging:
 		if _is_detached and _os_window != null:
 			var rel := Vector2i(int(event.relative.x), int(event.relative.y))
