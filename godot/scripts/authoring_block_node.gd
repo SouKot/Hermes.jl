@@ -48,6 +48,10 @@ var element: SceneTypes.SceneElement
 var subgraph: SceneTypes.SceneSubgraph
 var is_selected: bool = false
 var is_multi_selected: bool = false
+var live_metrics: Dictionary = {}
+var signal_values: Dictionary = {}
+var signal_history: Array = []
+const MAX_SPARKLINE_POINTS: int = 40
 var hovered_port_id: String = ""
 var _dragging: bool = false
 var _drag_offset: Vector2 = Vector2.ZERO
@@ -98,6 +102,17 @@ func refresh_from_element() -> void:
 	calculate_sockets()
 	queue_redraw()
 
+func set_live_metrics(p_metrics: Dictionary) -> void:
+	live_metrics = p_metrics
+	queue_redraw()
+
+func feed_signal_value(port_id: String, val: float, _t: float = 0.0) -> void:
+	signal_values[port_id] = val
+	signal_history.append(val)
+	if signal_history.size() > MAX_SPARKLINE_POINTS:
+		signal_history.pop_front()
+	queue_redraw()
+
 func set_selected(val: bool, multi: bool = false) -> void:
 	is_selected = val
 	is_multi_selected = multi
@@ -144,6 +159,23 @@ func get_bay_layout() -> Dictionary:
 	var has_flow_out := flow_out.size() > 0
 	var has_sig_in := sig_in.size() > 0
 	var has_met_out := met_out.size() > 0
+
+	# Specialized layout for instrumentation and scope sink blocks:
+	# Dedicated signal input bay on left, no right bay, collapsed buttons
+	if element != null and element.kind in ["chart_station", "scope_2d", "digital_meter", "histogram_sink", "state_space_3d", "xy_scatter"]:
+		return {
+			"left_w": 24.0,
+			"right_w": 0.0,
+			"col_in_x": -999.0,
+			"col_out_x": -999.0,
+			"col_sig_x": 12.0,
+			"col_met_x": -999.0,
+			"has_flow_in": false,
+			"has_flow_out": false,
+			"has_sig_in": true,
+			"has_met_out": false,
+			"collapsed": true
+		}
 
 	# When wide enough (size.x >= 128.0), provide full 2-column bays (64px each)
 	# with canonical positions (IN at 16, OUT at 46, SIG at size.x-48, MET at size.x-16).
@@ -206,6 +238,7 @@ func get_bay_layout() -> Dictionary:
 	}
 
 func rebuild_ports() -> void:
+	_recalculate_size()
 	calculate_sockets()
 	queue_redraw()
 
@@ -298,6 +331,11 @@ func _recalculate_size() -> void:
 	var min_h: float = max(36.0, float(max_ports) * 18.0 + 18.0)
 	if total_cols >= 4:
 		min_h = max(min_h, 72.0)
+
+	if element != null and element.kind in ["chart_station", "scope_2d", "digital_meter", "histogram_sink", "state_space_3d", "xy_scatter"]:
+		var n_sub: int = element.properties.get("subplots", []).size() if element.properties.has("subplots") else 1
+		min_w = max(min_w, 180.0)
+		min_h = max(min_h, 42.0 + float(max(1, n_sub)) * 32.0)
 
 	custom_minimum_size = Vector2(min_w, min_h)
 
@@ -724,6 +762,8 @@ func _draw() -> void:
 			draw_line(Vector2(30.0, 0), Vector2(30.0, size.y), Color(0.12, 0.18, 0.25, 0.5), 1.0)
 			draw_string(ThemeDB.fallback_font, Vector2(10.0, 14.0), "IN", HORIZONTAL_ALIGNMENT_CENTER, -1, 9, Color("#2ecc71"))
 			draw_string(ThemeDB.fallback_font, Vector2(38.0, 14.0), "OUT", HORIZONTAL_ALIGNMENT_CENTER, -1, 9, Color("#a8d5ba"))
+		elif layout.get("has_sig_in", false) and not layout.get("has_flow_in", false):
+			draw_string(ThemeDB.fallback_font, Vector2(0.0, 14.0), "SIG", HORIZONTAL_ALIGNMENT_CENTER, int(left_w), 8, COLOR_SIGNAL)
 
 	# 3. Right Bay
 	if right_w > 0.0:
@@ -742,7 +782,106 @@ func _draw() -> void:
 		var title: String = element.name if not element.name.is_empty() else element.id
 		var cur_rot: float = fposmod(float(element.transform.rotation.z), 360.0) if element.transform != null else 0.0
 
-		if mid_w >= 70.0:
+		if element.kind == "chart_station":
+			# Clean Patchbay Instrument Terminal Card
+			var subplots: Array = element.properties.get("subplots", [])
+			var header_str: String = title
+			var badge_str: String = "[%d Subplots]" % subplots.size()
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 6.0, 18.0), header_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 75.0), 10, TEXT_COLOR)
+			draw_string(ThemeDB.fallback_font, Vector2(size.x - 70.0, 18.0), badge_str, HORIZONTAL_ALIGNMENT_RIGHT, 65, 9, COLOR_SIGNAL)
+
+			# Subplot rows
+			var y_cursor: float = 34.0
+			for i in range(subplots.size()):
+				var sp = subplots[i]
+				var sp_port: String = str(sp.get("port_id", "P%d" % (i + 1)))
+				var sp_type: String = str(sp.get("type", "time_series"))
+				var sp_title: String = str(sp.get("title", "Subplot %d" % (i + 1)))
+
+				var row_rect := Rect2(left_w + 4.0, y_cursor - 10.0, mid_w - 8.0, 24.0)
+				draw_rect(row_rect, Color("#0d131a"), true)
+				draw_rect(row_rect, Color("#222d3d"), false, 1.0)
+
+				var type_short: String = "SCOPE"
+				if sp_type == "digital_gauge": type_short = "GAUGE"
+				elif sp_type == "histogram": type_short = "HIST"
+				elif sp_type == "xy_scatter": type_short = "SCATTER"
+				elif sp_type == "state_space_3d": type_short = "3D"
+
+				# Draw port and label
+				var line_txt := "%s [%s] %s" % [sp_port, type_short, sp_title]
+				draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, y_cursor + 5.0), line_txt, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 20.0), 9, Color("#8b949e"))
+				y_cursor += 28.0
+
+			# Hint at bottom
+			if size.y >= y_cursor + 10.0:
+				draw_string(ThemeDB.fallback_font, Vector2(left_w + 6.0, size.y - 6.0), "Double-click for Plot Studio ⤢", HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 12.0), 8, Color(0.4, 0.6, 0.8, 0.6))
+
+		elif element.kind == "scope_2d":
+			var screen_rect := Rect2(left_w + 6.0, 24.0, max(10.0, mid_w - 12.0), max(10.0, size.y - 32.0))
+			draw_rect(screen_rect, Color("#071018"), true)
+			draw_rect(screen_rect, Color("#1f6feb80"), false, 1.5)
+			# Grid lines
+			var mid_y := screen_rect.position.y + screen_rect.size.y * 0.5
+			draw_line(Vector2(screen_rect.position.x, mid_y), Vector2(screen_rect.position.x + screen_rect.size.x, mid_y), Color(0.12, 0.3, 0.5, 0.3), 1.0)
+			var quarter_y1 := screen_rect.position.y + screen_rect.size.y * 0.25
+			var quarter_y2 := screen_rect.position.y + screen_rect.size.y * 0.75
+			draw_line(Vector2(screen_rect.position.x, quarter_y1), Vector2(screen_rect.position.x + screen_rect.size.x, quarter_y1), Color(0.12, 0.3, 0.5, 0.15), 1.0)
+			draw_line(Vector2(screen_rect.position.x, quarter_y2), Vector2(screen_rect.position.x + screen_rect.size.x, quarter_y2), Color(0.12, 0.3, 0.5, 0.15), 1.0)
+			# Sparkline
+			var s_max: float = 1.0
+			for v in signal_history:
+				s_max = max(s_max, float(v))
+			if signal_history.size() >= 2:
+				var s_pts := PackedVector2Array()
+				var s_step: float = screen_rect.size.x / max(1.0, float(signal_history.size() - 1))
+				for i in range(signal_history.size()):
+					var sx: float = screen_rect.position.x + float(i) * s_step
+					var sy: float = screen_rect.position.y + screen_rect.size.y - (clamp(float(signal_history[i]) / max(0.001, s_max), 0.0, 1.0) * (screen_rect.size.y - 8.0)) - 4.0
+					s_pts.append(Vector2(sx, sy))
+				draw_polyline(s_pts, Color("#00d2ff"), 2.0, true)
+				draw_circle(s_pts[-1], 3.0, Color("#58a6ff"))
+			var latest_val: float = float(signal_history.back()) if not signal_history.is_empty() else 0.0
+			var y_label: String = str(element.properties.get("y_label", "Signal"))
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 6.0, 18.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 75.0), 10, TEXT_COLOR)
+			draw_string(ThemeDB.fallback_font, Vector2(screen_rect.position.x + screen_rect.size.x - 70.0, 18.0), "%.1f %s" % [latest_val, y_label], HORIZONTAL_ALIGNMENT_RIGHT, 70, 10, Color("#00d2ff"))
+			draw_string(ThemeDB.fallback_font, Vector2(screen_rect.position.x + 4.0, screen_rect.position.y + 12.0), "max: %.1f" % s_max, HORIZONTAL_ALIGNMENT_LEFT, 50, 8, Color(0.35, 0.6, 0.8, 0.5))
+
+		elif element.kind == "digital_meter":
+			var screen_rect := Rect2(left_w + 6.0, 24.0, max(10.0, mid_w - 12.0), max(10.0, size.y - 32.0))
+			draw_rect(screen_rect, Color("#07120b"), true)
+			draw_rect(screen_rect, Color("#238636a0"), false, 1.5)
+			var latest_val: float = float(signal_history.back()) if not signal_history.is_empty() else 0.0
+			var meter_unit: String = str(element.properties.get("unit", ""))
+			var disp_str := "%.1f %s" % [latest_val, meter_unit]
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 6.0, 18.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 10, TEXT_COLOR)
+			draw_string(ThemeDB.fallback_font, Vector2(screen_rect.position.x, screen_rect.position.y + screen_rect.size.y * 0.68), disp_str.strip_edges(), HORIZONTAL_ALIGNMENT_CENTER, int(screen_rect.size.x), 16, Color("#3fb950"))
+
+		elif element.kind == "histogram_sink":
+			var screen_rect := Rect2(left_w + 6.0, 24.0, max(10.0, mid_w - 12.0), max(10.0, size.y - 32.0))
+			draw_rect(screen_rect, Color("#0e0818"), true)
+			draw_rect(screen_rect, Color("#8957e580"), false, 1.2)
+			var n_bars := 9
+			var b_width: float = (screen_rect.size.x - 4.0) / float(n_bars)
+			for b_idx in range(n_bars):
+				var bar_h: float = (sin(float(b_idx) * 0.7 + 0.4) * 0.5 + 0.5) * (screen_rect.size.y - 10.0)
+				var bx: float = screen_rect.position.x + 2.0 + float(b_idx) * b_width
+				var by: float = screen_rect.position.y + screen_rect.size.y - bar_h - 2.0
+				draw_rect(Rect2(bx, by, max(1.0, b_width - 2.0), bar_h), Color("#bc8cffaa"), true)
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 6.0, 18.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 10, TEXT_COLOR)
+
+		elif element.kind in ["state_space_3d", "xy_scatter"]:
+			var screen_rect := Rect2(left_w + 6.0, 24.0, max(10.0, mid_w - 12.0), max(10.0, size.y - 32.0))
+			draw_rect(screen_rect, Color("#151107"), true)
+			draw_rect(screen_rect, Color("#d2992280"), false, 1.2)
+			var cx := screen_rect.position.x + screen_rect.size.x * 0.5
+			var cy := screen_rect.position.y + screen_rect.size.y * 0.5
+			draw_line(Vector2(cx, screen_rect.position.y), Vector2(cx, screen_rect.position.y + screen_rect.size.y), Color(0.4, 0.35, 0.1, 0.4), 1.0)
+			draw_line(Vector2(screen_rect.position.x, cy), Vector2(screen_rect.position.x + screen_rect.size.x, cy), Color(0.4, 0.35, 0.1, 0.4), 1.0)
+			draw_circle(Vector2(cx + 10.0, cy - 8.0), 3.5, Color("#d29922"))
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 6.0, 18.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 10, TEXT_COLOR)
+
+		elif mid_w >= 70.0:
 			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 24.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 12, TEXT_COLOR)
 			var sub_str: String = element.kind.to_upper()
 			if not element.name.is_empty() and element.name != element.id:
@@ -764,6 +903,22 @@ func _draw() -> void:
 			draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 38.0), "%.1f×%.1f" % [dims.x, dims.y], HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 8, COLOR_FLOW)
 			if cur_rot > 0.05:
 				draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 50.0), "∡%.0f°" % cur_rot, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 8, Color("#f1c40f"))
+
+		# Live KPI Badge Display
+		if not live_metrics.is_empty():
+			var badge_str: String = str(live_metrics.get("badge", ""))
+			if not badge_str.is_empty():
+				var badge_col := Color("#2ecc71")
+				var s_state: String = str(live_metrics.get("state", ""))
+				if s_state == "BUSY": badge_col = Color("#e74c3c")
+				elif s_state == "DOWN": badge_col = Color("#e67e22")
+				elif s_state == "IDLE": badge_col = Color("#95a5a6")
+				elif s_state == "PARTIAL": badge_col = Color("#f1c40f")
+
+				if mid_w >= 70.0:
+					draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, size.y - 8.0), badge_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 10, badge_col)
+				elif mid_w >= 28.0:
+					draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, size.y - 6.0), badge_str, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 8, badge_col)
 		else:
 			# Fully collapsed center: Left and right bays touch with 0 gap.
 			# Render compact top badge pill so machine ID is always clearly identifiable.

@@ -19,12 +19,13 @@ const AutosaveDialog := preload("res://scripts/authoring_autosave_dialog.gd")
 const UnsavedChangesDialog := preload("res://scripts/authoring_unsaved_changes_dialog.gd")
 const SceneDiff := preload("res://scripts/scenespec_diff.gd")
 const SceneCodec := preload("res://scripts/scenespec_codec.gd")
+const PlotStudio := preload("res://scripts/authoring_plot_studio.gd")
 
 enum ViewMode { VIEW_2D, VIEW_3D }
 
 signal play_requested
 signal pause_requested
-signal step_requested
+signal step_requested(duration: float, unit: String)
 signal reset_requested
 signal speed_changed(speed: float)
 
@@ -85,6 +86,8 @@ var _abm_dialog: ABMDialog
 var _template_dialog: TemplateDialog
 var _btn_abm: Button
 var _abm_status_pill: Label
+var _plot_studio: PlotStudio
+var _btn_plots: Button
 
 # Backwards compatibility getters/setters
 var inspector: Inspector:
@@ -118,8 +121,11 @@ var _insp_spin_rot: SpinBox:
 var _btn_play: Button
 var _btn_pause: Button
 var _btn_step: Button
+var _spin_step_duration: SpinBox
+var _opt_step_unit: OptionButton
 var _btn_reset: Button
 var _clock_label: Label
+var _kpi_strip_label: Label
 var _speed_slider: HSlider
 var _speed_label: Label
 
@@ -143,6 +149,8 @@ func _ready() -> void:
 	_populate_inspector()
 	_update_abm_status_pill()
 	_check_startup_recovery()
+	if doc_store != null and doc_store.active_document != null and doc_store.active_document.elements.is_empty():
+		call_deferred("load_starter_demo_model")
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
@@ -224,10 +232,16 @@ func _build_ui() -> void:
 
 	center_vbox.add_child(_build_breadcrumb_bar())
 
+	var center_split := VSplitContainer.new()
+	center_split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	center_split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	center_split.split_offset = 500
+	center_vbox.add_child(center_split)
+
 	var view_area := Control.new()
 	view_area.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	view_area.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	center_vbox.add_child(view_area)
+	center_split.add_child(view_area)
 
 	_canvas_2d = Canvas2D.new(doc_store)
 	_canvas_2d.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -237,6 +251,15 @@ func _build_ui() -> void:
 	_viewport_3d.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_viewport_3d.visible = false
 	view_area.add_child(_viewport_3d)
+
+	_plot_studio = PlotStudio.new(doc_store)
+	_plot_studio.visible = false
+	_plot_studio.closed.connect(func():
+		_plot_studio.visible = false
+		if _btn_plots != null: _btn_plots.modulate = Color.WHITE
+	)
+	add_child(_plot_studio)
+	_plot_studio.position = Vector2(100, 60)
 
 	_inner_split.add_child(_build_right_dock())
 
@@ -444,6 +467,16 @@ func _build_header() -> Control:
 	)
 	row.add_child(btn_frame)
 
+	_btn_plots = Button.new()
+	_btn_plots.text = "📈 Charts"
+	_btn_plots.tooltip_text = "Toggle real-time live telemetry waveforms & charts"
+	_btn_plots.pressed.connect(func():
+		if _plot_studio != null:
+			_plot_studio.toggle_visibility()
+			_btn_plots.modulate = ACCENT if _plot_studio.visible else Color.WHITE
+	)
+	row.add_child(_btn_plots)
+
 	row.add_child(VSeparator.new())
 
 	# ABM Status & Settings
@@ -633,11 +666,36 @@ func _build_transport() -> Control:
 	_btn_step = Button.new()
 	_btn_step.text = "⏭ STEP"
 	_btn_step.pressed.connect(func():
-		sim_time += 0.1
-		_clock_label.text = "t = %.2f s" % sim_time
-		step_requested.emit()
+		var dur: float = _spin_step_duration.value if _spin_step_duration != null else 1.0
+		var unit: String = _opt_step_unit.get_item_text(_opt_step_unit.selected) if _opt_step_unit != null else "s"
+		var mult: float = 1.0
+		if unit == "m": mult = 60.0
+		elif unit == "h": mult = 3600.0
+		elif unit == "d": mult = 86400.0
+		sim_time += dur * mult
+		if _clock_label != null:
+			_clock_label.text = "t = %.2f s" % sim_time
+		step_requested.emit(dur, unit)
 	)
 	row.add_child(_btn_step)
+
+	_spin_step_duration = SpinBox.new()
+	_spin_step_duration.min_value = 0.01
+	_spin_step_duration.max_value = 1000000.0
+	_spin_step_duration.step = 0.5
+	_spin_step_duration.value = 1.0
+	_spin_step_duration.custom_minimum_size.x = 70
+	_spin_step_duration.tooltip_text = "Step duration interval (unrestricted step size)"
+	row.add_child(_spin_step_duration)
+
+	_opt_step_unit = OptionButton.new()
+	_opt_step_unit.add_item("s", 0)
+	_opt_step_unit.add_item("m", 1)
+	_opt_step_unit.add_item("h", 2)
+	_opt_step_unit.add_item("d", 3)
+	_opt_step_unit.selected = 0
+	_opt_step_unit.tooltip_text = "Step duration unit: s (seconds), m (minutes), h (hours), d (days)"
+	row.add_child(_opt_step_unit)
 
 	_btn_reset = Button.new()
 	_btn_reset.text = "⏹ RESET"
@@ -647,6 +705,8 @@ func _build_transport() -> Control:
 		_clock_label.text = "t = 0.00 s"
 		if _inspector_panel != null:
 			_inspector_panel.set_simulation_running(false)
+		if _plot_studio != null:
+			_plot_studio.clear_all()
 		reset_requested.emit()
 	)
 	row.add_child(_btn_reset)
@@ -658,6 +718,14 @@ func _build_transport() -> Control:
 	_clock_label.add_theme_font_size_override("font_size", 14)
 	_clock_label.add_theme_color_override("font_color", TEXT)
 	row.add_child(_clock_label)
+
+	row.add_child(VSeparator.new())
+
+	_kpi_strip_label = Label.new()
+	_kpi_strip_label.text = "WIP: 0  |  In: 0  |  Out: 0  |  Rate: 0.00/s  |  Flow: ● BALANCED"
+	_kpi_strip_label.add_theme_font_size_override("font_size", 11)
+	_kpi_strip_label.add_theme_color_override("font_color", ACCENT)
+	row.add_child(_kpi_strip_label)
 
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -689,6 +757,32 @@ func update_sim_time(t: float) -> void:
 	if _clock_label != null:
 		_clock_label.text = "t = %.2f s" % t
 
+func update_simulation_telemetry(state: Dictionary) -> void:
+	var abm = state.get("abm_state", {})
+	if abm is Dictionary and not abm.is_empty() and _kpi_strip_label != null:
+		var wip: int = int(abm.get("wip_total", 0))
+		var arr: int = int(abm.get("total_arrivals", 0))
+		var dep: int = int(abm.get("total_departures", 0))
+		var rate: float = float(abm.get("throughput_eff", 0.0))
+		var cycle: float = float(abm.get("sojourn_mean", 0.0))
+		var ll_status: String = str(abm.get("littles_law_status", "warming_up"))
+		var ll_err: float = float(abm.get("littles_law_error_pct", 0.0))
+		var ll_text: String = "● LL: " + ll_status.to_upper()
+		if ll_status in ["valid", "converging"]:
+			ll_text += " (%.1f%%)" % ll_err
+
+		_kpi_strip_label.text = "WIP: %d  |  In: %d  |  Out: %d  |  Rate: %.2f/s  |  Cycle: %.1fs  |  %s" % [
+			wip, arr, dep, rate, cycle, ll_text
+		]
+
+	var elems: Dictionary = state.get("elements_by_id", {})
+	if _inspector_panel != null and _inspector_panel.has_method("update_live_element_metrics"):
+		_inspector_panel.update_live_element_metrics(elems)
+	if _canvas_2d != null and _canvas_2d.has_method("update_element_telemetry"):
+		_canvas_2d.update_element_telemetry(elems)
+	if _plot_studio != null and _plot_studio.has_method("feed_telemetry"):
+		_plot_studio.feed_telemetry(sim_time, elems, abm if abm is Dictionary else {})
+
 func switch_view(mode: ViewMode) -> void:
 	current_view = mode
 	_canvas_2d.visible = (current_view == ViewMode.VIEW_2D)
@@ -712,13 +806,32 @@ func _populate_catalog() -> void:
 	for child in _catalog_container.get_children():
 		child.queue_free()
 
+	var by_category: Dictionary = {}
 	for entry in catalog.get_all_entries():
-		var btn := Button.new()
-		btn.text = "+ " + entry.display_name
-		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		btn.add_theme_font_size_override("font_size", 11)
-		btn.pressed.connect(func(): _instantiate_catalog_item(entry.kind))
-		_catalog_container.add_child(btn)
+		var cat: String = entry.category if not entry.category.is_empty() else "General"
+		if not by_category.has(cat):
+			by_category[cat] = []
+		by_category[cat].append(entry)
+
+	for cat in by_category.keys():
+		var cat_lbl := Label.new()
+		cat_lbl.text = "── %s ──" % cat.to_upper()
+		cat_lbl.add_theme_font_size_override("font_size", 9)
+		cat_lbl.add_theme_color_override("font_color", ACCENT)
+		_catalog_container.add_child(cat_lbl)
+
+		for entry in by_category[cat]:
+			var btn := Button.new()
+			btn.text = "+ " + entry.display_name
+			btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+			btn.add_theme_font_size_override("font_size", 11)
+			btn.tooltip_text = entry.description
+			btn.pressed.connect(func(): _instantiate_catalog_item(entry.kind))
+			_catalog_container.add_child(btn)
+
+		var spacer := Control.new()
+		spacer.custom_minimum_size.y = 4
+		_catalog_container.add_child(spacer)
 
 func _instantiate_catalog_item(kind: String) -> void:
 	if doc_store == null:
@@ -857,6 +970,15 @@ func _delete_element(eid: String) -> void:
 	if _viewport_3d != null: _viewport_3d.rebuild_3d_scene()
 
 func _on_floating_properties_requested(elem_id: String, screen_pos: Vector2 = Vector2.ZERO) -> void:
+	if doc_store != null:
+		var elem = doc_store.get_element(elem_id)
+		if elem != null and elem.kind in ["chart_station", "scope_2d", "digital_meter", "histogram_sink", "state_space_3d", "xy_scatter"]:
+			if _plot_studio != null:
+				_plot_studio.open_for_element(elem_id)
+				if _btn_plots != null:
+					_btn_plots.modulate = ACCENT
+			return
+
 	if _floating_inspector != null:
 		_floating_inspector.open_for_element(elem_id, screen_pos)
 
@@ -993,6 +1115,82 @@ func _check_startup_recovery() -> void:
 	var rec := doc_store.check_recovery_available(doc_store.file_path)
 	if rec.get("available", false):
 		_on_recovery_detected(rec)
+
+func load_starter_demo_model() -> void:
+	if doc_store == null or catalog == null or doc_store.active_document == null:
+		return
+	if not doc_store.active_document.elements.is_empty():
+		return
+
+	# Pre-configured demonstration manufacturing line
+	var src = catalog.create_element_instance("source", "src_infeed", Vector2(4.0, 6.0))
+	var q = catalog.create_element_instance("queue", "q_staging", Vector2(13.0, 6.0))
+	var srv = catalog.create_element_instance("server", "srv_assembly", Vector2(22.0, 6.0))
+	var conv = catalog.create_element_instance("conveyor", "conv_outfeed", Vector2(31.0, 6.0))
+	var snk = catalog.create_element_instance("sink", "snk_discharge", Vector2(42.0, 6.0))
+
+	# Unified Multi-Port Chart Station (Universal Subplot Instrument)
+	var chart_assembly = catalog.create_element_instance("chart_station", "chart_assembly", Vector2(22.0, 15.0))
+	chart_assembly.name = "Assembly Cell Telemetry"
+	chart_assembly.properties["title"] = "Assembly Cell Telemetry"
+	chart_assembly.properties["grid_columns"] = 2
+	chart_assembly.properties["grid_rows"] = 1
+	chart_assembly.properties["subplots"] = [
+		{
+			"id": "sp_1",
+			"port_id": "P1",
+			"title": "Buffer Queue Length",
+			"type": "time_series",
+			"y_label": "items",
+			"autoscale": true,
+			"grid": {"col": 0, "row": 0, "col_span": 1, "row_span": 1},
+			"mode": "overlay",
+			"signals": []
+		},
+		{
+			"id": "sp_2",
+			"port_id": "P2",
+			"title": "Station Duty Cycle",
+			"type": "digital_gauge",
+			"y_label": "%",
+			"autoscale": true,
+			"grid": {"col": 1, "row": 0, "col_span": 1, "row_span": 1},
+			"mode": "overlay",
+			"signals": []
+		}
+	]
+	var p2 := SceneTypes.ScenePort.new()
+	p2.id = "P2"
+	p2.kind = "signal"
+	p2.direction = "input"
+	p2.cardinality = "many"
+	p2.name = "Port 2 (Subplot 2)"
+	chart_assembly.input_ports.append(p2)
+
+	doc_store.add_element(src)
+	doc_store.add_element(q)
+	doc_store.add_element(srv)
+	doc_store.add_element(conv)
+	doc_store.add_element(snk)
+	doc_store.add_element(chart_assembly)
+
+	# Material flow connections
+	doc_store.add_connection_direct("c_in", "src_infeed", "flow_out", "q_staging", "flow_in")
+	doc_store.add_connection_direct("c_feed", "q_staging", "flow_out", "srv_assembly", "flow_in")
+	doc_store.add_connection_direct("c_conv", "srv_assembly", "flow_out", "conv_outfeed", "flow_in")
+	doc_store.add_connection_direct("c_exit", "conv_outfeed", "flow_out", "snk_discharge", "flow_in")
+
+	# Signal connections to Multi-Port Chart Station
+	doc_store.add_connection_direct("sig_chart_p1", "q_staging", "length", "chart_assembly", "P1", "signal")
+	doc_store.add_connection_direct("sig_chart_p2", "srv_assembly", "utilization", "chart_assembly", "P2", "signal")
+
+	doc_store.is_dirty = false
+	if _canvas_2d != null:
+		_canvas_2d.rebuild_blocks()
+		_canvas_2d.call_deferred("frame_all")
+	if _viewport_3d != null:
+		_viewport_3d.rebuild_3d_scene()
+		_viewport_3d.call_deferred("frame_scene")
 
 func _on_autosave_completed(_path: String, _time: float) -> void:
 	if _autosave_status_label != null:

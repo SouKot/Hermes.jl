@@ -41,7 +41,8 @@ class CatalogEntry:
 		return grouped
 
 var _entries: Dictionary = {} # kind -> CatalogEntry
-var _categories: Array = ["Material Handling", "Storage & Queues", "Processing", "I/O Boundary", "Crowd & Pedestrian", "Hybrid & Multi-Paradigm", "Templates & Subgraphs"]
+var _legacy_entries: Dictionary = {} # kind -> CatalogEntry (hidden from UI catalog dock)
+var _categories: Array = ["Material Handling", "Storage & Queues", "Processing", "I/O Boundary", "Crowd & Pedestrian", "Hybrid & Multi-Paradigm", "Templates & Subgraphs", "Instrumentation & Scopes"]
 
 func _init() -> void:
 	_register_defaults()
@@ -58,7 +59,9 @@ func get_entries_in_category(cat: String) -> Array:
 	return res
 
 func get_entry(kind: String) -> CatalogEntry:
-	return _entries.get(kind, null)
+	if _entries.has(kind):
+		return _entries[kind]
+	return _legacy_entries.get(kind, null)
 
 func get_all_entries() -> Array:
 	return _entries.values()
@@ -110,7 +113,8 @@ func _register_defaults() -> void:
 	]
 	conv.default_metric_ports = [
 		{"id": "occupancy", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Occupancy"},
-		{"id": "speed", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Speed"}
+		{"id": "speed", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Speed"},
+		{"id": "in_transit", "kind": "metric", "direction": "output", "cardinality": "many", "name": "In-Transit Count"}
 	]
 	conv.property_schemas = [
 		{"key": "speed", "display_name": "Conveyor Velocity", "type": "float", "default_value": 1.5, "unit": "m/s", "range": [0.1, 10.0, 0.1], "runtime_editable": true, "group": "Kinematics", "description": "Linear surface speed of the transport bed."},
@@ -522,6 +526,172 @@ func _register_defaults() -> void:
 		{"id": "throughput", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Cell Throughput"}
 	]
 	_entries["queue_server_station"] = cell
+
+	# 12. Universal Multi-Chart Station
+	var chart_st := CatalogEntry.new()
+	chart_st.kind = "chart_station"
+	chart_st.display_name = "📊 Chart Station"
+	chart_st.category = "Instrumentation & Scopes"
+	chart_st.description = "Modular multi-subplot plotting instrument. Supports time-series waveforms, digital gauges, histograms, and X-Y scatter with dynamic ports and flexible grid layout."
+	chart_st.default_dimensions = Vector3(8.0, 5.0, 1.2)
+	chart_st.default_elevation_start = 0.8
+	chart_st.default_elevation_end = 0.8
+	chart_st.color = Color("#1f6feb")
+	chart_st.default_input_ports = [
+		{"id": "P1", "kind": "signal", "direction": "input", "cardinality": "many", "name": "Port 1 (Subplot 1)"}
+	]
+	chart_st.default_output_ports = []
+	chart_st.default_metric_ports = []
+	chart_st.property_schemas = [
+		{"key": "title", "display_name": "Chart Station Title", "type": "string", "default_value": "Telemetry Station", "runtime_editable": true, "group": "Display", "description": "Title label for this chart block."},
+		{"key": "time_window", "display_name": "Time Window", "type": "float", "default_value": 60.0, "unit": "s", "range": [5.0, 600.0, 5.0], "runtime_editable": true, "group": "Display", "description": "Horizontal time span in seconds."}
+	]
+	chart_st.default_properties = {
+		"title": "Telemetry Station",
+		"time_window": 60.0,
+		"grid_columns": 2,
+		"grid_rows": 2,
+		"subplots": [
+			{
+				"id": "sp_1",
+				"port_id": "P1",
+				"title": "Subplot 1",
+				"type": "time_series",
+				"y_label": "Value",
+				"autoscale": true,
+				"y_min": 0.0,
+				"y_max": 50.0,
+				"grid": {"col": 0, "row": 0, "col_span": 1, "row_span": 1},
+				"mode": "overlay",
+				"signals": []
+			}
+		]
+	}
+	_entries["chart_station"] = chart_st
+
+	# --- Legacy Scope Blocks (Preserved for backwards compatibility, hidden from UI catalog) ---
+	var scope := CatalogEntry.new()
+	scope.kind = "scope_2d"
+	scope.display_name = "📈 2D Oscilloscope Scope"
+	scope.category = "Instrumentation & Scopes"
+	scope.description = "Real-time time-series oscilloscope sink."
+	scope.default_dimensions = Vector3(8.0, 5.0, 1.2)
+	scope.default_elevation_start = 0.8
+	scope.default_elevation_end = 0.8
+	scope.color = Color("#1f6feb")
+	scope.default_input_ports = [
+		{"id": "sig_in", "kind": "signal", "direction": "input", "cardinality": "many", "name": "Signal In"}
+	]
+	scope.default_output_ports = []
+	scope.default_metric_ports = []
+	scope.property_schemas = [
+		{"key": "time_window", "display_name": "Time Window", "type": "float", "default_value": 60.0, "unit": "s", "range": [5.0, 600.0, 5.0], "runtime_editable": true, "group": "Display", "description": "Oscilloscope horizontal time span."},
+		{"key": "chart_title", "display_name": "Chart Title", "type": "string", "default_value": "Scope Waveform", "runtime_editable": true, "group": "Display", "description": "Title label for this scope."},
+		{"key": "y_label", "display_name": "Y-Axis Label", "type": "string", "default_value": "Signal", "runtime_editable": true, "group": "Display", "description": "Units or label for Y-axis."},
+		{"key": "autoscale", "display_name": "Auto-Scale Y", "type": "bool", "default_value": true, "runtime_editable": true, "group": "Display", "description": "Automatically scale Y-axis bounds."}
+	]
+	scope.default_properties = {
+		"time_window": 60.0,
+		"chart_title": "Scope Waveform",
+		"y_label": "Signal",
+		"autoscale": true
+	}
+	_legacy_entries["scope_2d"] = scope
+
+	var meter := CatalogEntry.new()
+	meter.kind = "digital_meter"
+	meter.display_name = "🔢 Digital Gauge"
+	meter.category = "Instrumentation & Scopes"
+	meter.description = "Real-time digital readout and indicator gauge for scalar metric signals."
+	meter.default_dimensions = Vector3(6.0, 4.0, 1.0)
+	meter.default_elevation_start = 0.8
+	meter.default_elevation_end = 0.8
+	meter.color = Color("#238636")
+	meter.default_input_ports = [
+		{"id": "sig_in", "kind": "signal", "direction": "input", "cardinality": "one", "name": "Signal In"}
+	]
+	meter.default_output_ports = []
+	meter.default_metric_ports = []
+	meter.property_schemas = [
+		{"key": "meter_label", "display_name": "Meter Label", "type": "string", "default_value": "Live Value", "runtime_editable": true, "group": "Display", "description": "Label displayed on meter."},
+		{"key": "unit", "display_name": "Measurement Unit", "type": "string", "default_value": "", "runtime_editable": true, "group": "Display", "description": "Unit suffix (e.g. items, %, s, pcs/min)."}
+	]
+	meter.default_properties = {
+		"meter_label": "Live Value",
+		"unit": ""
+	}
+	_legacy_entries["digital_meter"] = meter
+
+	var hist := CatalogEntry.new()
+	hist.kind = "histogram_sink"
+	hist.display_name = "📊 Distribution Histogram"
+	hist.category = "Instrumentation & Scopes"
+	hist.description = "Statistical distribution sink plotting empirical histograms of wait times or queue sizes."
+	hist.default_dimensions = Vector3(8.0, 5.0, 1.2)
+	hist.default_elevation_start = 0.8
+	hist.default_elevation_end = 0.8
+	hist.color = Color("#8957e5")
+	hist.default_input_ports = [
+		{"id": "sig_in", "kind": "signal", "direction": "input", "cardinality": "one", "name": "Signal In"}
+	]
+	hist.default_output_ports = []
+	hist.default_metric_ports = []
+	hist.property_schemas = [
+		{"key": "bins", "display_name": "Histogram Bins", "type": "int", "default_value": 15, "range": [5, 50, 1], "runtime_editable": true, "group": "Statistics", "description": "Number of statistical buckets."},
+		{"key": "chart_title", "display_name": "Histogram Title", "type": "string", "default_value": "Distribution", "runtime_editable": true, "group": "Display", "description": "Title label for histogram."}
+	]
+	hist.default_properties = {
+		"bins": 15,
+		"chart_title": "Distribution"
+	}
+	_legacy_entries["histogram_sink"] = hist
+
+	var scope3d := CatalogEntry.new()
+	scope3d.kind = "state_space_3d"
+	scope3d.display_name = "🌐 3D Phase Scope"
+	scope3d.category = "Instrumentation & Scopes"
+	scope3d.description = "3D phase trajectory plotter. Accepts 3 signals (X, Y, Z) to render orbital state-space curves."
+	scope3d.default_dimensions = Vector3(8.0, 5.5, 1.5)
+	scope3d.default_elevation_start = 0.8
+	scope3d.default_elevation_end = 0.8
+	scope3d.color = Color("#d29922")
+	scope3d.default_input_ports = [
+		{"id": "sig_x", "kind": "signal", "direction": "input", "cardinality": "one", "name": "X Signal"},
+		{"id": "sig_y", "kind": "signal", "direction": "input", "cardinality": "one", "name": "Y Signal"},
+		{"id": "sig_z", "kind": "signal", "direction": "input", "cardinality": "one", "name": "Z Signal"}
+	]
+	scope3d.default_output_ports = []
+	scope3d.default_metric_ports = []
+	scope3d.property_schemas = [
+		{"key": "chart_title", "display_name": "Trajectory Title", "type": "string", "default_value": "3D Phase Trajectory", "runtime_editable": true, "group": "Display", "description": "Title for 3D trajectory plot."}
+	]
+	scope3d.default_properties = {
+		"chart_title": "3D Phase Trajectory"
+	}
+	_legacy_entries["state_space_3d"] = scope3d
+
+	var xy := CatalogEntry.new()
+	xy.kind = "xy_scatter"
+	xy.display_name = "⤢ X-Y Scatter Scope"
+	xy.category = "Instrumentation & Scopes"
+	xy.description = "Cross-correlation plotter for inspecting X vs Y relationships (e.g. Queue vs Utilization)."
+	xy.default_dimensions = Vector3(8.0, 5.0, 1.2)
+	xy.default_elevation_start = 0.8
+	xy.default_elevation_end = 0.8
+	xy.color = Color("#39c5cf")
+	xy.default_input_ports = [
+		{"id": "sig_x", "kind": "signal", "direction": "input", "cardinality": "one", "name": "X Signal"},
+		{"id": "sig_y", "kind": "signal", "direction": "input", "cardinality": "one", "name": "Y Signal"}
+	]
+	xy.default_output_ports = []
+	xy.default_metric_ports = []
+	xy.property_schemas = [
+		{"key": "chart_title", "display_name": "Correlation Title", "type": "string", "default_value": "X-Y Correlation", "runtime_editable": true, "group": "Display", "description": "Title for X-Y scatter plot."}
+	]
+	xy.default_properties = {
+		"chart_title": "X-Y Correlation"
+	}
+	_legacy_entries["xy_scatter"] = xy
 
 func create_element_instance(kind: String, id_val: String, pos: Vector2) -> SceneTypes.SceneElement:
 	var entry := get_entry(kind)

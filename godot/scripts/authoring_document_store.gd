@@ -144,6 +144,14 @@ func load_from_file(path: String) -> bool:
 	document_loaded.emit(active_document)
 	return true
 
+func export_to_dictionary() -> Dictionary:
+	if active_document != null and active_document.has_method("to_dict"):
+		return active_document.to_dict()
+	return {}
+
+func to_dict() -> Dictionary:
+	return export_to_dictionary()
+
 func save_to_file(path: String = "", format_hint: String = "auto") -> bool:
 	var target_path := path if not path.is_empty() else file_path
 	if target_path.is_empty():

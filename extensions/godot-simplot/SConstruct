@@ -1,0 +1,27 @@
+import os
+import sys
+
+env = SConscript("godot-cpp/SConstruct")
+
+# Additional include directories
+env.Append(CPPPATH=[
+    "include",
+    "thirdparty/imgui",
+    "thirdparty/implot",
+    "thirdparty/implot3d",
+])
+
+# Source files
+sources = Glob("src/*.cpp")
+
+# Output library
+if env["platform"] == "windows":
+    target_path = "bin/libgodot_simplot.windows.{}.{}.dll".format(env["target"], env["arch"])
+elif env["platform"] == "macos":
+    target_path = "bin/libgodot_simplot.macos.{}.dylib".format(env["target"])
+else:
+    target_path = "bin/libgodot_simplot.linux.{}.{}.so".format(env["target"], env["arch"])
+
+library = env.SharedLibrary(target_path, sources)
+Default(library)
+

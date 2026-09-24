@@ -42,6 +42,7 @@ var scene_name := "waiting"
 var endpoint_text := "127.0.0.1:9107"
 var simulation_time := 0.0
 var running := false
+var is_sim_compiled := false
 var connection_manager: SimVizConnectionManager
 var state_store: RefCounted
 var pending_commands: Dictionary = {}
@@ -81,6 +82,10 @@ func _build_authoring_shell() -> void:
     authoring_shell.step_requested.connect(_on_step)
     authoring_shell.reset_requested.connect(_on_reset)
     authoring_shell.speed_changed.connect(_on_speed_changed)
+    if authoring_shell.doc_store != null:
+        authoring_shell.doc_store.document_modified.connect(func():
+            is_sim_compiled = false
+        )
 
 func _auto_connect() -> void:
     if connection_manager != null and connection_manager.state != ConnectionManager.ConnectionState.CONNECTED:
@@ -111,7 +116,10 @@ func _process(delta: float) -> void:
                 density_info_label.text = "Density cells: %d / 10000 cap" % viewport_controller.get_density_cell_count()
     if running:
         simulation_time += delta
-        simulation_label.text = "t = %.2f s" % simulation_time
+        if simulation_label != null:
+            simulation_label.text = "t = %.2f s" % simulation_time
+        if authoring_shell != null:
+            authoring_shell.update_sim_time(simulation_time)
         queue_redraw()
 
 func _build_shell() -> void:
@@ -489,6 +497,32 @@ func _on_state_published(state: Dictionary) -> void:
     if selected_kind != "":
         _update_selection_details(selected_kind, selected_id)
 
+    # Forward entity telemetry to AuthoringShell (2D Canvas and 3D Viewport)
+    var entity_list: Array = []
+    var raw_entities: Array = []
+    if state.has("entities_by_id") and state.entities_by_id is Dictionary:
+        raw_entities = state.entities_by_id.values()
+    elif state.has("entities") and state.entities is Array:
+        raw_entities = state.entities
+
+    for raw_ent in raw_entities:
+        if raw_ent is Dictionary:
+            var ent: Dictionary = raw_ent.duplicate(true)
+            if ent.has("properties") and ent.properties is Dictionary:
+                var p: Dictionary = ent.properties
+                if not ent.has("x") and p.has("x"): ent["x"] = p.x
+                if not ent.has("y") and p.has("y"): ent["y"] = p.y
+                if not ent.has("z") and p.has("z"): ent["z"] = p.z
+            if not ent.has("position"):
+                ent["position"] = [float(ent.get("x", 0.0)), float(ent.get("y", 0.0)), float(ent.get("z", 0.0))]
+            entity_list.append(ent)
+
+    if authoring_shell != null:
+        if authoring_shell.has_method("update_agent_telemetry"):
+            authoring_shell.update_agent_telemetry(entity_list)
+        if authoring_shell.has_method("update_simulation_telemetry"):
+            authoring_shell.update_simulation_telemetry(state)
+
 func _on_resync_required(reason: String) -> void:
     if status_label != null:
         status_label.text = "●  RESYNC REQUIRED"
@@ -499,6 +533,21 @@ func _on_play() -> void:
     running = true
     if authoring_shell != null:
         authoring_shell.is_sim_running = true
+        if not is_sim_compiled and authoring_shell.doc_store != null:
+            var scene_doc: Dictionary = {}
+            if authoring_shell.doc_store.has_method("export_to_dictionary"):
+                scene_doc = authoring_shell.doc_store.export_to_dictionary()
+            elif authoring_shell.doc_store.active_document != null and authoring_shell.doc_store.active_document.has_method("to_dict"):
+                scene_doc = authoring_shell.doc_store.active_document.to_dict()
+            var elems: Array = scene_doc.get("elements", [])
+            if not elems.is_empty():
+                is_sim_compiled = true
+                _send_command("compile_and_run", {
+                    "action": "compile_and_run",
+                    "scenespec": scene_doc,
+                    "speed": authoring_shell.sim_speed
+                })
+                return
     _send_command("play", {"action": "play"})
 
 func _on_pause() -> void:
@@ -507,20 +556,16 @@ func _on_pause() -> void:
         authoring_shell.is_sim_running = false
     _send_command("pause", {"action": "pause"})
 
-func _on_step() -> void:
+func _on_step(duration: float = 1.0, unit: String = "s") -> void:
     running = false
     if authoring_shell != null:
         authoring_shell.is_sim_running = false
-    simulation_time += 0.1
-    if simulation_label != null:
-        simulation_label.text = "t = %.2f s" % simulation_time
-    if authoring_shell != null:
-        authoring_shell.update_sim_time(simulation_time)
-    _send_command("step", {"action": "step", "steps": 1})
+    _send_command("step", {"action": "step", "duration": duration, "unit": unit})
     queue_redraw()
 
 func _on_reset() -> void:
     running = false
+    is_sim_compiled = false
     if authoring_shell != null:
         authoring_shell.is_sim_running = false
     simulation_time = 0.0

@@ -25,6 +25,7 @@ var warnings: Array = []
 var truncated := false
 var last_message_id := ""
 var revision := 0
+var debug_logging: bool = OS.has_environment("SIMVIZ_DEBUG")
 
 func apply_message(message: Dictionary) -> bool:
     var kind := str(message.get("kind", ""))
@@ -82,11 +83,12 @@ func _apply_snapshot(message: Dictionary) -> bool:
         _pack_entity_positions(entities_raw)
     else:
         next_entities = _index_records(entities_raw, "id")
-    print("STATE STORE: snapshot scene=%s elements=%d entities=%d" % [
-        str(payload.get("scene_id", "")),
-        next_elements.size(),
-        next_entities.size()
-    ])
+    if debug_logging:
+        print("STATE STORE: snapshot scene=%s elements=%d entities=%d" % [
+            str(payload.get("scene_id", "")),
+            next_elements.size(),
+            next_entities.size()
+        ])
 
     scene_id = str(payload.get("scene_id", ""))
     snapshot_version = str(payload.get("snapshot_version", ""))
@@ -108,12 +110,13 @@ func _apply_snapshot(message: Dictionary) -> bool:
 
 func _apply_delta(message: Dictionary) -> bool:
     var payload: Dictionary = message.get("payload", {})
-    print("STATE STORE: delta parent=%s elements_changed=%d entities_added=%d entities_updated=%d" % [
-        str(payload.get("parent_message_id", "")),
-        payload.get("elements_changed", []).size(),
-        payload.get("entities_added", []).size(),
-        payload.get("entities_updated", []).size()
-    ])
+    if debug_logging:
+        print("STATE STORE: delta parent=%s elements_changed=%d entities_added=%d entities_updated=%d" % [
+            str(payload.get("parent_message_id", "")),
+            payload.get("elements_changed", []).size(),
+            payload.get("entities_added", []).size(),
+            payload.get("entities_updated", []).size()
+        ])
     var parent := str(payload.get("parent_message_id", ""))
     if last_message_id != "" and parent != "" and parent != last_message_id and not parent.begins_with("revision-"):
         resync_required.emit("delta parent mismatch: expected %s, got %s" % [last_message_id, parent])

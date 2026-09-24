@@ -139,6 +139,10 @@ func _setup_3d_world() -> void:
 	# 5. Agent MultiMesh Container (Hardware-accelerated crowd rendering)
 	_agents_multimesh_instance = MultiMeshInstance3D.new()
 	_agents_multimesh_instance.name = "AgentsMultiMesh"
+	var agent_mat := StandardMaterial3D.new()
+	agent_mat.vertex_color_use_as_albedo = true
+	agent_mat.roughness = 0.35
+	_agents_multimesh_instance.material_override = agent_mat
 	_agents_multimesh = MultiMesh.new()
 	_agents_multimesh.transform_format = MultiMesh.TRANSFORM_3D
 	_agents_multimesh.use_colors = true
@@ -508,24 +512,65 @@ func _gui_input(event: InputEvent) -> void:
 # ============================================================================
 
 var _agent_transforms: Array = []
+var _agent_target_transforms: Dictionary = {}
+var _agent_smoothed_transforms: Dictionary = {}
+var _agent_colors: Dictionary = {}
 
 func get_agent_transform_3d(index: int) -> Transform3D:
 	if index >= 0 and index < _agent_transforms.size():
 		return _agent_transforms[index]
 	return Transform3D.IDENTITY
 
-func update_agent_telemetry(agents: Array) -> void:
-	_active_agents = agents
-	_agent_transforms.clear()
+func _process(delta: float) -> void:
 	if _agents_multimesh == null:
 		return
+	if _active_agents.is_empty():
+		_agents_multimesh.instance_count = 0
+		_agent_transforms.clear()
+		return
 
-	_agents_multimesh.instance_count = agents.size()
+	var count: int = _active_agents.size()
+	if _agents_multimesh.instance_count != count:
+		_agents_multimesh.instance_count = count
+	_agent_transforms.resize(count)
+
+	var lerp_weight: float = clamp(delta * 25.0, 0.0, 1.0)
+
+	for i in range(count):
+		var agent = _active_agents[i]
+		if not (agent is Dictionary):
+			continue
+		var aid: String = str(agent.get("id", str(i)))
+		var target_t: Transform3D = _agent_target_transforms.get(aid, Transform3D.IDENTITY)
+		var cur_t: Transform3D = _agent_smoothed_transforms.get(aid, target_t)
+
+		var smooth_pos: Vector3 = cur_t.origin.lerp(target_t.origin, lerp_weight)
+		var smooth_basis: Basis = cur_t.basis.slerp(target_t.basis, lerp_weight).orthonormalized()
+		var smoothed_t := Transform3D(smooth_basis, smooth_pos)
+
+		_agent_smoothed_transforms[aid] = smoothed_t
+		_agent_transforms[i] = smoothed_t
+		_agents_multimesh.set_instance_transform(i, smoothed_t)
+		_agents_multimesh.set_instance_color(i, _agent_colors.get(aid, Color("#f39c12")))
+
+		if is_follow_camera_active and aid == selected_agent_id and not aid.is_empty():
+			if _cam_pivot != null:
+				_cam_pivot.position = smooth_pos
+				_update_camera_transform()
+
+func update_agent_telemetry(agents: Array) -> void:
+	_active_agents = agents
+	var active_ids: Dictionary = {}
 
 	for i in range(agents.size()):
 		var agent = agents[i]
 		if not (agent is Dictionary):
 			continue
+
+		var aid: String = str(agent.get("id", str(i)))
+		if aid.is_empty():
+			aid = str(i)
+		active_ids[aid] = true
 
 		var raw_pos = agent.get("position", [0.0, 0.0, 0.0])
 		var px: float = 0.0
@@ -535,6 +580,11 @@ func update_agent_telemetry(agents: Array) -> void:
 			px = float(agent["x"])
 			py = float(agent["y"])
 			pz = float(agent.get("z", 0.0))
+		elif agent.has("properties") and agent.properties is Dictionary:
+			var p: Dictionary = agent.properties
+			if p.has("x"): px = float(p.x)
+			if p.has("y"): py = float(p.y)
+			if p.has("z"): pz = float(p.get("z", 0.0))
 		elif raw_pos is Array:
 			if raw_pos.size() >= 1: px = float(raw_pos[0])
 			if raw_pos.size() >= 2: py = float(raw_pos[1])
@@ -556,6 +606,10 @@ func update_agent_telemetry(agents: Array) -> void:
 		if agent.has("vx") and agent.has("vy"):
 			vx = float(agent["vx"])
 			vy = float(agent["vy"])
+		elif agent.has("properties") and agent.properties is Dictionary:
+			var p: Dictionary = agent.properties
+			if p.has("vx"): vx = float(p.vx)
+			if p.has("vy"): vy = float(p.vy)
 		elif vel is Array and vel.size() >= 2:
 			vx = float(vel[0])
 			vy = float(vel[1])
@@ -569,27 +623,42 @@ func update_agent_telemetry(agents: Array) -> void:
 			yaw = atan2(-vy, vx)
 
 		var basis := Basis.from_euler(Vector3(0, yaw, 0))
-		var t := Transform3D(basis, g_pos)
-		_agents_multimesh.set_instance_transform(i, t)
-		_agent_transforms.append(t)
+		var target_t := Transform3D(basis, g_pos)
+		_agent_target_transforms[aid] = target_t
+		if not _agent_smoothed_transforms.has(aid):
+			_agent_smoothed_transforms[aid] = target_t
 
-		# Color
+		# Color: Product vs Pedestrian
+		var kind: String = str(agent.get("kind", "product"))
+		var is_product: bool = (kind == "product" or kind == "carton" or kind == "item")
+		var in_service: bool = false
+		if agent.has("properties") and agent.properties is Dictionary:
+			in_service = bool(agent.properties.get("in_service", false))
 		var state: String = str(agent.get("state", "walking"))
-		var col := Color("#2ecc71") # green
-		if state == "queuing":
-			col = Color("#3498db") # blue
-		elif speed < 0.35:
-			col = Color("#e74c3c") # red
-		elif speed < 1.0:
-			col = Color("#f1c40f") # amber
-		_agents_multimesh.set_instance_color(i, col)
 
-		# Follow camera if this agent is selected
-		var aid: String = str(agent.get("id", ""))
-		if is_follow_camera_active and aid == selected_agent_id and not aid.is_empty():
-			if _cam_pivot != null:
-				_cam_pivot.position = g_pos
-				_update_camera_transform()
+		var col := Color("#2ecc71") # green
+		if is_product:
+			if in_service:
+				col = Color("#2ecc71") # being serviced emerald green
+			elif state == "queuing" or (agent.has("current_location") and "q" in str(agent.current_location)):
+				col = Color("#00d2ff") # waiting in queue bright cyan
+			else:
+				col = Color("#f39c12") # on conveyor / transit amber
+		else:
+			if state == "queuing":
+				col = Color("#3498db") # blue
+			elif speed < 0.35:
+				col = Color("#e74c3c") # red
+			elif speed < 1.0:
+				col = Color("#f1c40f") # amber
+		_agent_colors[aid] = col
+
+	# Prune departed entities
+	for old_id in _agent_smoothed_transforms.keys():
+		if not active_ids.has(old_id):
+			_agent_smoothed_transforms.erase(old_id)
+			_agent_target_transforms.erase(old_id)
+			_agent_colors.erase(old_id)
 
 func set_follow_camera(active: bool, agent_id: String = "") -> void:
 	is_follow_camera_active = active

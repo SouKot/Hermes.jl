@@ -25,6 +25,13 @@ const DANGER := Color("#e74c3c")
 var doc_store: DocumentStore
 var catalog: Catalog
 var is_sim_running: bool = false
+var _live_element_metrics: Dictionary = {}
+var _live_status_label: Label = null
+var _live_util_bar: ProgressBar = null
+var _live_util_label: Label = null
+var _live_metric_lbl_1: Label = null
+var _live_metric_lbl_2: Label = null
+var _live_metric_lbl_3: Label = null
 
 var _container: VBoxContainer
 var _spin_px: SpinBox = null
@@ -324,6 +331,12 @@ func _render_single_element(elem_id: String) -> void:
 	header.add_child(sub_lbl)
 	_container.add_child(header)
 
+	# Live Telemetry & Operational KPIs Section
+	var live_card := _build_live_telemetry_card(elem)
+	if live_card != null:
+		_container.add_child(live_card)
+		_container.add_child(HSeparator.new())
+
 	# Name & Identification Section
 	var name_box := VBoxContainer.new()
 	name_box.add_theme_constant_override("separation", 2)
@@ -441,6 +454,188 @@ func _render_single_element(elem_id: String) -> void:
 	act_row.add_child(del_btn)
 
 	_container.add_child(act_row)
+
+func _build_live_telemetry_card(elem: SceneTypes.SceneElement) -> Control:
+	var elem_id: String = elem.id
+	var metrics: Dictionary = {}
+	if _live_element_metrics.has(elem_id):
+		var raw = _live_element_metrics[elem_id]
+		if raw is Dictionary:
+			metrics = raw.get("custom_metrics", {})
+
+	var panel := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color("#111a26")
+	style.border_color = Color("#243347")
+	style.border_width_left = 3
+	style.border_width_top = 1
+	style.border_width_right = 1
+	style.border_width_bottom = 1
+	style.corner_radius_top_left = 4
+	style.corner_radius_top_right = 4
+	style.corner_radius_bottom_right = 4
+	style.corner_radius_bottom_left = 4
+	panel.add_theme_stylebox_override("panel", style)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 3)
+	vbox.add_theme_constant_override("margin_left", 8)
+	vbox.add_theme_constant_override("margin_top", 6)
+	vbox.add_theme_constant_override("margin_right", 8)
+	vbox.add_theme_constant_override("margin_bottom", 6)
+	panel.add_child(vbox)
+
+	var hdr := HBoxContainer.new()
+	var tag := Label.new()
+	tag.text = "LIVE TELEMETRY"
+	tag.add_theme_font_size_override("font_size", 10)
+	tag.add_theme_color_override("font_color", LIVE_COLOR)
+	hdr.add_child(tag)
+
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hdr.add_child(spacer)
+
+	_live_status_label = Label.new()
+	_live_status_label.add_theme_font_size_override("font_size", 10)
+	hdr.add_child(_live_status_label)
+	vbox.add_child(hdr)
+
+	_live_util_bar = ProgressBar.new()
+	_live_util_bar.custom_minimum_size.y = 12
+	_live_util_bar.show_percentage = false
+	_live_util_bar.min_value = 0.0
+	_live_util_bar.max_value = 100.0
+	vbox.add_child(_live_util_bar)
+
+	_live_util_label = Label.new()
+	_live_util_label.add_theme_font_size_override("font_size", 10)
+	_live_util_label.add_theme_color_override("font_color", TEXT)
+	vbox.add_child(_live_util_label)
+
+	_live_metric_lbl_1 = Label.new()
+	_live_metric_lbl_1.add_theme_font_size_override("font_size", 10)
+	_live_metric_lbl_1.add_theme_color_override("font_color", MUTED)
+	vbox.add_child(_live_metric_lbl_1)
+
+	_live_metric_lbl_2 = Label.new()
+	_live_metric_lbl_2.add_theme_font_size_override("font_size", 10)
+	_live_metric_lbl_2.add_theme_color_override("font_color", MUTED)
+	vbox.add_child(_live_metric_lbl_2)
+
+	_live_metric_lbl_3 = Label.new()
+	_live_metric_lbl_3.add_theme_font_size_override("font_size", 10)
+	_live_metric_lbl_3.add_theme_color_override("font_color", ACCENT)
+	vbox.add_child(_live_metric_lbl_3)
+
+	_update_live_card_fields(elem.kind, metrics)
+	return panel
+
+func _update_live_card_fields(kind: String, metrics: Dictionary) -> void:
+	if _live_status_label == null or not is_instance_valid(_live_status_label):
+		return
+
+	if metrics.is_empty():
+		_live_status_label.text = "STANDBY"
+		_live_status_label.add_theme_color_override("font_color", MUTED)
+		if _live_util_bar != null and is_instance_valid(_live_util_bar):
+			_live_util_bar.value = 0.0
+		if _live_util_label != null and is_instance_valid(_live_util_label):
+			_live_util_label.text = "Waiting for simulation to run..."
+		if _live_metric_lbl_1 != null and is_instance_valid(_live_metric_lbl_1): _live_metric_lbl_1.text = ""
+		if _live_metric_lbl_2 != null and is_instance_valid(_live_metric_lbl_2): _live_metric_lbl_2.text = ""
+		if _live_metric_lbl_3 != null and is_instance_valid(_live_metric_lbl_3): _live_metric_lbl_3.text = ""
+		return
+
+	match kind:
+		"server":
+			var state_str: String = str(metrics.get("state", "IDLE"))
+			_live_status_label.text = "● " + state_str
+			if state_str == "BUSY":
+				_live_status_label.add_theme_color_override("font_color", LIVE_COLOR)
+			elif state_str == "DOWN":
+				_live_status_label.add_theme_color_override("font_color", DANGER)
+			elif state_str == "PARTIAL":
+				_live_status_label.add_theme_color_override("font_color", RESTART_COLOR)
+			else:
+				_live_status_label.add_theme_color_override("font_color", MUTED)
+
+			var util_pct: float = float(metrics.get("utilization_pct", 0.0))
+			_live_util_bar.value = util_pct
+			_live_util_label.text = "Utilization: %.1f%%  (%d/%d busy)" % [
+				util_pct, int(metrics.get("busy_servers", 0)), int(metrics.get("num_servers", 1))
+			]
+			_live_metric_lbl_1.text = "Total Completed: %d units" % int(metrics.get("total_served", 0))
+			_live_metric_lbl_2.text = "Mean Service Time: %.2f s" % float(metrics.get("service_mean", 0.0))
+			_live_metric_lbl_3.text = "Instantaneous Load: %.1f%%" % float(metrics.get("instant_util_pct", 0.0))
+
+		"queue":
+			var q_len: int = int(metrics.get("queue_length", 0))
+			var cap: int = int(metrics.get("capacity", 20))
+			var occ_pct: float = float(metrics.get("occupancy_pct", 0.0))
+			_live_status_label.text = "%d / %d" % [q_len, cap]
+			_live_status_label.add_theme_color_override("font_color", ACCENT if q_len < cap else DANGER)
+			_live_util_bar.value = occ_pct
+			_live_util_label.text = "Occupancy: %d / %d items (%.1f%%)" % [q_len, cap, occ_pct]
+			_live_metric_lbl_1.text = "Mean Wait (Wq): %.2f s" % float(metrics.get("wait_mean_wq", 0.0))
+			_live_metric_lbl_2.text = "Flow: In %d  |  Out %d" % [int(metrics.get("total_entered", 0)), int(metrics.get("total_departed", 0))]
+			_live_metric_lbl_3.text = "Status: %s" % ("FULL / BLOCKED" if q_len >= cap else "FLOWING")
+
+		"conveyor":
+			var in_transit: int = int(metrics.get("items_in_transit", 0))
+			var spd: float = float(metrics.get("speed", 1.5))
+			var t_tau: float = float(metrics.get("transit_delay", 2.0))
+			_live_status_label.text = "● RUNNING"
+			_live_status_label.add_theme_color_override("font_color", LIVE_COLOR)
+			_live_util_bar.value = clamp(float(in_transit) * 20.0, 0.0, 100.0)
+			_live_util_label.text = "Active on Belt: %d cartons" % in_transit
+			_live_metric_lbl_1.text = "Belt Speed: %.2f m/s (transit: %.2f s)" % [spd, t_tau]
+			_live_metric_lbl_2.text = "Total Handed Over: %d items" % int(metrics.get("total_transited", 0))
+			_live_metric_lbl_3.text = "Length: %.1f m" % float(metrics.get("length", 10.0))
+
+		"sink":
+			var dep_count: int = int(metrics.get("total_departures", 0))
+			var rate_sec: float = float(metrics.get("throughput_per_sec", 0.0))
+			var rate_min: float = float(metrics.get("throughput_per_min", 0.0))
+			_live_status_label.text = "DRAINING"
+			_live_status_label.add_theme_color_override("font_color", ACCENT)
+			_live_util_bar.value = 100.0
+			_live_util_label.text = "Total Absorbed: %d units" % dep_count
+			_live_metric_lbl_1.text = "Throughput Rate: %.2f / sec" % rate_sec
+			_live_metric_lbl_2.text = "Production Yield: %.1f units / min" % rate_min
+			_live_metric_lbl_3.text = "Status: ACTIVE SINK"
+
+		"source":
+			var arr_count: int = int(metrics.get("total_arrivals", 0))
+			var rate_sec: float = float(metrics.get("rate_per_sec", 0.0))
+			_live_status_label.text = "FEEDING"
+			_live_status_label.add_theme_color_override("font_color", LIVE_COLOR)
+			_live_util_bar.value = 100.0
+			_live_util_label.text = "Total Generated: %d units" % arr_count
+			_live_metric_lbl_1.text = "Injection Rate: %.2f / sec" % rate_sec
+			_live_metric_lbl_2.text = "Output Flow: %.1f units / min" % (rate_sec * 60.0)
+			_live_metric_lbl_3.text = "Status: EMITTING"
+
+		_:
+			_live_status_label.text = "ACTIVE"
+			_live_util_bar.value = 50.0
+			_live_util_label.text = "Kind: " + kind
+			_live_metric_lbl_1.text = ""
+			_live_metric_lbl_2.text = ""
+			_live_metric_lbl_3.text = ""
+
+func update_live_element_metrics(elements_by_id: Dictionary) -> void:
+	_live_element_metrics = elements_by_id
+	if doc_store == null or doc_store.selected_type != "element" or doc_store.selected_id.is_empty():
+		return
+	var elem_id: String = doc_store.selected_id
+	if elements_by_id.has(elem_id):
+		var raw = elements_by_id[elem_id]
+		if raw is Dictionary:
+			var metrics: Dictionary = raw.get("custom_metrics", {})
+			var elem := doc_store.get_element(elem_id)
+			if elem != null:
+				_update_live_card_fields(elem.kind, metrics)
 
 # ============================================================================
 # 2. Port Properties Inspector
@@ -691,6 +886,18 @@ func _build_property_widget(elem: SceneTypes.SceneElement, schema: Dictionary) -
 		_build_enum_editor(elem, key, cur_val, opts, is_live)
 	elif p_type == "bool":
 		_build_bool_editor(elem, key, bool(cur_val), is_live)
+	elif p_type == "string":
+		var le := LineEdit.new()
+		le.text = str(cur_val)
+		le.custom_minimum_size.x = 160
+		le.add_theme_font_size_override("font_size", 9)
+		le.text_submitted.connect(func(new_text):
+			doc_store.set_element_property(elem.id, key, new_text)
+		)
+		le.focus_exited.connect(func():
+			doc_store.set_element_property(elem.id, key, le.text)
+		)
+		_container.add_child(le)
 	else:
 		# Numeric scalar float / int
 		var range_arr: Array = schema.get("range", [0.0, 1000.0, 0.1])

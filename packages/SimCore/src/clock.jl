@@ -89,6 +89,9 @@ function set_speed!(clock::SimClock, factor::Float64)
     factor >= 0.0 || throw(ArgumentError(
         "speed_factor must be ≥ 0.0, got $factor"
     ))
+    if isfinite(factor) && factor > 0.0
+        clock.wall_origin = time() - (clock.sim_time / factor)
+    end
     clock.speed_factor = factor
     if factor == 0.0
         Threads.atomic_cas!(clock.paused, false, true)
@@ -110,6 +113,9 @@ pause!(clock::SimClock) = Threads.atomic_cas!(clock.paused, false, true)
 Resume the simulation from a paused state. Thread-safe.
 """
 function unpause!(clock::SimClock)
+    if isfinite(clock.speed_factor) && clock.speed_factor > 0.0
+        clock.wall_origin = time() - (clock.sim_time / clock.speed_factor)
+    end
     Threads.atomic_cas!(clock.paused, true, false)
     return clock
 end

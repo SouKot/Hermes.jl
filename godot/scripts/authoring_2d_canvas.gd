@@ -48,6 +48,8 @@ var _live_agents: Array:
 	get:
 		return _active_agents
 var _agent_trajectories: Dictionary = {} # agent_id -> Array[Vector2]
+var _agent_target_positions: Dictionary = {} # agent_id -> Vector2
+var _agent_smoothed_positions: Dictionary = {} # agent_id -> Vector2
 var show_trajectories: bool = true
 var show_agent_vectors: bool = false
 var selected_agent_id: String = ""
@@ -79,23 +81,103 @@ func _redraw_all() -> void:
 	if _wires_layer != null and is_instance_valid(_wires_layer):
 		_wires_layer.queue_redraw()
 
+func _process(delta: float) -> void:
+	if _active_agents.is_empty():
+		return
+	
+	var lerp_weight: float = clamp(delta * 25.0, 0.0, 1.0)
+	var needs_redraw: bool = false
+	for aid in _agent_target_positions.keys():
+		var target: Vector2 = _agent_target_positions[aid]
+		var cur: Vector2 = _agent_smoothed_positions.get(aid, target)
+		if cur.distance_squared_to(target) > 0.0001:
+			_agent_smoothed_positions[aid] = cur.lerp(target, lerp_weight)
+			needs_redraw = true
+
+	if needs_redraw and _agents_layer != null and is_instance_valid(_agents_layer):
+		_agents_layer.queue_redraw()
+
 func update_agent_telemetry(agents: Array) -> void:
 	_active_agents = agents
+	var active_ids: Dictionary = {}
+
 	for a in agents:
 		if a is Dictionary:
 			var aid: String = str(a.get("id", ""))
 			if not aid.is_empty():
+				active_ids[aid] = true
 				var px: float = float(a.get("x", 0.0))
 				var py: float = float(a.get("y", 0.0))
+				if a.has("properties") and a.properties is Dictionary:
+					if not a.has("x") and a.properties.has("x"): px = float(a.properties.x)
+					if not a.has("y") and a.properties.has("y"): py = float(a.properties.y)
 				if a.has("position") and a["position"] is Array and a["position"].size() >= 2:
 					px = float(a["position"][0])
 					py = float(a["position"][1])
+
+				var target_pt := Vector2(px, py)
+				_agent_target_positions[aid] = target_pt
+				if not _agent_smoothed_positions.has(aid):
+					_agent_smoothed_positions[aid] = target_pt
+
 				if not _agent_trajectories.has(aid):
 					_agent_trajectories[aid] = []
 				var arr: Array = _agent_trajectories[aid]
-				arr.append(Vector2(px, py))
+				arr.append(target_pt)
 				if arr.size() > 25:
 					arr.pop_front()
+
+	# Prune departed entities
+	for old_id in _agent_smoothed_positions.keys():
+		if not active_ids.has(old_id):
+			_agent_smoothed_positions.erase(old_id)
+			_agent_target_positions.erase(old_id)
+			_agent_trajectories.erase(old_id)
+
+func update_element_telemetry(elements_by_id: Dictionary) -> void:
+	for elem_id in _block_nodes.keys():
+		var node = _block_nodes[elem_id]
+		if is_instance_valid(node) and elements_by_id.has(elem_id):
+			var elem_data = elements_by_id[elem_id]
+			if elem_data is Dictionary:
+				var metrics: Dictionary = elem_data.get("metrics", elem_data.get("custom_metrics", {}))
+				node.set_live_metrics(metrics)
+
+	# Route signal connections to instrumentation scope blocks
+	if doc_store != null and doc_store.active_document != null:
+		for conn in doc_store.active_document.connections:
+			var src_id: String = str(conn.source_element)
+			var src_port: String = str(conn.source_port)
+			var tgt_id: String = str(conn.target_element)
+			var tgt_port: String = str(conn.target_port)
+
+			if elements_by_id.has(src_id) and _block_nodes.has(tgt_id):
+				var src_elem = elements_by_id[src_id]
+				var src_metrics: Dictionary = src_elem.get("metrics", src_elem.get("custom_metrics", {}))
+				var val: float = 0.0
+
+				if src_port in ["length", "queue_length", "q_len"]:
+					val = float(src_metrics.get("queue_length", src_metrics.get("length", 0.0)))
+				elif src_port in ["occupancy", "occupancy_pct"]:
+					val = float(src_metrics.get("occupancy_pct", src_metrics.get("queue_length", 0.0)))
+				elif src_port in ["utilization", "util", "busy"]:
+					var raw_u = float(src_metrics.get("utilization_pct", src_metrics.get("utilization", 0.0)))
+					val = raw_u if raw_u > 1.0 else (raw_u * 100.0)
+				elif src_port in ["wait_time", "wait_mean", "wait_mean_wq"]:
+					val = float(src_metrics.get("wait_mean_wq", src_metrics.get("wait_time", 0.0)))
+				elif src_port in ["in_transit", "transit_count", "items_in_transit"]:
+					val = float(src_metrics.get("items_in_transit", src_metrics.get("in_transit", 0.0)))
+				elif src_port in ["completed_count", "departures", "exited_total"]:
+					val = float(src_metrics.get("completed_count", src_metrics.get("exited_total", 0.0)))
+				elif src_port in ["spawned_count", "generation_count"]:
+					val = float(src_metrics.get("spawned_count", src_metrics.get("generation_count", 0.0)))
+				elif src_metrics.has(src_port):
+					val = float(src_metrics[src_port])
+
+				var tgt_node = _block_nodes[tgt_id]
+				if is_instance_valid(tgt_node) and tgt_node.has_method("feed_signal_value"):
+					tgt_node.feed_signal_value(tgt_port, val)
+
 	if _agents_layer != null and is_instance_valid(_agents_layer):
 		_agents_layer.queue_redraw()
 
@@ -787,12 +869,20 @@ func _on_agents_layer_draw() -> void:
 	for agent in _active_agents:
 		if not (agent is Dictionary):
 			continue
+		var aid: String = str(agent.get("id", ""))
 		var raw_pos = agent.get("position", [0.0, 0.0])
 		var px: float = 0.0
 		var py: float = 0.0
-		if agent.has("x") and agent.has("y"):
+		if not aid.is_empty() and _agent_smoothed_positions.has(aid):
+			var spos: Vector2 = _agent_smoothed_positions[aid]
+			px = spos.x
+			py = spos.y
+		elif agent.has("x") and agent.has("y"):
 			px = float(agent["x"])
 			py = float(agent["y"])
+		elif agent.has("properties") and agent.properties is Dictionary and agent.properties.has("x") and agent.properties.has("y"):
+			px = float(agent.properties.x)
+			py = float(agent.properties.y)
 		elif raw_pos is Array and raw_pos.size() >= 2:
 			px = float(raw_pos[0])
 			py = float(raw_pos[1])
@@ -801,8 +891,14 @@ func _on_agents_layer_draw() -> void:
 			py = raw_pos.y
 
 		var canvas_pos := pan_offset + Vector2(px, py) * m_scale
-		var r_body: float = float(agent.get("r_body", agent.get("radius", 0.20)))
-		var r_px: float = max(r_body * m_scale, 4.0)
+		var kind: String = str(agent.get("kind", "product"))
+		var is_product: bool = (kind == "product" or kind == "carton" or kind == "item")
+		var in_service: bool = false
+		if agent.has("properties") and agent.properties is Dictionary:
+			in_service = bool(agent.properties.get("in_service", false))
+
+		var r_body: float = float(agent.get("r_body", agent.get("radius", 0.35 if is_product else 0.20)))
+		var r_px: float = max(r_body * m_scale, 7.0 * zoom_level if is_product else 4.0)
 
 		# State & Speed Color Palette
 		var vel = agent.get("velocity", [0.0, 0.0])
@@ -821,18 +917,25 @@ func _on_agents_layer_draw() -> void:
 		var speed: float = sqrt(vx * vx + vy * vy)
 		var state: String = str(agent.get("state", "walking"))
 
-		var col: Color = Color("#2ecc71") # free walking green
-		if state == "queuing":
-			col = Color("#3498db") # blue
-		elif speed < 0.35:
-			col = Color("#e74c3c") # blocked / high contact red
-		elif speed < 1.0:
-			col = Color("#f1c40f") # slow / congested amber
+		var col: Color = Color("#2ecc71") # green
+		if is_product:
+			if in_service:
+				col = Color("#2ecc71") # active service emerald
+			elif state == "queuing" or (agent.has("current_location") and "q" in str(agent.current_location)):
+				col = Color("#00d2ff") # queue waiting bright cyan
+			else:
+				col = Color("#f39c12") # conveyor transit amber
+		else:
+			if state == "queuing":
+				col = Color("#3498db") # blue
+			elif speed < 0.35:
+				col = Color("#e74c3c") # blocked red
+			elif speed < 1.0:
+				col = Color("#f1c40f") # slow amber
 
 		# 1. Trajectory Ribbon
 		if show_trajectories:
 			var t_points: PackedVector2Array = []
-			var aid: String = str(agent.get("id", ""))
 			if agent.has("trajectory") and agent["trajectory"] is Array and agent["trajectory"].size() > 1:
 				for tp in agent["trajectory"]:
 					if tp is Array and tp.size() >= 2:
@@ -843,12 +946,19 @@ func _on_agents_layer_draw() -> void:
 				for pt in _agent_trajectories[aid]:
 					t_points.append(pan_offset + pt * m_scale)
 			if t_points.size() > 1:
-				var trail_col := Color(col.r, col.g, col.b, 0.35)
-				_agents_layer.draw_polyline(t_points, trail_col, 1.5, true)
+				var trail_col := Color(col.r, col.g, col.b, 0.45)
+				_agents_layer.draw_polyline(t_points, trail_col, 2.0, true)
 
-		# 2. Physical Body Disc
-		_agents_layer.draw_circle(canvas_pos, r_px, col)
-		_agents_layer.draw_arc(canvas_pos, r_px, 0, TAU, 16, Color(0.05, 0.08, 0.12, 0.85), 1.2)
+		# 2. Physical Body Disc / Rounded Product Carton
+		if is_product:
+			# Render product as a distinct carton box/disc with shadow
+			_agents_layer.draw_circle(canvas_pos + Vector2(1, 1), r_px + 1.0, Color(0, 0, 0, 0.4))
+			_agents_layer.draw_circle(canvas_pos, r_px, col)
+			_agents_layer.draw_arc(canvas_pos, r_px, 0, TAU, 16, Color(0.05, 0.08, 0.12, 0.95), 1.8)
+			_agents_layer.draw_circle(canvas_pos, r_px * 0.45, Color(1.0, 1.0, 1.0, 0.85))
+		else:
+			_agents_layer.draw_circle(canvas_pos, r_px, col)
+			_agents_layer.draw_arc(canvas_pos, r_px, 0, TAU, 16, Color(0.05, 0.08, 0.12, 0.85), 1.2)
 
 		# 3. Directional Heading Chevron
 		if speed > 0.05:
@@ -858,12 +968,11 @@ func _on_agents_layer_draw() -> void:
 			var right := canvas_pos - heading * (r_px * 0.4) - Vector2(-heading.y, heading.x) * (r_px * 0.5)
 			var chevron_pts: PackedVector2Array = [tip, left, right]
 			_agents_layer.draw_colored_polygon(chevron_pts, Color(0.05, 0.08, 0.12, 0.9))
-		else:
+		elif not is_product:
 			# Stationary concentric ring
 			_agents_layer.draw_circle(canvas_pos, r_px * 0.4, Color(0.05, 0.08, 0.12, 0.7))
 
 		# 4. Selected Agent Highlight Ring
-		var aid: String = str(agent.get("id", ""))
 		if aid == selected_agent_id and not aid.is_empty():
 			_agents_layer.draw_arc(canvas_pos, r_px + 3.0, 0, TAU, 24, Color("#00d2ff"), 2.0)
 

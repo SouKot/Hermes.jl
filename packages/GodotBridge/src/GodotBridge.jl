@@ -22,6 +22,12 @@ for production wire traffic and provides JSON debugging support.
 """
 module GodotBridge
 
+using SimCore
+import SimCore: pause!, set_speed!
+using SimDES
+using Distributions
+using Random
+
 # Protocol module
 include("protocol/envelope.jl")
 include("protocol/scenespec.jl")
@@ -68,6 +74,22 @@ include("profiling/adapter_profiler.jl")
 
 # Server module
 include("server/websocket_server.jl")
+
+# Dynamic Compiler & Live Simulation Runtime (Phase 7D-12A)
+include("compiler/compiler_ir.jl")
+include("compiler/source_map_diagnostics.jl")
+include("compiler/distribution_parser.jl")
+include("compiler/des_compiler.jl")
+include("compiler/crowd_compiler.jl")
+include("compiler/scenespec_compiler.jl")
+include("runtime/simulation_instance.jl")
+include("runtime/runtime_manager.jl")
+include("runtime/telemetry_adapter.jl")
+include("validation/analytical_benchmarks.jl")
+using .AnalyticalBenchmarks
+include("reporting/run_report.jl")
+using .Reporting
+include("server/live_simulation_server.jl")
 
 # Re-export key protocol items
 export Message, MessageEnvelope, MessagePayload
@@ -148,6 +170,15 @@ export GodotBridgeServer
 export start, stop
 export register_handler!, broadcast_snapshot
 export num_connected_clients, is_server_running
+
+# Dynamic Compiler & Live Simulation Exports (Phase 7D-12A)
+export CompilerDiagnostic, DiagnosticSeverity, SourceMap, SourceMapRecord, has_errors
+export ExecutionGraphIR, compile_scenespec, CompilationResult, CustomArrivalProcess
+export SimulationInstance, step_until!, set_speed!
+export RuntimeManager, stage_and_activate!, play!, pause!, step!
+export build_snapshot, start_live_server, create_default_scene
+export AnalyticalResult, ValidationReport, solve_mm1, solve_mmc, solve_mg1, solve_jackson_tandem, validate_benchmark, evaluate_littles_law
+export SimulationRunSummary, generate_run_summary, format_ascii_report, export_summary_csv
 
 # Version info
 const VERSION = v"0.1.0"

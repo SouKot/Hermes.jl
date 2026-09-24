@@ -35,3 +35,11 @@ Thumbs.db
 
 # Benchmark results (large)
 /experiments/scripts/benchmarks/results/
+
+# C++ & GDExtension Build outputs
+*.o
+*.obj
+*.a
+extension_api.json
+extensions/**/build/
+extensions/**/bin/

@@ -28,33 +28,33 @@ echo "      ANTIGRAVITY SIMVIZ — LIVE SIMULATION GUI DEMO"
 echo "============================================================"
 echo "Starting backend Julia bridge server on port 9107..."
 
+# Clean up any lingering process on port 9107 to guarantee fresh server
+fuser -k 9107/tcp 2>/dev/null || true
+sleep 0.4
+
 JULIA_PID=""
-if (echo >/dev/tcp/127.0.0.1/9107) 2>/dev/null; then
-  echo "● Port 9107 is already active; connecting to existing server."
-else
-  cd "$JULIA_DIR"
-  "$JULIA_BIN" --project=. test/fixture_server_phase7c.jl &
-  JULIA_PID=$!
+cd "$JULIA_DIR"
+"$JULIA_BIN" --project=. src/server/live_simulation_server.jl &
+JULIA_PID=$!
 
-  # Poll until port 9107 is actively listening
-  echo "Waiting for JuliaBridge server to bind 127.0.0.1:9107..."
-  READY=0
-  for i in {1..30}; do
-    if (echo >/dev/tcp/127.0.0.1/9107) 2>/dev/null; then
-      READY=1
-      echo "● JuliaBridge server is ready and listening on port 9107!"
-      break
-    fi
-    sleep 0.3
-  done
-
-  if [[ "$READY" -ne 1 ]]; then
-    echo "ERROR: Timed out waiting for Julia server to listen on port 9107." >&2
-    if [[ -n "$JULIA_PID" ]]; then
-      kill "$JULIA_PID" 2>/dev/null || true
-    fi
-    exit 1
+# Poll until port 9107 is actively listening
+echo "Waiting for JuliaBridge server to bind 127.0.0.1:9107..."
+READY=0
+for i in {1..30}; do
+  if (echo >/dev/tcp/127.0.0.1/9107) 2>/dev/null; then
+    READY=1
+    echo "● JuliaBridge server is ready and listening on port 9107!"
+    break
   fi
+  sleep 0.3
+done
+
+if [[ "$READY" -ne 1 ]]; then
+  echo "ERROR: Timed out waiting for Julia server to listen on port 9107." >&2
+  if [[ -n "$JULIA_PID" ]]; then
+    kill "$JULIA_PID" 2>/dev/null || true
+  fi
+  exit 1
 fi
 
 echo ""
@@ -86,10 +86,11 @@ cleanup() {
   if [[ -n "${JULIA_PID:-}" ]]; then
     kill "$JULIA_PID" 2>/dev/null || true
   fi
+  fuser -k 9107/tcp 2>/dev/null || true
   exit 0
 }
 
-trap cleanup INT TERM
+trap cleanup INT TERM EXIT
 
 cd "$GODOT_DIR"
 "$GODOT_BIN" --path . &
@@ -100,4 +101,5 @@ wait "$GODOT_PID" || true
 if [[ -n "${JULIA_PID:-}" ]]; then
   kill "$JULIA_PID" 2>/dev/null || true
 fi
+fuser -k 9107/tcp 2>/dev/null || true
 echo "Phase 7C demo finished."

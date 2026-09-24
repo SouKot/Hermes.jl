@@ -355,6 +355,29 @@ function broadcast_snapshot(server::GodotBridgeServer, snapshot::SnapshotPayload
     end
 end
 
+function broadcast_snapshot(server::GodotBridgeServer, snapshot::DirectSnapshotPayload)
+    binary = encode_direct_snapshot(snapshot)
+    
+    disconnected = String[]
+    for (client_id, ws) in server.clients
+        try
+            if !WS.isclosed(ws)
+                WS.send(ws, binary)
+            else
+                push!(disconnected, client_id)
+            end
+        catch e
+            @warn "Failed to send to $client_id: $e"
+            push!(disconnected, client_id)
+        end
+    end
+    
+    # Clean up disconnected clients
+    for client_id in disconnected
+        delete!(server.clients, client_id)
+    end
+end
+
 # ============================================================================
 # Server Utilities
 # ============================================================================

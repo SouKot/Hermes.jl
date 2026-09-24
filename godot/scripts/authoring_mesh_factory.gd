@@ -20,6 +20,7 @@ static var _mat_exit: StandardMaterial3D
 static var _mat_portal_glass: StandardMaterial3D
 static var _mat_wall: StandardMaterial3D
 static var _mat_room_floor: StandardMaterial3D
+static var _mat_scope_screen: StandardMaterial3D
 
 static func _ensure_materials() -> void:
 	if _mat_steel != null:
@@ -114,6 +115,15 @@ static func _ensure_materials() -> void:
 	_mat_room_floor.metallic = 0.05
 	_mat_room_floor.roughness = 0.7
 
+	# Emissive Industrial Screen / CRT Display
+	_mat_scope_screen = StandardMaterial3D.new()
+	_mat_scope_screen.albedo_color = Color("#07121c")
+	_mat_scope_screen.metallic = 0.2
+	_mat_scope_screen.roughness = 0.1
+	_mat_scope_screen.emission_enabled = true
+	_mat_scope_screen.emission = Color("#00d2ff")
+	_mat_scope_screen.emission_energy_multiplier = 1.2
+
 static func create_3d_node_for_element(elem: SceneTypes.SceneElement) -> Node3D:
 	_ensure_materials()
 	var root := Node3D.new()
@@ -140,6 +150,8 @@ static func create_3d_node_for_element(elem: SceneTypes.SceneElement) -> Node3D:
 			_build_obstacle_wall(root, elem)
 		"walkable_room":
 			_build_walkable_room(root, elem)
+		"chart_station", "scope_2d", "digital_meter", "histogram_sink", "state_space_3d", "xy_scatter":
+			_build_instrumentation_kiosk(root, elem)
 		_:
 			_build_generic_box(root, elem)
 
@@ -452,6 +464,62 @@ static func _build_sink(root: Node3D, elem: SceneTypes.SceneElement) -> void:
 	rim_inst.position = Vector3(length * 0.5, bin_h * 0.85, 0)
 	root.add_child(rim_inst)
 
+static func _build_instrumentation_kiosk(root: Node3D, elem: SceneTypes.SceneElement) -> void:
+	# 1. Base Plate
+	var base_mesh := BoxMesh.new()
+	base_mesh.size = Vector3(1.2, 0.04, 1.2)
+	base_mesh.material = _mat_steel
+	var base_inst := MeshInstance3D.new()
+	base_inst.mesh = base_mesh
+	base_inst.position = Vector3(0, 0.02, 0)
+	root.add_child(base_inst)
+
+	# 2. Vertical Support Column
+	var post_mesh := BoxMesh.new()
+	post_mesh.size = Vector3(0.2, 1.1, 0.2)
+	post_mesh.material = _mat_steel
+	var post_inst := MeshInstance3D.new()
+	post_inst.mesh = post_mesh
+	post_inst.position = Vector3(0, 0.57, 0)
+	root.add_child(post_inst)
+
+	# 3. Angled Console Head
+	var head := Node3D.new()
+	head.position = Vector3(0, 1.15, 0)
+	head.rotation = Vector3(-0.38, 0, 0) # Tilted ~22 degrees towards viewer
+	root.add_child(head)
+
+	var case_mesh := BoxMesh.new()
+	case_mesh.size = Vector3(1.4, 0.15, 0.9)
+	case_mesh.material = _mat_steel
+	var case_inst := MeshInstance3D.new()
+	case_inst.mesh = case_mesh
+	head.add_child(case_inst)
+
+	# 4. Emissive Display Screen
+	var scr_mesh := BoxMesh.new()
+	scr_mesh.size = Vector3(1.25, 0.02, 0.75)
+	
+	# Tint screen emission based on instrument kind
+	var scr_mat := _mat_scope_screen.duplicate() as StandardMaterial3D
+	match elem.kind:
+		"chart_station", "scope_2d":
+			scr_mat.emission = Color("#00d2ff") # Oscilloscope cyan
+		"digital_meter":
+			scr_mat.emission = Color("#3fb950") # LED green
+		"histogram_sink":
+			scr_mat.emission = Color("#bc8cff") # Distribution purple
+		"state_space_3d":
+			scr_mat.emission = Color("#d29922") # Trajectory amber
+		"xy_scatter":
+			scr_mat.emission = Color("#39c5cf") # Scatter teal
+	scr_mesh.material = scr_mat
+
+	var scr_inst := MeshInstance3D.new()
+	scr_inst.mesh = scr_mesh
+	scr_inst.position = Vector3(0, 0.08, 0)
+	head.add_child(scr_inst)
+
 static func _build_generic_box(root: Node3D, elem: SceneTypes.SceneElement) -> void:
 	var dims := get_dims(elem, Vector3(2.0, 1.5, 1.0))
 	var mesh := BoxMesh.new()
@@ -715,10 +783,13 @@ static func create_agent_mannequin_node(color: Color = Color("#3498db")) -> Node
 
 	return agent_root
 
-static func create_agent_capsule_mesh() -> CapsuleMesh:
-	var mesh := CapsuleMesh.new()
-	mesh.radius = 0.20
-	mesh.height = 1.70
+static func create_agent_capsule_mesh() -> BoxMesh:
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(0.5, 0.4, 0.5)
+	var mat := StandardMaterial3D.new()
+	mat.vertex_color_use_as_albedo = true
+	mat.roughness = 0.35
+	mesh.material = mat
 	return mesh
 
 

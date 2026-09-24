@@ -444,6 +444,18 @@ func _build_schema_widget(elem: SceneTypes.SceneElement, schema: Dictionary) -> 
 			doc_store.set_element_property(elem.id, key, v)
 		)
 		_pages_container.add_child(chk)
+	elif p_type == "string":
+		var le := LineEdit.new()
+		le.text = str(cur_val)
+		le.custom_minimum_size.x = 180
+		le.add_theme_font_size_override("font_size", 9)
+		le.text_submitted.connect(func(new_text):
+			doc_store.set_element_property(elem.id, key, new_text)
+		)
+		le.focus_exited.connect(func():
+			doc_store.set_element_property(elem.id, key, le.text)
+		)
+		_pages_container.add_child(le)
 	else:
 		# Scalar float or int
 		var range_arr: Array = schema.get("range", [0.0, 1000.0, 0.1])
