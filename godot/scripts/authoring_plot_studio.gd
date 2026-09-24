@@ -76,6 +76,12 @@ var _resize_start_mouse: Vector2 = Vector2.ZERO
 var _is_maximized: bool = false
 var _restored_rect: Rect2 = Rect2(Vector2(60, 60), Vector2(880, 560))
 
+# Multi-window Detach / Dock state
+var _is_detached: bool = false
+var _os_window: Window = null
+var _shell_parent: Node = null
+var _btn_detach: Button = null
+
 # Subplot curve picker state
 var _open_curve_picker_subplot_id: String = ""
 
@@ -154,6 +160,13 @@ func _build_ui() -> void:
 	spacer.mouse_filter = Control.MOUSE_FILTER_PASS
 	h_box.add_child(spacer)
 
+	_btn_detach = Button.new()
+	_btn_detach.text = "🗗 Detach"
+	_btn_detach.tooltip_text = "Pop out into an independent OS desktop window (movable across screens)"
+	_btn_detach.mouse_filter = Control.MOUSE_FILTER_STOP
+	_btn_detach.pressed.connect(_toggle_detached)
+	h_box.add_child(_btn_detach)
+
 	var btn_max := Button.new()
 	btn_max.text = "⤢"
 	btn_max.tooltip_text = "Maximize / Restore Window"
@@ -165,7 +178,12 @@ func _build_ui() -> void:
 	btn_min.text = "−"
 	btn_min.tooltip_text = "Minimize Studio"
 	btn_min.mouse_filter = Control.MOUSE_FILTER_STOP
-	btn_min.pressed.connect(func(): visible = false)
+	btn_min.pressed.connect(func():
+		if _is_detached and _os_window != null:
+			_os_window.visible = false
+		else:
+			visible = false
+	)
 	h_box.add_child(btn_min)
 
 	var btn_close := Button.new()
@@ -173,6 +191,8 @@ func _build_ui() -> void:
 	btn_close.tooltip_text = "Close Plot Studio"
 	btn_close.mouse_filter = Control.MOUSE_FILTER_STOP
 	btn_close.pressed.connect(func():
+		if _is_detached:
+			dock_to_main_window()
 		visible = false
 		closed.emit()
 	)
@@ -403,6 +423,8 @@ func _update_backend_visibility() -> void:
 func open_for_element(elem_id: String) -> void:
 	if not _ui_initialized:
 		_ready()
+	if _is_detached and _os_window != null:
+		_os_window.show()
 	visible = true
 	move_to_front()
 	_refresh_tabs()
@@ -416,7 +438,11 @@ func open_for_element(elem_id: String) -> void:
 func toggle_visibility() -> void:
 	if not _ui_initialized:
 		_ready()
-	visible = not visible
+	if _is_detached and _os_window != null:
+		_os_window.visible = not _os_window.visible
+		visible = _os_window.visible
+	else:
+		visible = not visible
 	if visible:
 		move_to_front()
 		_refresh_tabs()
@@ -1327,40 +1353,137 @@ func _redraw_active_subplots() -> void:
 	if _vector_canvas != null and _vector_canvas.visible:
 		_vector_canvas.queue_redraw()
 
+# Detach to OS Desktop Window vs Dock to Main Viewport
+func _toggle_detached() -> void:
+	if _is_detached:
+		dock_to_main_window()
+	else:
+		detach_to_os_window()
+
+func detach_to_os_window() -> void:
+	if _is_detached: return
+	_shell_parent = get_parent()
+	if _shell_parent == null: return
+
+	var cur_global_pos := global_position
+	var cur_sz := size
+
+	_os_window = Window.new()
+	_os_window.title = "SimViz Plot Studio"
+	_os_window.size = Vector2i(max(640, int(cur_sz.x)), max(480, int(cur_sz.y)))
+
+	var main_win_pos := Vector2i.ZERO
+	if DisplayServer.get_name() != "headless":
+		main_win_pos = DisplayServer.window_get_position()
+	_os_window.position = main_win_pos + Vector2i(int(cur_global_pos.x), int(cur_global_pos.y))
+	_os_window.transient = false
+	_os_window.exclusive = false
+	_os_window.wrap_controls = true
+	_os_window.close_requested.connect(func():
+		dock_to_main_window()
+		visible = false
+		closed.emit()
+	)
+
+	var root_node: Node = null
+	if _shell_parent.is_inside_tree() and _shell_parent.get_tree() != null:
+		root_node = _shell_parent.get_tree().root
+	elif _shell_parent is Window:
+		root_node = _shell_parent
+
+	if root_node != null:
+		root_node.add_child(_os_window)
+	else:
+		_shell_parent.add_child(_os_window)
+
+	_shell_parent.remove_child(self)
+	_os_window.add_child(self)
+
+	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	position = Vector2.ZERO
+	custom_minimum_size = Vector2(520, 360)
+	_os_window.show()
+
+	_is_detached = true
+	if _btn_detach != null:
+		_btn_detach.text = "🗗 Dock"
+		_btn_detach.tooltip_text = "Dock back into the primary application window"
+
+func dock_to_main_window() -> void:
+	if not _is_detached: return
+	if _os_window == null: return
+
+	var win = _os_window
+	_os_window = null
+
+	win.remove_child(self)
+	if _shell_parent != null and is_instance_valid(_shell_parent):
+		_shell_parent.add_child(self)
+
+	win.queue_free()
+	_is_detached = false
+
+	set_anchors_preset(Control.PRESET_TOP_LEFT)
+	position = Vector2(60, 60)
+	custom_minimum_size = Vector2(820, 540)
+	size = custom_minimum_size
+	z_index = 200
+
+	if _btn_detach != null:
+		_btn_detach.text = "🗗 Detach"
+		_btn_detach.tooltip_text = "Pop out into an independent OS desktop window (movable across screens)"
+
 # Draggable Window Handling
 func _on_header_gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_LEFT:
 			_is_dragging = event.pressed
-			_drag_start_pos = event.global_position - position
+			if _is_detached and _os_window != null:
+				_drag_start_pos = event.global_position
+			else:
+				_drag_start_pos = event.global_position - position
 	elif event is InputEventMouseMotion and _is_dragging:
-		var new_pos = event.global_position - _drag_start_pos
-		if is_inside_tree() and get_viewport_rect().size != Vector2.ZERO:
-			var vp_sz = get_viewport_rect().size
-			new_pos.x = clamp(new_pos.x, 0.0, max(0.0, vp_sz.x - 100.0))
-			new_pos.y = clamp(new_pos.y, 0.0, max(0.0, vp_sz.y - 40.0))
-		position = new_pos
+		if _is_detached and _os_window != null:
+			var rel := Vector2i(int(event.relative.x), int(event.relative.y))
+			_os_window.position += rel
+		else:
+			var new_pos = event.global_position - _drag_start_pos
+			if is_inside_tree() and get_viewport_rect().size != Vector2.ZERO:
+				var vp_sz = get_viewport_rect().size
+				new_pos.x = clamp(new_pos.x, -size.x + 120.0, max(0.0, vp_sz.x - 80.0))
+				new_pos.y = clamp(new_pos.y, 0.0, max(0.0, vp_sz.y - 40.0))
+			position = new_pos
 
 # Resizing Window Handling
 func _on_resize_gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_LEFT:
 			_is_resizing = event.pressed
-			_resize_start_size = size
+			if _is_detached and _os_window != null:
+				_resize_start_size = Vector2(_os_window.size.x, _os_window.size.y)
+			else:
+				_resize_start_size = size
 			_resize_start_mouse = event.global_position
 	elif event is InputEventMouseMotion and _is_resizing:
 		var delta = event.global_position - _resize_start_mouse
 		var new_w = max(520.0, _resize_start_size.x + delta.x)
 		var new_h = max(360.0, _resize_start_size.y + delta.y)
-		if is_inside_tree() and get_viewport_rect().size != Vector2.ZERO:
-			var vp_sz = get_viewport_rect().size
-			new_w = clamp(new_w, 520.0, max(520.0, vp_sz.x - position.x))
-			new_h = clamp(new_h, 360.0, max(360.0, vp_sz.y - position.y))
-		custom_minimum_size = Vector2(new_w, new_h)
-		size = custom_minimum_size
+		if _is_detached and _os_window != null:
+			_os_window.size = Vector2i(int(new_w), int(new_h))
+		else:
+			if is_inside_tree() and get_viewport_rect().size != Vector2.ZERO:
+				var vp_sz = get_viewport_rect().size
+				new_w = clamp(new_w, 520.0, max(520.0, vp_sz.x - position.x))
+				new_h = clamp(new_h, 360.0, max(360.0, vp_sz.y - position.y))
+			custom_minimum_size = Vector2(new_w, new_h)
+			size = custom_minimum_size
 
 func _toggle_maximize() -> void:
 	_is_maximized = not _is_maximized
+	if _is_detached and _os_window != null:
+		_os_window.mode = Window.MODE_MAXIMIZED if _is_maximized else Window.MODE_WINDOWED
+		return
+
 	if _is_maximized:
 		_restored_rect = Rect2(position, size)
 		var vp_sz := get_viewport_rect().size if (is_inside_tree() and get_viewport_rect().size != Vector2.ZERO) else Vector2(1280, 720)
@@ -1451,32 +1574,82 @@ class UnifiedVectorCanvas extends Control:
 		if sp_type == "digital_gauge":
 			var latest_v: float = 0.0
 			var has_val: bool = false
+			var s_name: String = ""
 			if not series_data.is_empty():
 				var arr: Array = series_data[0]
 				if not arr.is_empty():
 					latest_v = float(arr.back().get("val", 0.0))
 					has_val = true
+				if not explicit_signals.is_empty():
+					s_name = str(explicit_signals[0].get("y_metric", ""))
 
 			var g_min: float = float(sp.get("y_min", 0.0))
 			var g_max: float = float(sp.get("y_max", 100.0))
-			if g_max <= g_min: g_max = g_min + 1.0
+			if g_max <= g_min: g_max = g_min + 100.0
 
-			var disp := "%.1f %s" % [latest_v, y_label]
-			var col := GREEN if latest_v < 0.8 * g_max else (AMBER if latest_v < 0.95 * g_max else RED)
-			draw_string(ThemeDB.fallback_font, Vector2(cell.position.x, cell.position.y + cell.size.y * 0.48), disp.strip_edges(), HORIZONTAL_ALIGNMENT_CENTER, int(cell.size.x), 22, col)
+			var center := Vector2(cell.position.x + cell.size.x * 0.5, cell.position.y + cell.size.y * 0.56)
+			var radius: float = clampf(minf(cell.size.x * 0.36, cell.size.y * 0.38), 24.0, 160.0)
+			var thickness: float = clampf(radius * 0.16, 6.0, 14.0)
+
+			var pct: float = clampf((latest_v - g_min) / (g_max - g_min), 0.0, 1.0)
+			var a_start: float = deg_to_rad(150.0)
+			var a_span: float = deg_to_rad(240.0)
+			var a_end: float = a_start + a_span
+			var a_cur: float = a_start + pct * a_span
+
+			var col_track := Color("#1a2432")
+			var col_prog: Color
+			if pct < 0.75:
+				col_prog = GREEN
+			elif pct < 0.90:
+				col_prog = AMBER
+			else:
+				col_prog = RED
+
+			# 1. Background Track Arc
+			draw_arc(center, radius, a_start, a_end, 48, col_track, thickness, true)
+
+			# 2. Active Progress Arc
+			if pct > 0.002:
+				draw_arc(center, radius, a_start, a_cur, 48, col_prog, thickness, true)
+
+			# 3. Radial Ticks at 0%, 25%, 50%, 75%, 100%
+			for t in range(5):
+				var t_pct: float = float(t) * 0.25
+				var t_ang: float = a_start + t_pct * a_span
+				var r_in: float = radius - thickness * 0.9
+				var r_out: float = radius + thickness * 0.9
+				var p_in := center + Vector2(cos(t_ang), sin(t_ang)) * r_in
+				var p_out := center + Vector2(cos(t_ang), sin(t_ang)) * r_out
+				draw_line(p_in, p_out, Color(0.35, 0.45, 0.58, 0.7), 1.5, true)
+
+			# 4. Indicator Needle Beacon
+			var tip := center + Vector2(cos(a_cur), sin(a_cur)) * radius
+			draw_circle(tip, thickness * 0.65, Color.WHITE)
+			draw_arc(tip, thickness * 0.75, 0.0, TAU, 16, col_prog, 2.0, true)
+
+			# 5. Central Digital Readout
+			var val_str := ("%.2f" if abs(latest_v) < 10.0 else "%.1f") % latest_v
+			var val_font_sz: int = int(clampf(radius * 0.38, 14.0, 26.0))
+			draw_string(ThemeDB.fallback_font, Vector2(cell.position.x, center.y - 4.0), val_str, HORIZONTAL_ALIGNMENT_CENTER, int(cell.size.x), val_font_sz, col_prog)
+
+			var unit_str := y_label if not y_label.is_empty() else "Value"
+			draw_string(ThemeDB.fallback_font, Vector2(cell.position.x, center.y + float(val_font_sz) * 0.75), unit_str, HORIZONTAL_ALIGNMENT_CENTER, int(cell.size.x), 10, Color("#8c9eb9"))
+
+			# 6. Min and Max Range Callouts
+			var r_lbl := radius + thickness + 12.0
+			var min_pos := center + Vector2(cos(a_start), sin(a_start)) * r_lbl
+			var max_pos := center + Vector2(cos(a_end), sin(a_end)) * r_lbl
+			draw_string(ThemeDB.fallback_font, min_pos - Vector2(16, -4), "%.0f" % g_min, HORIZONTAL_ALIGNMENT_CENTER, 32, 9, Color("#6e829b"))
+			draw_string(ThemeDB.fallback_font, max_pos - Vector2(16, -4), "%.0f" % g_max, HORIZONTAL_ALIGNMENT_CENTER, 32, 9, Color("#6e829b"))
+
+			# 7. Bound Signal Name at Top
+			if not s_name.is_empty():
+				draw_string(ThemeDB.fallback_font, Vector2(cell.position.x, cell.position.y + 30.0), s_name, HORIZONTAL_ALIGNMENT_CENTER, int(cell.size.x), 10, Color("#00d2ffcc"))
 
 			if not has_val:
 				var hint := "(Awaiting simulation data...)" if not explicit_signals.is_empty() else "(No variable selected — add in left dock)"
-				draw_string(ThemeDB.fallback_font, Vector2(cell.position.x, cell.position.y + cell.size.y * 0.60), hint, HORIZONTAL_ALIGNMENT_CENTER, int(cell.size.x), 10, Color("#8b949e"))
-
-			# Gauge meter bar at bottom
-			var bar_w = plot_area.size.x * 0.7
-			var bar_x = cell.position.x + (cell.size.x - bar_w) * 0.5
-			var bar_y = cell.position.y + cell.size.y * 0.74
-			draw_rect(Rect2(bar_x, bar_y, bar_w, 6.0), Color("#1b2533"))
-			var pct = clamp((latest_v - g_min) / (g_max - g_min), 0.0, 1.0)
-			if pct > 0.0:
-				draw_rect(Rect2(bar_x, bar_y, bar_w * pct, 6.0), col)
+				draw_string(ThemeDB.fallback_font, Vector2(cell.position.x, center.y + float(val_font_sz) * 1.5), hint, HORIZONTAL_ALIGNMENT_CENTER, int(cell.size.x), 9, Color("#8b949e"))
 
 		elif sp_type == "histogram":
 			var n_bars := 12

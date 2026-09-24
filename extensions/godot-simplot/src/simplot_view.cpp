@@ -4,6 +4,7 @@
 #include <imgui.h>
 #include <implot.h>
 #include <implot3d.h>
+#include <cmath>
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/classes/display_server.hpp>
@@ -283,21 +284,103 @@ void SimPlotView::render_implot_contents() {
                                     ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, 1.0, ImPlotCond_Always);
 
                                     float latest_v = 0.0f;
+                                    std::string s_name = "";
                                     for (const auto &pair : sp.series_2d) {
                                         if (pair.second.ys.size() > 0) {
                                             latest_v = pair.second.ys[pair.second.ys.size() - 1];
+                                            s_name = pair.first;
                                             break;
                                         }
                                     }
-                                    char gauge_buf[64];
-                                    snprintf(gauge_buf, sizeof(gauge_buf), "%.1f %s", latest_v, sp.y_label.utf8().get_data());
-                                    ImPlot::PlotText(gauge_buf, 0.5, 0.55);
 
-                                    float pct = std::min(100.0f, std::max(0.0f, latest_v)) / 100.0f;
-                                    float bar_xs[2] = { 0.15f, 0.15f + 0.70f * pct };
-                                    float bar_ys[2] = { 0.25f, 0.25f };
-                                    if (pct > 0.0f) {
-                                        ImPlot::PlotLine("##Level", bar_xs, bar_ys, 2);
+                                    ImDrawList* draw_list = ImPlot::GetPlotDrawList();
+                                    ImVec2 plot_pos = ImPlot::GetPlotPos();
+                                    ImVec2 plot_size = ImPlot::GetPlotSize();
+
+                                    ImVec2 center = ImVec2(plot_pos.x + plot_size.x * 0.5f, plot_pos.y + plot_size.y * 0.56f);
+                                    float radius = std::min(plot_size.x * 0.38f, plot_size.y * 0.40f);
+                                    if (radius < 24.0f) radius = 24.0f;
+                                    float thickness = std::max(6.0f, std::min(14.0f, radius * 0.16f));
+
+                                    float g_min = sp.y_min;
+                                    float g_max = sp.y_max;
+                                    if (g_max <= g_min) g_max = g_min + 100.0f;
+                                    float pct = std::min(1.0f, std::max(0.0f, (latest_v - g_min) / (g_max - g_min)));
+
+                                    const float a_start = 2.618f; // 150 deg (bottom-left)
+                                    const float a_span = 4.1888f; // 240 deg sweep
+                                    const float a_end = a_start + a_span; // 390 deg (bottom-right)
+                                    float a_cur = a_start + pct * a_span;
+
+                                    ImU32 col_track = IM_COL32(26, 36, 50, 255);
+                                    ImU32 col_prog;
+                                    if (pct < 0.75f) {
+                                        col_prog = IM_COL32(46, 204, 113, 255); // Green (Normal)
+                                    } else if (pct < 0.90f) {
+                                        col_prog = IM_COL32(243, 156, 18, 255); // Amber (Warning)
+                                    } else {
+                                        col_prog = IM_COL32(231, 76, 60, 255);  // Red (Critical)
+                                    }
+
+                                    // 1. Background Track Arc
+                                    draw_list->PathClear();
+                                    draw_list->PathArcTo(center, radius, a_start, a_end, 48);
+                                    draw_list->PathStroke(col_track, 0, thickness);
+
+                                    // 2. Active Progress Arc
+                                    if (pct > 0.002f) {
+                                        draw_list->PathClear();
+                                        draw_list->PathArcTo(center, radius, a_start, a_cur, 48);
+                                        draw_list->PathStroke(col_prog, 0, thickness);
+                                    }
+
+                                    // 3. Radial Ticks at 0%, 25%, 50%, 75%, 100%
+                                    for (int t = 0; t <= 4; ++t) {
+                                        float t_pct = t * 0.25f;
+                                        float t_ang = a_start + t_pct * a_span;
+                                        float r_in = radius - thickness * 0.9f;
+                                        float r_out = radius + thickness * 0.9f;
+                                        ImVec2 p_in = ImVec2(center.x + std::cos(t_ang) * r_in, center.y + std::sin(t_ang) * r_in);
+                                        ImVec2 p_out = ImVec2(center.x + std::cos(t_ang) * r_out, center.y + std::sin(t_ang) * r_out);
+                                        draw_list->AddLine(p_in, p_out, IM_COL32(80, 100, 130, 180), 1.5f);
+                                    }
+
+                                    // 4. Indicator Needle Beacon
+                                    ImVec2 tip = ImVec2(center.x + std::cos(a_cur) * radius, center.y + std::sin(a_cur) * radius);
+                                    draw_list->AddCircleFilled(tip, thickness * 0.65f, IM_COL32(255, 255, 255, 255));
+                                    draw_list->AddCircle(tip, thickness * 0.75f, col_prog, 16, 2.0f);
+
+                                    // 5. Central Digital Readout
+                                    char val_buf[64];
+                                    if (std::abs(latest_v) < 10.0f) {
+                                        snprintf(val_buf, sizeof(val_buf), "%.2f", latest_v);
+                                    } else {
+                                        snprintf(val_buf, sizeof(val_buf), "%.1f", latest_v);
+                                    }
+                                    ImVec2 val_sz = ImGui::CalcTextSize(val_buf);
+                                    draw_list->AddText(ImVec2(center.x - val_sz.x * 0.5f, center.y - val_sz.y * 0.65f), col_prog, val_buf);
+
+                                    String unit_str = sp.y_label.is_empty() ? "Value" : sp.y_label;
+                                    ImVec2 unit_sz = ImGui::CalcTextSize(unit_str.utf8().get_data());
+                                    draw_list->AddText(ImVec2(center.x - unit_sz.x * 0.5f, center.y + val_sz.y * 0.45f), IM_COL32(140, 160, 185, 255), unit_str.utf8().get_data());
+
+                                    // 6. Min and Max Range Callouts
+                                    char min_buf[32];
+                                    char max_buf[32];
+                                    snprintf(min_buf, sizeof(min_buf), "%.0f", g_min);
+                                    snprintf(max_buf, sizeof(max_buf), "%.0f", g_max);
+                                    ImVec2 min_sz = ImGui::CalcTextSize(min_buf);
+                                    ImVec2 max_sz = ImGui::CalcTextSize(max_buf);
+                                    float r_lbl = radius + thickness + 10.0f;
+                                    ImVec2 min_pos = ImVec2(center.x + std::cos(a_start) * r_lbl - min_sz.x * 0.5f, center.y + std::sin(a_start) * r_lbl - min_sz.y * 0.5f);
+                                    ImVec2 max_pos = ImVec2(center.x + std::cos(a_end) * r_lbl - max_sz.x * 0.5f, center.y + std::sin(a_end) * r_lbl - max_sz.y * 0.5f);
+                                    draw_list->AddText(min_pos, IM_COL32(110, 130, 155, 220), min_buf);
+                                    draw_list->AddText(max_pos, IM_COL32(110, 130, 155, 220), max_buf);
+
+                                    // 7. Bound Signal Name at top if present
+                                    if (!s_name.empty()) {
+                                        ImVec2 s_sz = ImGui::CalcTextSize(s_name.c_str());
+                                        draw_list->AddText(ImVec2(center.x - s_sz.x * 0.5f, plot_pos.y + 6.0f), IM_COL32(0, 210, 255, 220), s_name.c_str());
                                     }
                                 } else if (sp.plot_type == "histogram") {
                                     ImPlot::SetupAxes("Value", "Count", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
