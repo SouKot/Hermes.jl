@@ -34,6 +34,7 @@ var _active_unit: String = "%"
 func _init(p_store: DocumentStore = null) -> void:
 	doc_store = p_store
 	custom_minimum_size = Vector2(340, 420)
+	z_index = 200
 	var style := StyleBoxFlat.new()
 	style.bg_color = PANEL_BG
 	style.border_color = BORDER

@@ -539,10 +539,7 @@ func _update_wire_hover() -> void:
 		if eid == _wire_source_elem:
 			continue
 		var b: BlockNode = _block_nodes[eid]
-		var lpos: Vector2 = canvas_mouse - b.position
-		if b.rotation != 0.0:
-			var rel: Vector2 = canvas_mouse - (b.position + b.pivot_offset)
-			lpos = b.pivot_offset + rel.rotated(-b.rotation)
+		var lpos: Vector2 = b.get_transform().affine_inverse() * canvas_mouse
 		var hit_pid: String = b._hit_test_port(lpos)
 		if not hit_pid.is_empty():
 			var p_info: Dictionary = b.get_port_info(hit_pid)

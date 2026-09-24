@@ -85,10 +85,12 @@ func _init(p_store: DocumentStore = null) -> void:
 	doc_store = p_store
 	_has_implot = ClassDB.class_exists("SimPlotView")
 	custom_minimum_size = Vector2(820, 540)
+	z_index = 200
 
 func _ready() -> void:
 	if _ui_initialized: return
 	_ui_initialized = true
+	z_index = 200
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	_build_ui()
 	if doc_store != null:
@@ -1251,7 +1253,10 @@ func _redraw_active_subplots() -> void:
 
 					var key_y := "%s:%s" % [ent_id, ym]
 					var arr_y: Array = _telemetry_buffers.get(key_y, [])
-					if arr_y.is_empty(): continue
+					if arr_y.is_empty():
+						if s_type == "digital_gauge":
+							_simplot_view.set_subplot_series_2d(i, s_label, PackedFloat32Array([0.0]), PackedFloat32Array([0.0]))
+						continue
 
 					if s_type == "digital_gauge":
 						var latest_v: float = float(arr_y.back().get("val", 0.0))
@@ -1445,20 +1450,33 @@ class UnifiedVectorCanvas extends Control:
 
 		if sp_type == "digital_gauge":
 			var latest_v: float = 0.0
+			var has_val: bool = false
 			if not series_data.is_empty():
 				var arr: Array = series_data[0]
-				if not arr.is_empty(): latest_v = float(arr.back().get("val", 0.0))
+				if not arr.is_empty():
+					latest_v = float(arr.back().get("val", 0.0))
+					has_val = true
+
+			var g_min: float = float(sp.get("y_min", 0.0))
+			var g_max: float = float(sp.get("y_max", 100.0))
+			if g_max <= g_min: g_max = g_min + 1.0
+
 			var disp := "%.1f %s" % [latest_v, y_label]
-			var col := GREEN if latest_v < 80.0 else (AMBER if latest_v < 95.0 else RED)
-			draw_string(ThemeDB.fallback_font, Vector2(cell.position.x, cell.position.y + cell.size.y * 0.52), disp.strip_edges(), HORIZONTAL_ALIGNMENT_CENTER, int(cell.size.x), 22, col)
+			var col := GREEN if latest_v < 0.8 * g_max else (AMBER if latest_v < 0.95 * g_max else RED)
+			draw_string(ThemeDB.fallback_font, Vector2(cell.position.x, cell.position.y + cell.size.y * 0.48), disp.strip_edges(), HORIZONTAL_ALIGNMENT_CENTER, int(cell.size.x), 22, col)
+
+			if not has_val:
+				var hint := "(Awaiting simulation data...)" if not explicit_signals.is_empty() else "(No variable selected — add in left dock)"
+				draw_string(ThemeDB.fallback_font, Vector2(cell.position.x, cell.position.y + cell.size.y * 0.60), hint, HORIZONTAL_ALIGNMENT_CENTER, int(cell.size.x), 10, Color("#8b949e"))
 
 			# Gauge meter bar at bottom
 			var bar_w = plot_area.size.x * 0.7
 			var bar_x = cell.position.x + (cell.size.x - bar_w) * 0.5
-			var bar_y = cell.position.y + cell.size.y * 0.72
+			var bar_y = cell.position.y + cell.size.y * 0.74
 			draw_rect(Rect2(bar_x, bar_y, bar_w, 6.0), Color("#1b2533"))
-			var pct = clamp(latest_v / 100.0, 0.0, 1.0)
-			draw_rect(Rect2(bar_x, bar_y, bar_w * pct, 6.0), col)
+			var pct = clamp((latest_v - g_min) / (g_max - g_min), 0.0, 1.0)
+			if pct > 0.0:
+				draw_rect(Rect2(bar_x, bar_y, bar_w * pct, 6.0), col)
 
 		elif sp_type == "histogram":
 			var n_bars := 12

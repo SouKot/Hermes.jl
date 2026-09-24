@@ -132,16 +132,12 @@ func get_port_local_position(port_id: String) -> Vector2:
 
 func get_port_canvas_position(port_id: String) -> Vector2:
 	var local_pos := get_port_local_position(port_id)
-	if rotation != 0.0:
-		return position + pivot_offset + (local_pos - pivot_offset).rotated(rotation)
-	return position + local_pos
+	return get_transform() * local_pos
 
 func get_port_global_position(port_id: String) -> Vector2:
+	var local_pos := get_port_local_position(port_id)
 	if is_inside_tree():
-		var local_pos := get_port_local_position(port_id)
-		if rotation != 0.0:
-			return global_position + pivot_offset + (local_pos - pivot_offset).rotated(rotation)
-		return global_position + local_pos
+		return get_global_transform() * local_pos
 	return get_port_canvas_position(port_id)
 
 func get_port_info(port_id: String) -> Dictionary:
@@ -919,7 +915,7 @@ func _draw() -> void:
 					draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, size.y - 8.0), badge_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 10, badge_col)
 				elif mid_w >= 28.0:
 					draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, size.y - 6.0), badge_str, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 8, badge_col)
-		else:
+		elif mid_w < 28.0:
 			# Fully collapsed center: Left and right bays touch with 0 gap.
 			# Render compact top badge pill so machine ID is always clearly identifiable.
 			var badge_rect := Rect2(2.0, 2.0, size.x - 4.0, 13.0)
