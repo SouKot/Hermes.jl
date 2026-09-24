@@ -32,6 +32,277 @@ const SERIES_COLORS := [
 	Color("#f0883e"), # orange
 ]
 
+const METRIC_CATALOG := {
+	"service_time": {
+		"category": "Physical Observations",
+		"unit": "seconds (s)",
+		"short": "Service Duration / Part",
+		"desc": "Empirical service time in seconds for each completed product. Directly tracks probability distribution samples.",
+		"rec": "Histogram, Scatter Plot",
+		"type": "event_tally"
+	},
+	"wait_time": {
+		"category": "Physical Observations",
+		"unit": "seconds (s)",
+		"short": "Queue Wait Time / Part",
+		"desc": "Empirical wait time in seconds experienced by each entity in the buffer line before service starts.",
+		"rec": "Histogram, Scatter Plot",
+		"type": "event_tally"
+	},
+	"queue_length": {
+		"category": "System States",
+		"unit": "entities",
+		"short": "Waiting Entities (Lq)",
+		"desc": "Instantaneous count of entities currently waiting in queue.",
+		"rec": "Time Series, Step Chart",
+		"type": "state"
+	},
+	"length": {
+		"category": "System States",
+		"unit": "entities",
+		"short": "Waiting Entities (Lq)",
+		"desc": "Instantaneous count of entities currently waiting in queue.",
+		"rec": "Time Series",
+		"type": "state"
+	},
+	"occupancy_pct": {
+		"category": "System States",
+		"unit": "%",
+		"short": "Buffer Occupancy %",
+		"desc": "Current queue fullness percentage relative to maximum buffer capacity.",
+		"rec": "Gauge (Dial), Time Series",
+		"type": "state"
+	},
+	"busy_servers": {
+		"category": "System States",
+		"unit": "servers",
+		"short": "Active Server Channels",
+		"desc": "Instantaneous count of parallel server channels currently busy processing entities.",
+		"rec": "Time Series, Step Chart",
+		"type": "state"
+	},
+	"num_servers": {
+		"category": "System States",
+		"unit": "servers",
+		"short": "Total Server Channels",
+		"desc": "Total server processing channels available at this station.",
+		"rec": "Time Series, Gauge",
+		"type": "state"
+	},
+	"instant_util_pct": {
+		"category": "System States",
+		"unit": "%",
+		"short": "Instant Busy Fraction %",
+		"desc": "Instantaneous percentage of server channels active right now (busy / total).",
+		"rec": "Gauge, Time Series",
+		"type": "state"
+	},
+	"utilization_pct": {
+		"category": "Summary KPIs",
+		"unit": "%",
+		"short": "Server Utilization % (ρ)",
+		"desc": "Cumulative percentage of uptime the server has spent busy. Primary machine productivity KPI.",
+		"rec": "Gauge (Speedometer Dial), Time Series",
+		"type": "kpi"
+	},
+	"utilization": {
+		"category": "Summary KPIs",
+		"unit": "%",
+		"short": "Server Utilization % (ρ)",
+		"desc": "Cumulative percentage of uptime the server has spent busy.",
+		"rec": "Gauge (Speedometer Dial)",
+		"type": "kpi"
+	},
+	"service_mean": {
+		"category": "Summary KPIs",
+		"unit": "seconds (s)",
+		"short": "Cumulative Mean Service (S̄)",
+		"desc": "Running cumulative average service time across all completed departures (converges to 1/μ). Note: For the empirical distribution shape, choose 'service_time'.",
+		"rec": "Gauge, Time Series Convergence Line",
+		"type": "kpi"
+	},
+	"wait_mean_wq": {
+		"category": "Summary KPIs",
+		"unit": "seconds (s)",
+		"short": "Cumulative Mean Wait (W̄q)",
+		"desc": "Running cumulative average queue wait time across all departed entities. Note: For the empirical distribution shape, choose 'wait_time'.",
+		"rec": "Gauge, Time Series Convergence Line",
+		"type": "kpi"
+	},
+	"wait_mean": {
+		"category": "Summary KPIs",
+		"unit": "seconds (s)",
+		"short": "Cumulative Mean Wait (W̄q)",
+		"desc": "Running cumulative average queue wait time across all departed entities.",
+		"rec": "Gauge, Time Series",
+		"type": "kpi"
+	},
+	"total_served": {
+		"category": "Summary KPIs",
+		"unit": "entities",
+		"short": "Total Completed Departures",
+		"desc": "Cumulative count of products that have completed service and departed this station.",
+		"rec": "Time Series (Throughput Line), Gauge",
+		"type": "counter"
+	},
+	"total_departed": {
+		"category": "Summary KPIs",
+		"unit": "entities",
+		"short": "Total Departed Entities",
+		"desc": "Cumulative count of entities that have departed this queue buffer.",
+		"rec": "Time Series, Gauge",
+		"type": "counter"
+	},
+	"total_departures": {
+		"category": "Summary KPIs",
+		"unit": "entities",
+		"short": "Total Exited Departures",
+		"desc": "Cumulative count of entities that exited the simulation system.",
+		"rec": "Time Series, Gauge",
+		"type": "counter"
+	},
+	"total_entered": {
+		"category": "Summary KPIs",
+		"unit": "entities",
+		"short": "Total Entered Entities",
+		"desc": "Cumulative count of entities that entered this queue buffer.",
+		"rec": "Time Series, Gauge",
+		"type": "counter"
+	},
+	"total_arrivals": {
+		"category": "Summary KPIs",
+		"unit": "entities",
+		"short": "Total Generated Arrivals",
+		"desc": "Cumulative count of entities created by this source generator.",
+		"rec": "Time Series, Gauge",
+		"type": "counter"
+	},
+	"throughput_per_sec": {
+		"category": "Summary KPIs",
+		"unit": "items/s",
+		"short": "Throughput Rate (λ_eff)",
+		"desc": "Current departure throughput rate per simulated second.",
+		"rec": "Gauge, Time Series",
+		"type": "kpi"
+	},
+	"rate_per_sec": {
+		"category": "Summary KPIs",
+		"unit": "items/s",
+		"short": "Arrival Generation Rate",
+		"desc": "Current arrival generation rate per simulated second.",
+		"rec": "Gauge, Time Series",
+		"type": "kpi"
+	},
+	"in_transit": {
+		"category": "System States",
+		"unit": "items",
+		"short": "Items In Transit",
+		"desc": "Count of items currently traversing the conveyor belt.",
+		"rec": "Time Series, Gauge",
+		"type": "state"
+	},
+	"items_in_transit": {
+		"category": "System States",
+		"unit": "items",
+		"short": "Items In Transit",
+		"desc": "Count of items currently traversing the conveyor belt.",
+		"rec": "Time Series, Gauge",
+		"type": "state"
+	},
+	"occupancy": {
+		"category": "System States",
+		"unit": "items",
+		"short": "Station Occupancy",
+		"desc": "Total items currently present inside the station.",
+		"rec": "Time Series, Gauge",
+		"type": "state"
+	},
+	"speed": {
+		"category": "Parameters",
+		"unit": "m/s",
+		"short": "Conveyor Belt Speed",
+		"desc": "Linear transit velocity of the conveyor belt.",
+		"rec": "Gauge",
+		"type": "param"
+	},
+	"transit_delay": {
+		"category": "Parameters",
+		"unit": "seconds (s)",
+		"short": "Nominal Transit Delay (τ)",
+		"desc": "Time required to traverse the full conveyor length (length / speed).",
+		"rec": "Gauge",
+		"type": "param"
+	},
+	"total_transited": {
+		"category": "Summary KPIs",
+		"unit": "items",
+		"short": "Total Transited Items",
+		"desc": "Total count of items that completed transit across the conveyor.",
+		"rec": "Time Series, Gauge",
+		"type": "counter"
+	},
+	"__time__": {
+		"category": "Independent Clock",
+		"unit": "seconds (s)",
+		"short": "Simulation Clock Time",
+		"desc": "Continuous elapsed simulation time in seconds. Standard horizontal axis for Time Series.",
+		"rec": "X-Axis (Time Series)",
+		"type": "clock"
+	}
+}
+
+func get_metric_info(metric_id: String, _entity_kind: String = "") -> Dictionary:
+	if METRIC_CATALOG.has(metric_id):
+		return METRIC_CATALOG[metric_id]
+	var is_mean = metric_id.ends_with("_mean") or metric_id.ends_with("_avg")
+	var is_count = metric_id.begins_with("total_") or metric_id.ends_with("_count")
+	var is_pct = metric_id.ends_with("_pct") or metric_id.ends_with("_percent")
+	var is_time = metric_id.ends_with("_time") or metric_id.ends_with("_duration")
+	if is_time:
+		return {
+			"category": "Physical Observations",
+			"unit": "seconds (s)",
+			"short": metric_id.capitalize(),
+			"desc": "Individual duration sample in seconds. Recommended for Histograms.",
+			"rec": "Histogram, Scatter Plot",
+			"type": "event_tally"
+		}
+	elif is_pct:
+		return {
+			"category": "System States",
+			"unit": "%",
+			"short": metric_id.capitalize(),
+			"desc": "Percentage metric. Recommended for Gauges.",
+			"rec": "Gauge, Time Series",
+			"type": "state"
+		}
+	elif is_mean:
+		return {
+			"category": "Summary KPIs",
+			"unit": "mean value",
+			"short": metric_id.capitalize(),
+			"desc": "Running cumulative average. Recommended for Gauges and Convergence Lines.",
+			"rec": "Gauge, Time Series",
+			"type": "kpi"
+		}
+	elif is_count:
+		return {
+			"category": "Summary KPIs",
+			"unit": "count",
+			"short": metric_id.capitalize(),
+			"desc": "Cumulative counter. Monotonically increasing.",
+			"rec": "Time Series, Gauge",
+			"type": "counter"
+		}
+	return {
+		"category": "Custom Metric",
+		"unit": "",
+		"short": metric_id.capitalize(),
+		"desc": "Entity property: %s" % metric_id,
+		"rec": "Time Series, Gauge",
+		"type": "custom"
+	}
+
 var doc_store: DocumentStore = null
 var catalog: Catalog = Catalog.new()
 var active_chart_elem_id: String = ""
@@ -880,22 +1151,133 @@ func _build_curve_picker_widget(elem: SceneTypes.SceneElement, sp: Dictionary) -
 	y_row.add_child(y_opt)
 	vbox.add_child(y_row)
 
+	# Variable Description & Guidance Card
+	var desc_box := PanelContainer.new()
+	var desc_style := StyleBoxFlat.new()
+	desc_style.bg_color = Color("#0d131a")
+	desc_style.border_color = Color("#222d3d")
+	desc_style.set_border_width_all(1)
+	desc_style.set_corner_radius_all(3)
+	desc_style.set_content_margin_all(5)
+	desc_box.add_theme_stylebox_override("panel", desc_style)
+	desc_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var desc_lbl := Label.new()
+	desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	desc_lbl.add_theme_font_size_override("font_size", 8)
+	desc_lbl.add_theme_color_override("font_color", TEXT)
+	desc_box.add_child(desc_lbl)
+	vbox.add_child(desc_box)
+
 	var current_entities: Array = []
+
+	var update_desc_card = func():
+		var y_meta = y_opt.get_selected_metadata()
+		var y_key: String = str(y_meta) if y_meta != null and not str(y_meta).is_empty() else (y_opt.get_item_text(y_opt.selected) if y_opt.item_count > 0 else "")
+		var info: Dictionary = get_metric_info(y_key)
+		var sp_type: String = str(sp.get("type", "time_series"))
+		var cat: String = str(info.get("category", "General Metric"))
+		var unit: String = str(info.get("unit", ""))
+		var desc: String = str(info.get("desc", "Variable value."))
+		var rec: String = str(info.get("rec", "Time Series"))
+
+		var text_out := "ℹ [%s] %s" % [cat.to_upper(), y_key]
+		if not unit.is_empty():
+			text_out += " (Units: %s)" % unit
+		text_out += "\n%s" % desc
+		text_out += "\n• Recommended: %s" % rec
+
+		# Smart contextual tip based on subplot type
+		if sp_type == "histogram" and str(info.get("type", "")) == "kpi":
+			text_out += "\n💡 Tip: '%s' is a running summary average. For true physical distribution of individual parts, choose an Observation metric (like 'service_time' or 'wait_time')." % y_key
+		elif sp_type == "digital_gauge" and str(info.get("type", "")) == "event_tally":
+			text_out += "\n💡 Tip: Gauges display a single current reading. For gauges, choose a Summary KPI or State (like 'utilization_pct', 'occupancy_pct', or 'service_mean')."
+
+		desc_lbl.text = text_out
+
+	y_opt.item_selected.connect(func(_idx): update_desc_card.call())
+	x_opt.item_selected.connect(func(_idx): update_desc_card.call())
 
 	var populate_variables = func(sel_idx: int):
 		y_opt.clear()
 		x_opt.clear()
 		x_opt.add_item("⏱ Sim Time (s)", 0)
-		if sel_idx < 0 or sel_idx >= current_entities.size(): return
+		x_opt.set_item_metadata(0, "__time__")
+		var time_tooltip := "⏱ Simulation Clock Time (seconds)\nContinuous elapsed simulation time. Standard horizontal axis for time series charts."
+		x_opt.set_item_tooltip(0, time_tooltip)
+		x_opt.get_popup().set_item_tooltip(0, time_tooltip)
+
+		if sel_idx < 0 or sel_idx >= current_entities.size():
+			update_desc_card.call()
+			return
+
 		var sel_el: SceneTypes.SceneElement = current_entities[sel_idx]
 		var metrics := _get_metrics_for_entity(sel_el)
-		for j in range(metrics.size()):
-			var m = metrics[j]
-			y_opt.add_item(str(m), j)
-			x_opt.add_item(str(m), j + 1)
+
+		var cat_order := [
+			{"id": "obs", "title": "── 📊 Physical Observations (Histograms) ──", "items": []},
+			{"id": "state", "title": "── 📈 System States (Time Series) ──", "items": []},
+			{"id": "kpi", "title": "── 🎯 Summary KPIs (Gauges) ──", "items": []},
+			{"id": "param", "title": "── ⚙ Parameters & Custom ──", "items": []}
+		]
+
+		for m in metrics:
+			var info: Dictionary = get_metric_info(str(m), sel_el.kind)
+			var m_type: String = str(info.get("type", ""))
+			if m_type == "event_tally":
+				cat_order[0]["items"].append(m)
+			elif m_type == "state":
+				cat_order[1]["items"].append(m)
+			elif m_type in ["kpi", "counter"]:
+				cat_order[2]["items"].append(m)
+			else:
+				cat_order[3]["items"].append(m)
+
+		for group in cat_order:
+			var items: Array = group["items"]
+			if items.is_empty(): continue
+
+			y_opt.add_separator(group["title"])
+			x_opt.add_separator(group["title"])
+
+			for m in items:
+				var m_str := str(m)
+				var info: Dictionary = get_metric_info(m_str, sel_el.kind)
+				var unit_str: String = str(info.get("unit", ""))
+				var short_name: String = str(info.get("short", m_str))
+				var display_txt := "%s  [%s]" % [m_str, unit_str] if not unit_str.is_empty() else m_str
+
+				var tooltip_str := "[%s] %s\n%s\n• Unit: %s\n• Recommended for: %s" % [
+					info.get("category", "Metric"),
+					short_name,
+					info.get("desc", ""),
+					unit_str if not unit_str.is_empty() else "dimensionless",
+					info.get("rec", "Time Series")
+				]
+
+				var y_item_idx: int = y_opt.item_count
+				y_opt.add_item(display_txt)
+				y_opt.set_item_metadata(y_item_idx, m_str)
+				y_opt.set_item_tooltip(y_item_idx, tooltip_str)
+				y_opt.get_popup().set_item_tooltip(y_item_idx, tooltip_str)
+
+				var x_item_idx: int = x_opt.item_count
+				x_opt.add_item(display_txt)
+				x_opt.set_item_metadata(x_item_idx, m_str)
+				x_opt.set_item_tooltip(x_item_idx, tooltip_str)
+				x_opt.get_popup().set_item_tooltip(x_item_idx, tooltip_str)
+
 		if y_opt.item_count > 0:
-			y_opt.select(0)
+			var first_selectable := -1
+			for idx in range(y_opt.item_count):
+				if not y_opt.is_item_separator(idx):
+					first_selectable = idx
+					break
+			if first_selectable >= 0:
+				y_opt.select(first_selectable)
+
 		x_opt.select(0)
+		update_desc_card.call()
 
 	var populate_entities = func():
 		ent_opt.clear()
@@ -917,6 +1299,7 @@ func _build_curve_picker_widget(elem: SceneTypes.SceneElement, sp: Dictionary) -
 			y_opt.clear()
 			x_opt.clear()
 			x_opt.add_item("⏱ Sim Time (s)", 0)
+			update_desc_card.call()
 
 	ent_opt.item_selected.connect(populate_variables)
 	if filter_chk != null:
@@ -936,10 +1319,14 @@ func _build_curve_picker_widget(elem: SceneTypes.SceneElement, sp: Dictionary) -
 		var sel_ent_idx = ent_opt.selected
 		if sel_ent_idx < 0 or sel_ent_idx >= current_entities.size(): return
 		var sel_el: SceneTypes.SceneElement = current_entities[sel_ent_idx]
-		var y_metric_str = y_opt.get_item_text(y_opt.selected) if y_opt.item_count > 0 else "value"
-		var x_metric_str = "__time__"
+
+		var y_meta = y_opt.get_selected_metadata()
+		var y_metric_str: String = str(y_meta) if y_meta != null and not str(y_meta).is_empty() else (y_opt.get_item_text(y_opt.selected) if y_opt.item_count > 0 else "value")
+
+		var x_metric_str: String = "__time__"
 		if x_opt.selected > 0:
-			x_metric_str = x_opt.get_item_text(x_opt.selected)
+			var x_meta = x_opt.get_selected_metadata()
+			x_metric_str = str(x_meta) if x_meta != null and not str(x_meta).is_empty() else x_opt.get_item_text(x_opt.selected)
 
 		var curves: Array = sp.get("signals", [])
 		var color_idx = curves.size() % SERIES_COLORS.size()
@@ -1011,8 +1398,8 @@ func _get_metrics_for_entity(el: SceneTypes.SceneElement) -> Array:
 
 	# 2. Known standard metrics by entity kind
 	var known_map := {
-		"queue": ["queue_length", "length", "occupancy_pct", "wait_mean_wq", "total_entered", "total_departed"],
-		"server": ["utilization", "utilization_pct", "busy_servers", "service_mean", "total_served"],
+		"queue": ["wait_time", "queue_length", "occupancy_pct", "wait_mean_wq", "total_entered", "total_departed"],
+		"server": ["service_time", "utilization_pct", "busy_servers", "service_mean", "total_served", "instant_util_pct", "num_servers"],
 		"conveyor": ["in_transit", "items_in_transit", "occupancy", "speed", "transit_delay", "total_transited"],
 		"source": ["rate_per_sec", "total_arrivals"],
 		"sink": ["throughput_per_sec", "total_departures"]
@@ -1143,10 +1530,27 @@ func feed_telemetry(t: float, elements_by_id: Dictionary, _global_kpis: Dictiona
 	for e_id in elements_by_id.keys():
 		var src_elem = elements_by_id[e_id]
 		var src_metrics: Dictionary = src_elem.get("metrics", src_elem.get("custom_metrics", {}))
+
+		# Batch observation samples (empirical event tally: service times, wait times)
+		if src_metrics.has("recent_service_samples"):
+			var s_samples = src_metrics["recent_service_samples"]
+			if s_samples is Array:
+				for s_val in s_samples:
+					_feed_buffer_point("%s:service_time" % e_id, t, float(s_val))
+		if src_metrics.has("recent_wait_samples"):
+			var w_samples = src_metrics["recent_wait_samples"]
+			if w_samples is Array:
+				for w_val in w_samples:
+					_feed_buffer_point("%s:wait_time" % e_id, t, float(w_val))
+
 		for m_name in src_metrics.keys():
-			var val: float = float(src_metrics[m_name])
-			var key := "%s:%s" % [e_id, m_name]
-			_feed_buffer_point(key, t, val)
+			if m_name in ["recent_service_samples", "recent_wait_samples"]:
+				continue
+			var raw_v = src_metrics[m_name]
+			if raw_v is int or raw_v is float:
+				var val: float = float(raw_v)
+				var key := "%s:%s" % [e_id, m_name]
+				_feed_buffer_point(key, t, val)
 
 	# 2. Also map wire connections directly into subplots
 	for conn in doc.connections:
@@ -1661,7 +2065,7 @@ class UnifiedVectorCanvas extends Control:
 				draw_string(ThemeDB.fallback_font, Vector2(cell.position.x, center.y + float(val_font_sz) * 1.5), hint, HORIZONTAL_ALIGNMENT_CENTER, int(cell.size.x), 9, Color("#8b949e"))
 
 		elif sp_type == "histogram":
-			var n_bars := 12
+			var n_bars := 15
 			var b_w: float = plot_area.size.x / float(n_bars)
 			var hist_vals: Array = []
 			if not series_data.is_empty():
@@ -1685,8 +2089,14 @@ class UnifiedVectorCanvas extends Control:
 				var max_c: int = 1
 				for c in counts: max_c = max(max_c, c)
 				for bi in range(n_bars):
-					var bh = (float(counts[bi]) / float(max_c)) * (plot_area.size.y - 10.0)
-					draw_rect(Rect2(plot_area.position.x + float(bi) * b_w, plot_area.position.y + plot_area.size.y - bh, b_w - 2.0, bh), Color("#bc8cffaa"))
+					var bh = (float(counts[bi]) / float(max_c)) * (plot_area.size.y - 18.0)
+					draw_rect(Rect2(plot_area.position.x + float(bi) * b_w, plot_area.position.y + plot_area.size.y - bh - 14.0, b_w - 2.0, bh), Color("#bc8cffaa"))
+
+				var badge_str := "N = %d obs" % hist_vals.size()
+				draw_string(ThemeDB.fallback_font, Vector2(plot_area.position.x + plot_area.size.x - 70.0, plot_area.position.y + 12.0), badge_str, HORIZONTAL_ALIGNMENT_RIGHT, 70, 8, Color("#8b949e"))
+				draw_string(ThemeDB.fallback_font, Vector2(plot_area.position.x, plot_area.position.y + plot_area.size.y - 2.0), "%.1f" % v_min, HORIZONTAL_ALIGNMENT_LEFT, 40, 8, Color("#8b949e"))
+				draw_string(ThemeDB.fallback_font, Vector2(plot_area.position.x + plot_area.size.x - 50.0, plot_area.position.y + plot_area.size.y - 2.0), "%.1f" % v_max, HORIZONTAL_ALIGNMENT_RIGHT, 50, 8, Color("#8b949e"))
+				draw_string(ThemeDB.fallback_font, Vector2(plot_area.position.x + plot_area.size.x * 0.35, plot_area.position.y + plot_area.size.y - 2.0), "Value", HORIZONTAL_ALIGNMENT_CENTER, 80, 8, Color("#8b949e"))
 			else:
 				for bi in range(n_bars):
 					draw_rect(Rect2(plot_area.position.x + float(bi) * b_w, plot_area.position.y + plot_area.size.y - 4.0, b_w - 2.0, 4.0), Color("#1b2533"))

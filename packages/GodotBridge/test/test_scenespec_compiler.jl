@@ -122,7 +122,7 @@ using Random
         @test t3 ≈ 3750.0 atol=1e-3
 
         # Build snapshot
-        snap = build_snapshot(mgr.active_instance; scene_id="unit_test")
+        snap = GodotBridge.build_snapshot(mgr.active_instance; scene_id="unit_test")
         @test snap.simulation_time ≈ 3750.0 atol=1e-3
         @test length(snap.elements_state) == 5
         @test mgr.active_instance.world.stats.total_departures > 500

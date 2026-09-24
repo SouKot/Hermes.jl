@@ -62,6 +62,10 @@ function build_snapshot(
                         metrics["total_entered"] = zs !== nothing ? zs.total_arrivals : 0
                         metrics["total_departed"] = zs !== nothing ? zs.total_departures : 0
                         metrics["badge"] = "[ $(zstate.queue_length)/$(cap) ]"
+                        if zs !== nothing && !isempty(zs.recent_wait_samples)
+                            metrics["recent_wait_samples"] = copy(zs.recent_wait_samples)
+                            empty!(zs.recent_wait_samples)
+                        end
                     elseif map_rec.role_in_zone == :server_workstation
                         occ = UInt32(zstate.busy_servers)
                         n_srv = zstate.num_servers
@@ -84,6 +88,10 @@ function build_snapshot(
                         metrics["total_served"] = zs !== nothing ? zs.total_departures : 0
                         metrics["service_mean"] = (zs !== nothing && zs.sojourn_time_samples > 0) ? round(zs.sojourn_time_sum / zs.sojourn_time_samples, digits=2) : 0.0
                         metrics["badge"] = "[ $(Int(round(util_pct)))% $(srv_state) ]"
+                        if zs !== nothing && !isempty(zs.recent_service_samples)
+                            metrics["recent_service_samples"] = copy(zs.recent_service_samples)
+                            empty!(zs.recent_service_samples)
+                        end
                     elseif map_rec.role_in_zone == :conveyor_bed
                         occ = UInt32(zstate.busy_servers)
                         conv_spd = node isa IRConveyorNode ? node.speed : 1.5

@@ -34,22 +34,26 @@ All mutable fields — updated in the simulation hot path.
 - `uptime::Float64`: total machine uptime (> 0 when servers available; for availability A)
 - `elapsed_sim_time::Float64`: total simulated time of this stats window
 - `warmup_complete::Bool`: flag — only record after warmup
+- `recent_service_samples::Vector{Float64}`: buffer of recent individual service time observations
+- `recent_wait_samples::Vector{Float64}`: buffer of recent individual queue wait time observations
 """
 mutable struct SimStats
-    total_events         :: Int
-    total_arrivals       :: Int
-    total_departures     :: Int
-    blocked_count        :: Int
-    queue_length_sum     :: Float64
-    queue_length_samples :: Int
-    wait_time_sum        :: Float64
-    wait_time_samples    :: Int
-    sojourn_time_sum     :: Float64
-    sojourn_time_samples :: Int
-    busy_time            :: Float64
-    uptime               :: Float64   # machine uptime: Σ dt where num_servers > 0
-    elapsed_sim_time     :: Float64
-    warmup_complete      :: Bool
+    total_events           :: Int
+    total_arrivals         :: Int
+    total_departures       :: Int
+    blocked_count          :: Int
+    queue_length_sum       :: Float64
+    queue_length_samples   :: Int
+    wait_time_sum          :: Float64
+    wait_time_samples      :: Int
+    sojourn_time_sum       :: Float64
+    sojourn_time_samples   :: Int
+    busy_time              :: Float64
+    uptime                 :: Float64   # machine uptime: Σ dt where num_servers > 0
+    elapsed_sim_time       :: Float64
+    warmup_complete        :: Bool
+    recent_service_samples :: Vector{Float64}
+    recent_wait_samples    :: Vector{Float64}
 end
 
 """
@@ -59,7 +63,17 @@ Create a fresh statistics accumulator (all zeros, warmup incomplete).
 """
 SimStats() = SimStats(0, 0, 0, 0,
                       0.0, 0, 0.0, 0, 0.0, 0,
-                      0.0, 0.0, 0.0, false)
+                      0.0, 0.0, 0.0, false,
+                      Float64[], Float64[])
+
+SimStats(total_events::Int, total_arrivals::Int, total_departures::Int, blocked_count::Int,
+         queue_length_sum::Float64, queue_length_samples::Int, wait_time_sum::Float64, wait_time_samples::Int,
+         sojourn_time_sum::Float64, sojourn_time_samples::Int, busy_time::Float64, uptime::Float64,
+         elapsed_sim_time::Float64, warmup_complete::Bool) =
+    SimStats(total_events, total_arrivals, total_departures, blocked_count,
+             queue_length_sum, queue_length_samples, wait_time_sum, wait_time_samples,
+             sojourn_time_sum, sojourn_time_samples, busy_time, uptime, elapsed_sim_time, warmup_complete,
+             Float64[], Float64[])
 
 """
     reset_stats!(stats)
@@ -81,6 +95,8 @@ function reset_stats!(stats::SimStats)
     stats.uptime               = 0.0
     stats.elapsed_sim_time     = 0.0
     stats.warmup_complete      = false
+    empty!(stats.recent_service_samples)
+    empty!(stats.recent_wait_samples)
     return stats
 end
 
@@ -106,6 +122,15 @@ Only records if warmup is complete.
 function record_departure!(stats::SimStats, wait_time::Float64, sojourn_time::Float64)
     stats.total_events    += 1
     stats.total_departures += 1
+    srv_time = max(0.0, sojourn_time - wait_time)
+    push!(stats.recent_service_samples, srv_time)
+    push!(stats.recent_wait_samples, wait_time)
+    if length(stats.recent_service_samples) > 20_000
+        popfirst!(stats.recent_service_samples)
+    end
+    if length(stats.recent_wait_samples) > 20_000
+        popfirst!(stats.recent_wait_samples)
+    end
     stats.warmup_complete || return stats
     stats.wait_time_sum        += wait_time
     stats.wait_time_samples    += 1

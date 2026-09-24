@@ -266,6 +266,115 @@ func _init() -> void:
 	picker.queue_free()
 	print("Step 14 PASSED: Port-wired entity filtering verified.")
 
+	# 15. Testing Physical Observation Tracking for Histograms
+	print("Step 15: Testing Physical Observation Tracking for Histograms...")
+	var srv1_elem = catalog.create_element_instance("server", "srv1", Vector2(100.0, 0.0))
+	doc_store.add_element(srv1_elem)
+
+	studio.feed_telemetry(10.0, {
+		"srv1": {
+			"metrics": {
+				"service_mean": 25.0,
+				"recent_service_samples": [12.5, 4.2, 8.9]
+			}
+		},
+		"q1": {
+			"metrics": {
+				"wait_mean_wq": 1.6,
+				"recent_wait_samples": [1.1, 0.5, 3.2]
+			}
+		}
+	}, {})
+
+	assert(studio._telemetry_buffers.has("srv1:service_time"), "srv1:service_time buffer must exist")
+	assert(studio._telemetry_buffers["srv1:service_time"].size() == 3, "Must have exactly 3 service time observations")
+	assert(studio._telemetry_buffers["srv1:service_time"][0]["val"] == 12.5, "First observation value must match")
+	assert(studio._telemetry_buffers["srv1:service_time"][1]["val"] == 4.2, "Second observation value must match")
+	assert(studio._telemetry_buffers["srv1:service_time"][2]["val"] == 8.9, "Third observation value must match")
+
+	assert(studio._telemetry_buffers.has("q1:wait_time"), "q1:wait_time buffer must exist")
+	assert(studio._telemetry_buffers["q1:wait_time"].size() == 3, "Must have exactly 3 wait time observations")
+
+	# Simulate next animation frames where no departures occurred (GUI 60 FPS tick)
+	studio.feed_telemetry(10.016, {
+		"srv1": {"metrics": {"service_mean": 25.0}},
+		"q1": {"metrics": {"wait_mean_wq": 1.6}}
+	}, {})
+	assert(studio._telemetry_buffers["srv1:service_time"].size() == 3, "Observation count must NOT inflate with rendering frame rate")
+
+	# Simulate 2 more departures arriving
+	studio.feed_telemetry(10.5, {
+		"srv1": {"metrics": {"service_mean": 23.0, "recent_service_samples": [15.0, 7.3]}}
+	}, {})
+	assert(studio._telemetry_buffers["srv1:service_time"].size() == 5, "Total observation count must equal exactly 5 physical departures")
+	print("  ✓ Physical event observations decoupled from GUI frame rate (exact tally: N=5).")
+	print("Step 15 PASSED: Physical Observation Tracking verified.")
+
+	# 16. Testing Variable Dropdown Tooltips & Contextual Guidance
+	print("Step 16: Testing Variable Dropdown Tooltips & Contextual Guidance...")
+	var picker2 := studio._build_curve_picker_widget(chart_elem, sps[1]) # sps[1] is Histogram
+	assert(picker2 != null, "Picker2 must be created")
+	var vbox2: VBoxContainer = picker2.get_child(0)
+
+	var found_ent_opt: OptionButton = null
+	var found_y_opt: OptionButton = null
+	var found_desc_lbl: Label = null
+	for child in vbox2.get_children():
+		if child is HBoxContainer:
+			for subchild in child.get_children():
+				if subchild is OptionButton:
+					if child.get_child(0) is Label and child.get_child(0).text == "Entity:":
+						found_ent_opt = subchild
+					elif child.get_child(0) is Label and child.get_child(0).text == "Y-Var:":
+						found_y_opt = subchild
+		elif child is PanelContainer:
+			var inner_lbl = child.get_child(0)
+			if inner_lbl is Label and inner_lbl.text.contains("ℹ"):
+				found_desc_lbl = inner_lbl
+
+	assert(found_ent_opt != null, "Entity OptionButton must exist in picker")
+	assert(found_y_opt != null, "Y-Var OptionButton must exist in picker")
+	assert(found_desc_lbl != null, "Variable description & guidance label must exist in picker")
+
+	# Select srv1 to inspect server metrics (service_time, service_mean)
+	for idx in range(found_ent_opt.item_count):
+		if found_ent_opt.get_item_text(idx).begins_with("srv1"):
+			found_ent_opt.select(idx)
+			found_ent_opt.item_selected.emit(idx)
+			break
+
+	# Check that popup tooltips are populated
+	var popup2: PopupMenu = found_y_opt.get_popup()
+	var has_service_time := false
+	var has_service_mean := false
+	var service_mean_idx := -1
+
+	for idx in range(found_y_opt.item_count):
+		var meta = found_y_opt.get_item_metadata(idx)
+		var tooltip = popup2.get_item_tooltip(idx)
+		if meta == "service_time":
+			has_service_time = true
+			assert(tooltip.contains("Physical Observations"), "Tooltip must describe Physical Observations")
+			assert(tooltip.contains("Histogram"), "Tooltip must recommend Histogram")
+		elif meta == "service_mean":
+			has_service_mean = true
+			service_mean_idx = idx
+			assert(tooltip.contains("Summary KPIs"), "Tooltip must describe Summary KPIs")
+			assert(tooltip.contains("Gauge"), "Tooltip must recommend Gauge")
+
+	assert(has_service_time, "Dropdown must contain service_time")
+	assert(has_service_mean, "Dropdown must contain service_mean")
+
+	# Select service_mean while configuring a Histogram subplot -> should show smart guidance tip!
+	found_y_opt.select(service_mean_idx)
+	found_y_opt.item_selected.emit(service_mean_idx)
+	assert(found_desc_lbl.text.contains("running summary average"), "Must warn that service_mean is a running summary average")
+	assert(found_desc_lbl.text.contains("service_time"), "Must recommend service_time for Histogram distribution shape")
+	print("  ✓ Dropdown item hover tooltips and histogram contextual guidance card verified.")
+
+	picker2.queue_free()
+	print("Step 16 PASSED: Variable Dropdown Tooltips & Contextual Guidance verified.")
+
 	print("==================================================================")
 	print("ALL PLOT STUDIO & CHART STATION SMOKE TESTS PASSED (100%)!")
 	print("==================================================================")
