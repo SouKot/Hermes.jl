@@ -1,6 +1,5 @@
 # authoring_outliner.gd
 # Model Outliner: shows scene element hierarchy and live entity sub-items from telemetry.
-class_name SimVizAuthoringOutliner
 extends VBoxContainer
 
 const DocumentStore := preload("res://scripts/authoring_document_store.gd")
