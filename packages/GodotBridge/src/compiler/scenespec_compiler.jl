@@ -35,6 +35,16 @@ SimWorld with pre-seeded FutureEventList and ZoneConfigs ready for simulation.
 function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationResult
     all_diagnostics = CompilerDiagnostic[]
 
+    # 0. Extract top-level "product" key from raw dict before type conversion
+    raw_product_dict = if raw_spec isa AbstractDict
+        str_key = "product"
+        sym_key = :product
+        haskey(raw_spec, str_key) ? raw_spec[str_key] :
+        haskey(raw_spec, sym_key) ? raw_spec[sym_key] : nothing
+    else
+        nothing
+    end
+
     # 1. Convert to TypedSceneSpec if needed
     typed_spec = if raw_spec isa TypedSceneSpec
         raw_spec
@@ -65,6 +75,7 @@ function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationRe
 
     # 3. Build ExecutionGraphIR
     ir = ExecutionGraphIR()
+
 
     for elem in flat_spec.elements
         elem_id = elem.id
@@ -175,6 +186,41 @@ function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationRe
         end
         push!(ir.downstream_conns[src], (dst, src_port, dst_port, cid))
     end
+
+    # 3b. Parse ProductDefinition from raw spec (if present) and rebuild IR with it
+    product_def = if raw_product_dict !== nothing
+        pd = raw_product_dict
+        _get(k, default) = begin
+            sk = string(k); sy = Symbol(k)
+            haskey(pd, sk) ? pd[sk] : (haskey(pd, sy) ? pd[sy] : default)
+        end
+        pname     = string(_get("name", "Product"))
+        pw        = Float64(_get("width",  0.4))
+        ph        = Float64(_get("height", 0.4))
+        pdepth    = Float64(_get("depth",  0.4))
+        raw_color = _get("color", nothing)
+        pcolor = if raw_color !== nothing && length(raw_color) >= 3
+            (Float64(raw_color[1]), Float64(raw_color[2]), Float64(raw_color[3]))
+        else
+            (0.3, 0.75, 1.0)
+        end
+        mt_raw = _get("mesh_type", "box")
+        pmesh = Symbol(lowercase(string(mt_raw)))
+        ProductDefinition(pname, pw, ph, pdepth, pcolor, pmesh)
+    else
+        ProductDefinition()
+    end
+
+    # Reconstruct IR with parsed product_def (struct is immutable)
+    ir = ExecutionGraphIR(
+        ir.nodes,
+        ir.element_to_zone,
+        ir.zone_to_element,
+        ir.downstream_conns,
+        ir.spatial_positions,
+        ir.spatial_dimensions,
+        product_def
+    )
 
     # 4. Check for blocking compilation errors
     if has_errors(all_diagnostics)
