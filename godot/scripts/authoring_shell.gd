@@ -29,6 +29,7 @@ signal pause_requested
 signal step_requested(duration: float, unit: String)
 signal reset_requested
 signal speed_changed(speed: float)
+signal command_requested(msg: Dictionary)
 
 const BG := Color("#0b1018")
 const PANEL := Color("#121b27")
