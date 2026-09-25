@@ -41,7 +41,7 @@ func _ready() -> void:
 func setup(doc_store: DocumentStore) -> void:
 	_doc_store = doc_store
 	if _doc_store != null:
-		_doc_store.document_loaded.connect(func(): rebuild(_last_entities))
+		_doc_store.document_loaded.connect(func(_doc): rebuild(_last_entities))
 		_doc_store.document_modified.connect(func(): rebuild(_last_entities))
 	rebuild([])
 
