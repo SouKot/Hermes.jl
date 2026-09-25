@@ -77,7 +77,7 @@ var _btn_template: Button
 # Left Dock
 var _catalog_container: VBoxContainer
 var _tree_container: VBoxContainer
-var _outliner: SimVizAuthoringOutliner = null  # populated in _build_left_dock
+var _outliner: AuthoringOutliner = null  # populated in _build_left_dock
 
 # Right Dock
 var _inspector_panel: Inspector
