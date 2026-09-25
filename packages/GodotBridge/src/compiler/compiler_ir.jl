@@ -95,6 +95,23 @@ struct IRHybridGateNode <: AbstractIRNode
 end
 
 """
+    ProductDefinition
+
+Visual and geometric description of the discrete product entity rendered in Godot.
+Carries mesh type, RGB color, and physical bounding-box dimensions (metres).
+"""
+struct ProductDefinition
+    name::String
+    width::Float64
+    height::Float64
+    depth::Float64
+    color::NTuple{3, Float64}
+    mesh_type::Symbol
+end
+
+ProductDefinition() = ProductDefinition("Product", 0.4, 0.4, 0.4, (0.3, 0.75, 1.0), :box)
+
+"""
     ExecutionGraphIR
 
 Normalized intermediate representation of an authored simulation model.
@@ -107,6 +124,7 @@ struct ExecutionGraphIR
     downstream_conns::Dict{String, Vector{Tuple{String, String, String, String}}}
     spatial_positions::Dict{String, Tuple{Float64, Float64, Float64}}
     spatial_dimensions::Dict{String, Tuple{Float64, Float64, Float64}}
+    product_def::ProductDefinition
 end
 
 function ExecutionGraphIR()
@@ -116,6 +134,7 @@ function ExecutionGraphIR()
         Dict{Int, String}(),
         Dict{String, Vector{Tuple{String, String, String, String}}}(),
         Dict{String, Tuple{Float64, Float64, Float64}}(),
-        Dict{String, Tuple{Float64, Float64, Float64}}()
+        Dict{String, Tuple{Float64, Float64, Float64}}(),
+        ProductDefinition()
     )
 end

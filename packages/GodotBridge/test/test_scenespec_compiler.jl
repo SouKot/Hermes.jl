@@ -161,3 +161,32 @@ using Random
 
 end
 
+# --- Test: ProductDefinition round-trip ---
+begin
+    using JSON
+    println("[TEST] ProductDefinition round-trip...")
+    # Build a scene spec JSON string with a product definition
+    json_with_product = """
+    {
+      "version": "1.0",
+      "elements": [
+        {"id": "src1", "kind": "source",
+         "properties": {"arrival_rate": 1.0, "distribution": "exponential"},
+         "transform": {"position": [0,0,0], "dimensions": [2,2,1]}},
+        {"id": "snk1", "kind": "sink",
+         "properties": {},
+         "transform": {"position": [5,0,0], "dimensions": [2,2,1]}}
+      ],
+      "connections": [{"id":"c1","source_element":"src1","source_port":"out","target_element":"snk1","target_port":"in"}],
+      "product": {"mesh_type": "pallet", "color": [1.0, 0.8, 0.0], "width": 0.6, "height": 0.5, "depth": 0.3}
+    }
+    """
+    ir_res = GodotBridge.compile_scenespec(JSON.parse(json_with_product))
+    ir_prod = ir_res.execution_ir
+    @assert ir_prod !== nothing "Expected non-nothing execution_ir"
+    @assert ir_prod.product_def.mesh_type == :pallet "Expected :pallet, got $(ir_prod.product_def.mesh_type)"
+    @assert ir_prod.product_def.color[1] ≈ 1.0 "Expected color_r=1.0"
+    @assert ir_prod.product_def.color[2] ≈ 0.8 "Expected color_g=0.8"
+    @assert ir_prod.product_def.width ≈ 0.6 "Expected width=0.6"
+    println("  ✓ ProductDefinition round-trip OK")
+end

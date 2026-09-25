@@ -7,6 +7,18 @@
 using SimCore
 using SimDES
 
+function _entity_zone_kind(zid::String, source_map)::String
+    if haskey(source_map.by_zone, zid)
+        role = first(source_map.by_zone[zid]).role_in_zone
+        if role == :queue_buffer; return "queue"
+        elseif role == :server_workstation; return "server"
+        elseif role == :conveyor_bed; return "conveyor"
+        elseif role == :sink_drain; return "sink"
+        end
+    end
+    return "unknown"
+end
+
 """
     build_snapshot(instance::SimulationInstance; scene_id::String="active_scene", step_count::UInt64=UInt64(0)) -> DirectSnapshotPayload
 
@@ -282,7 +294,16 @@ function build_snapshot(
             "element_id" => elem_id,
             "zone_id" => zid,
             "priority" => agent.priority,
-            "in_service" => agent.service_start_time < Inf
+            "in_service" => agent.service_start_time < Inf,
+            "mesh_type" => String(ir.product_def.mesh_type),
+            "color_r"   => ir.product_def.color[1],
+            "color_g"   => ir.product_def.color[2],
+            "color_b"   => ir.product_def.color[3],
+            "prod_w"    => ir.product_def.width,
+            "prod_h"    => ir.product_def.height,
+            "prod_d"    => ir.product_def.depth,
+            "t_frac"    => prog_val,
+            "zone_kind" => _entity_zone_kind(string(zid), source_map)
         )
 
         push!(entities, DirectSnapshotEntity(

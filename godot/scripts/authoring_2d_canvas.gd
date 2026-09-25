@@ -891,13 +891,58 @@ func _on_agents_layer_draw() -> void:
 		var kind: String = str(agent.get("kind", "product"))
 		var is_product: bool = (kind == "product" or kind == "carton" or kind == "item")
 		var in_service: bool = false
+		var zone_kind: String = ""
+		var props: Dictionary = {}
 		if agent.has("properties") and agent.properties is Dictionary:
-			in_service = bool(agent.properties.get("in_service", false))
+			props = agent.properties
+			in_service = bool(props.get("in_service", false))
+			zone_kind = str(props.get("zone_kind", ""))
 
-		var r_body: float = float(agent.get("r_body", agent.get("radius", 0.35 if is_product else 0.20)))
-		var r_px: float = max(r_body * m_scale, 7.0 * zoom_level if is_product else 4.0)
+		# B-2/B-3: DES product entities — physical rect rendering ─────────────
+		if is_product:
+			# Product dimensions (sim-metres) clamped to pixel bounds
+			var prod_w_m: float = float(props.get("prod_w", 0.4))
+			var prod_h_m: float = float(props.get("prod_h", 0.4))
+			var w_px: float = clamp(prod_w_m * m_scale, 6.0, 20.0)
+			var h_px: float = clamp(prod_h_m * m_scale, 6.0, 20.0)
 
-		# State & Speed Color Palette
+			# Product color: snapshot → zone-state heuristic
+			var col: Color
+			if props.has("color_r"):
+				col = Color(float(props.get("color_r", 0.3)),
+							float(props.get("color_g", 0.75)),
+							float(props.get("color_b", 1.0)), 1.0)
+			elif in_service:
+				col = Color("2ecc71")   # emerald — in service
+			elif zone_kind == "queue":
+				col = Color("00d2ff")   # cyan — waiting
+			else:
+				col = Color("f39c12")   # amber — conveyor / transit
+
+			# Trajectory ribbon
+			if show_trajectories and not aid.is_empty() and _agent_trajectories.has(aid):
+				var t_pts: Array = _agent_trajectories[aid]
+				if t_pts.size() > 1:
+					var poly: PackedVector2Array = []
+					for pt in t_pts:
+						poly.append(pan_offset + Vector2(pt.x, pt.y) * m_scale)
+					_agents_layer.draw_polyline(poly, Color(col.r, col.g, col.b, 0.35), 1.5, true)
+
+			# B-3: conveyor entities already have their position lerped by
+			# telemetry_adapter (t_frac applied before emitting x/y). The
+			# smoothed-position system handles the in-frame lerp automatically.
+
+			_draw_product_entity(_agents_layer, canvas_pos, w_px, h_px, col, in_service, zone_kind)
+
+			if aid == selected_agent_id and not aid.is_empty():
+				var r_sel: float = max(w_px, h_px) * 0.5 + 3.0
+				_agents_layer.draw_arc(canvas_pos, r_sel, 0.0, TAU, 24, Color("00d2ff"), 2.0)
+			continue  # skip legacy crowd-sim path
+
+		# Legacy crowd-sim / ABM pedestrian rendering ─────────────────────────
+		var r_body: float = float(agent.get("r_body", agent.get("radius", 0.20)))
+		var r_px: float = max(r_body * m_scale, 4.0)
+
 		var vel = agent.get("velocity", [0.0, 0.0])
 		var vx: float = 0.0
 		var vy: float = 0.0
@@ -914,23 +959,14 @@ func _on_agents_layer_draw() -> void:
 		var speed: float = sqrt(vx * vx + vy * vy)
 		var state: String = str(agent.get("state", "walking"))
 
-		var col: Color = Color("#2ecc71") # green
-		if is_product:
-			if in_service:
-				col = Color("#2ecc71") # active service emerald
-			elif state == "queuing" or (agent.has("current_location") and "q" in str(agent.current_location)):
-				col = Color("#00d2ff") # queue waiting bright cyan
-			else:
-				col = Color("#f39c12") # conveyor transit amber
-		else:
-			if state == "queuing":
-				col = Color("#3498db") # blue
-			elif speed < 0.35:
-				col = Color("#e74c3c") # blocked red
-			elif speed < 1.0:
-				col = Color("#f1c40f") # slow amber
+		var col_ped: Color = Color("2ecc71")
+		if state == "queuing":
+			col_ped = Color("3498db")
+		elif speed < 0.35:
+			col_ped = Color("e74c3c")
+		elif speed < 1.0:
+			col_ped = Color("f1c40f")
 
-		# 1. Trajectory Ribbon
 		if show_trajectories:
 			var t_points: PackedVector2Array = []
 			if agent.has("trajectory") and agent["trajectory"] is Array and agent["trajectory"].size() > 1:
@@ -943,35 +979,57 @@ func _on_agents_layer_draw() -> void:
 				for pt in _agent_trajectories[aid]:
 					t_points.append(pan_offset + pt * m_scale)
 			if t_points.size() > 1:
-				var trail_col := Color(col.r, col.g, col.b, 0.45)
-				_agents_layer.draw_polyline(t_points, trail_col, 2.0, true)
+				_agents_layer.draw_polyline(t_points, Color(col_ped.r, col_ped.g, col_ped.b, 0.45), 2.0, true)
 
-		# 2. Physical Body Disc / Rounded Product Carton
-		if is_product:
-			# Render product as a distinct carton box/disc with shadow
-			_agents_layer.draw_circle(canvas_pos + Vector2(1, 1), r_px + 1.0, Color(0, 0, 0, 0.4))
-			_agents_layer.draw_circle(canvas_pos, r_px, col)
-			_agents_layer.draw_arc(canvas_pos, r_px, 0, TAU, 16, Color(0.05, 0.08, 0.12, 0.95), 1.8)
-			_agents_layer.draw_circle(canvas_pos, r_px * 0.45, Color(1.0, 1.0, 1.0, 0.85))
-		else:
-			_agents_layer.draw_circle(canvas_pos, r_px, col)
-			_agents_layer.draw_arc(canvas_pos, r_px, 0, TAU, 16, Color(0.05, 0.08, 0.12, 0.85), 1.2)
+		_agents_layer.draw_circle(canvas_pos, r_px, col_ped)
+		_agents_layer.draw_arc(canvas_pos, r_px, 0, TAU, 16, Color(0.05, 0.08, 0.12, 0.85), 1.2)
 
-		# 3. Directional Heading Chevron
 		if speed > 0.05:
 			var heading := Vector2(vx, vy).normalized()
 			var tip := canvas_pos + heading * (r_px * 0.85)
 			var left := canvas_pos - heading * (r_px * 0.4) + Vector2(-heading.y, heading.x) * (r_px * 0.5)
 			var right := canvas_pos - heading * (r_px * 0.4) - Vector2(-heading.y, heading.x) * (r_px * 0.5)
-			var chevron_pts: PackedVector2Array = [tip, left, right]
-			_agents_layer.draw_colored_polygon(chevron_pts, Color(0.05, 0.08, 0.12, 0.9))
-		elif not is_product:
-			# Stationary concentric ring
+			_agents_layer.draw_colored_polygon(PackedVector2Array([tip, left, right]), Color(0.05, 0.08, 0.12, 0.9))
+		else:
 			_agents_layer.draw_circle(canvas_pos, r_px * 0.4, Color(0.05, 0.08, 0.12, 0.7))
 
-		# 4. Selected Agent Highlight Ring
 		if aid == selected_agent_id and not aid.is_empty():
-			_agents_layer.draw_arc(canvas_pos, r_px + 3.0, 0, TAU, 24, Color("#00d2ff"), 2.0)
+			_agents_layer.draw_arc(canvas_pos, r_px + 3.0, 0, TAU, 24, Color("00d2ff"), 2.0)
+
+## B-2: Physical product entity renderer.
+## Draws a colored carton rectangle at [pos] (canvas space).
+## w_px / h_px are final pixel sizes already clamped by the caller.
+## zone_kind: "queue" | "server" | "conveyor" | ""
+func _draw_product_entity(
+		layer: CanvasItem,
+		pos: Vector2,
+		w_px: float,
+		h_px: float,
+		col: Color,
+		in_service: bool,
+		zone_kind: String
+) -> void:
+	var half_w := w_px * 0.5
+	var half_h := h_px * 0.5
+	var rect := Rect2(pos - Vector2(half_w, half_h), Vector2(w_px, h_px))
+
+	# Drop-shadow (1 px offset, semi-transparent)
+	layer.draw_rect(Rect2(rect.position + Vector2(1, 1), rect.size), Color(0, 0, 0, 0.35), true)
+
+	# Filled body
+	layer.draw_rect(rect, col, true)
+
+	# Top-edge highlight for 3-D carton depth
+	layer.draw_rect(Rect2(rect.position, Vector2(rect.size.x, 2.0)), Color(1.0, 1.0, 1.0, 0.25), true)
+
+	# Outline stroke
+	layer.draw_rect(rect, Color(0.05, 0.08, 0.12, 0.9), false, 1.0)
+
+	# Active-service animated glow ring (oscillates at ~1 Hz)
+	if in_service or zone_kind == "server":
+		var ring_alpha: float = 0.5 + 0.5 * sin(Time.get_ticks_msec() * 0.001 * TAU)
+		var r_glow: float = max(half_w, half_h) + 3.0
+		layer.draw_arc(pos, r_glow, 0.0, TAU, 20, Color(0.18, 0.95, 0.47, ring_alpha), 1.8)
 
 func _on_wires_layer_draw() -> void:
 	if _wires_layer == null:

@@ -20,6 +20,7 @@ const UnsavedChangesDialog := preload("res://scripts/authoring_unsaved_changes_d
 const SceneDiff := preload("res://scripts/scenespec_diff.gd")
 const SceneCodec := preload("res://scripts/scenespec_codec.gd")
 const PlotStudio := preload("res://scripts/authoring_plot_studio.gd")
+const AuthoringOutliner := preload("res://scripts/authoring_outliner.gd")
 
 enum ViewMode { VIEW_2D, VIEW_3D }
 
@@ -76,6 +77,7 @@ var _btn_template: Button
 # Left Dock
 var _catalog_container: VBoxContainer
 var _tree_container: VBoxContainer
+var _outliner: SimVizAuthoringOutliner = null  # populated in _build_left_dock
 
 # Right Dock
 var _inspector_panel: Inspector
@@ -207,6 +209,8 @@ func _build_ui() -> void:
 	root.add_child(_outer_split)
 
 	_outer_split.add_child(_build_left_dock())
+	if _outliner != null:
+		_outliner.setup(doc_store)
 
 	_inner_split = HSplitContainer.new()
 	_inner_split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -566,7 +570,7 @@ func _build_breadcrumb_bar() -> Control:
 
 func _build_left_dock() -> Control:
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size.x = 38 # ~1cm minimum collapsible width
+	panel.custom_minimum_size.x = 38
 	panel.clip_contents = true
 	var style := StyleBoxFlat.new()
 	style.bg_color = PANEL
@@ -575,26 +579,77 @@ func _build_left_dock() -> Control:
 	panel.add_theme_stylebox_override("panel", style)
 
 	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 8)
+	vbox.add_theme_constant_override("separation", 6)
 	panel.add_child(vbox)
 
-	var cat_title := Label.new()
-	cat_title.text = "COMPONENT CATALOG"
-	cat_title.add_theme_font_size_override("font_size", 12)
-	cat_title.add_theme_color_override("font_color", TEXT)
-	vbox.add_child(cat_title)
+	# ── Tab pill switcher: Catalog | Outliner ──────────────────────────────
+	var pill_hbox := HBoxContainer.new()
+	pill_hbox.add_theme_constant_override("separation", 2)
+	vbox.add_child(pill_hbox)
+
+	var btn_catalog := Button.new()
+	btn_catalog.text = "🗂 Catalog"
+	btn_catalog.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	btn_catalog.toggle_mode = true
+	btn_catalog.button_pressed = true
+	btn_catalog.add_theme_font_size_override("font_size", 11)
+	pill_hbox.add_child(btn_catalog)
+
+	var btn_outliner := Button.new()
+	btn_outliner.text = "🌳 Outliner"
+	btn_outliner.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	btn_outliner.toggle_mode = true
+	btn_outliner.button_pressed = false
+	btn_outliner.add_theme_font_size_override("font_size", 11)
+	pill_hbox.add_child(btn_outliner)
+
+	# ── Catalog container ─────────────────────────────────────────────────
+	var catalog_wrap := VBoxContainer.new()
+	catalog_wrap.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vbox.add_child(catalog_wrap)
 
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	vbox.add_child(scroll)
+	catalog_wrap.add_child(scroll)
 
 	_catalog_container = VBoxContainer.new()
 	_catalog_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_catalog_container.add_theme_constant_override("separation", 4)
 	scroll.add_child(_catalog_container)
 
+	# ── Outliner container ────────────────────────────────────────────────
+	_outliner = AuthoringOutliner.new()
+	_outliner.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_outliner.visible = false
+	vbox.add_child(_outliner)
+
+	# Wire up outliner click → canvas selection
+	_outliner.element_clicked.connect(func(eid: String):
+		if doc_store != null:
+			doc_store.set_selected_elements([eid])
+	)
+	_outliner.entity_selected.connect(func(_eid: String):
+		# Pass entity selection to floating inspector if available
+		pass
+	)
+
+	# ── Tab toggle logic ───────────────────────────────────────────────────
+	btn_catalog.toggled.connect(func(on: bool):
+		if on:
+			catalog_wrap.visible = true
+			_outliner.visible = false
+			btn_outliner.button_pressed = false
+	)
+	btn_outliner.toggled.connect(func(on: bool):
+		if on:
+			catalog_wrap.visible = false
+			_outliner.visible = true
+			btn_catalog.button_pressed = false
+	)
+
 	return panel
+
 
 func _build_right_dock() -> Control:
 	var panel := PanelContainer.new()
@@ -784,6 +839,11 @@ func update_simulation_telemetry(state: Dictionary) -> void:
 		_canvas_2d.update_element_telemetry(elems)
 	if _plot_studio != null and _plot_studio.has_method("feed_telemetry"):
 		_plot_studio.feed_telemetry(sim_time, elems, abm if abm is Dictionary else {})
+	if _outliner != null and is_instance_valid(_outliner) and _outliner.visible:
+		var entities: Array = []
+		if abm is Dictionary:
+			entities = abm.get("entities", [])
+		_outliner.feed_telemetry(elems, entities)
 
 func switch_view(mode: ViewMode) -> void:
 	current_view = mode
