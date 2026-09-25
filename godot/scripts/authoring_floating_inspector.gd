@@ -12,6 +12,7 @@ signal closed
 signal duplicate_requested(elem_id: String)
 signal delete_requested(elem_id: String)
 signal open_rule_builder_requested(conn_id: String)
+signal hook_apply_requested(msg: Dictionary)
 
 const BG := Color("#0b121c")
 const PANEL := Color("#121b27")
@@ -55,6 +56,11 @@ var _spin_wid: SpinBox
 var _spin_hgt: SpinBox
 var _spin_zs: SpinBox
 var _spin_ze: SpinBox
+const HOOK_EVENTS := ["on_entry", "on_service_start", "on_service_complete", "on_exit"]
+var _hook_editors: Array = []
+var _hook_enables: Array = []
+var _hook_error_label: Label = null
+
 
 func _init(p_store: DocumentStore = null, p_catalog: Catalog = null) -> void:
 	doc_store = p_store
@@ -163,7 +169,8 @@ func _build_base_ui() -> void:
 		{"name": "⚙ Process & DES", "idx": 0},
 		{"name": "📐 Spatial / CAD", "idx": 1},
 		{"name": "🔌 Ports", "idx": 2},
-		{"name": "⚡ Reliability & Rules", "idx": 3}
+		{"name": "⚡ Reliability & Rules", "idx": 3},
+		{"name": "🔗 Hooks", "idx": 4}
 	]
 
 	for t_def in tab_defs:
@@ -311,6 +318,7 @@ func refresh() -> void:
 		1: _render_spatial_tab(elem)
 		2: _render_ports_tab(elem)
 		3: _render_rules_tab(elem)
+		4: _render_hooks_tab(elem)
 
 # ============================================================================
 # Tab 0: Process & DES Parameters
@@ -1170,3 +1178,82 @@ func _on_selection_changed(sel_id: String, sel_type: String) -> void:
 	if visible and sel_type == "element" and not sel_id.is_empty() and sel_id != current_elem_id:
 		current_elem_id = sel_id
 		call_deferred("refresh")
+
+# ============================================================================
+# Tab 4: Hooks
+# ============================================================================
+func _render_hooks_tab(elem: SceneTypes.SceneElement) -> void:
+	_hook_editors.clear()
+	_hook_enables.clear()
+	
+	var info_lbl := Label.new()
+	info_lbl.text = "EVENT HOOKS"
+	info_lbl.add_theme_font_size_override("font_size", 10)
+	info_lbl.add_theme_color_override("font_color", MUTED)
+	_pages_container.add_child(info_lbl)
+	_pages_container.add_child(HSeparator.new())
+	
+	var hooks_dict = elem.properties.get("hooks", {})
+	
+	for i in range(HOOK_EVENTS.size()):
+		var event_name = HOOK_EVENTS[i]
+		var section := VBoxContainer.new()
+		section.add_theme_constant_override("separation", 4)
+		
+		var hdr := HBoxContainer.new()
+		var lbl := Label.new()
+		lbl.text = event_name + ":"
+		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		lbl.add_theme_font_size_override("font_size", 11)
+		hdr.add_child(lbl)
+		
+		var chk := CheckBox.new()
+		chk.text = "Enable"
+		var existing_code = hooks_dict.get(event_name, "")
+		chk.button_pressed = existing_code.length() > 0
+		hdr.add_child(chk)
+		_hook_enables.append(chk)
+		section.add_child(hdr)
+		
+		var code_edit := CodeEdit.new()
+		code_edit.custom_minimum_size.y = 80
+		code_edit.text = existing_code
+		code_edit.add_theme_font_size_override("font_size", 10)
+		_hook_editors.append(code_edit)
+		section.add_child(code_edit)
+		
+		var apply_btn := Button.new()
+		apply_btn.text = "Apply Hook"
+		apply_btn.add_theme_font_size_override("font_size", 10)
+		var capture_idx = i
+		apply_btn.pressed.connect(func(): _on_apply_hook(capture_idx))
+		section.add_child(apply_btn)
+		
+		_pages_container.add_child(section)
+		_pages_container.add_child(HSeparator.new())
+		
+	_hook_error_label = Label.new()
+	_hook_error_label.add_theme_color_override("font_color", DANGER)
+	_hook_error_label.add_theme_font_size_override("font_size", 10)
+	_hook_error_label.visible = false
+	_pages_container.add_child(_hook_error_label)
+
+func _on_apply_hook(event_idx: int) -> void:
+	var event_name: String = HOOK_EVENTS[event_idx]
+	var enabled: bool = _hook_enables[event_idx].button_pressed
+	var code: String = _hook_editors[event_idx].text if enabled else ""
+	var msg := {
+		"type": "set_hook",
+		"element_id": current_elem_id,
+		"event": event_name,
+		"code": code
+	}
+	# Update local state too so it persists
+	var elem = doc_store.get_element(current_elem_id)
+	if elem != null:
+		var hooks_dict = elem.properties.get("hooks", {})
+		if not (hooks_dict is Dictionary): hooks_dict = {}
+		hooks_dict[event_name] = code
+		doc_store.set_element_property(current_elem_id, "hooks", hooks_dict)
+		
+	hook_apply_requested.emit(msg)

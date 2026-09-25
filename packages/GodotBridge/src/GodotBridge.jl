@@ -79,9 +79,11 @@ include("server/websocket_server.jl")
 include("compiler/compiler_ir.jl")
 include("compiler/source_map_diagnostics.jl")
 include("compiler/distribution_parser.jl")
+include("compiler/logic_catalog.jl")
 include("compiler/des_compiler.jl")
 include("compiler/crowd_compiler.jl")
 include("compiler/scenespec_compiler.jl")
+include("runtime/zone_hooks.jl")
 include("runtime/simulation_instance.jl")
 include("runtime/runtime_manager.jl")
 include("runtime/telemetry_adapter.jl")
@@ -179,6 +181,7 @@ export RuntimeManager, stage_and_activate!, play!, pause!, step!
 export build_snapshot, start_live_server, create_default_scene
 export AnalyticalResult, ValidationReport, solve_mm1, solve_mmc, solve_mg1, solve_jackson_tandem, validate_benchmark, evaluate_littles_law
 export SimulationRunSummary, generate_run_summary, format_ascii_report, export_summary_csv
+export ZoneHooks, call_hook!, parse_hook_expr
 
 # Version info
 const VERSION = v"0.1.0"

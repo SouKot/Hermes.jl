@@ -290,6 +290,9 @@ func _build_ui() -> void:
 	_floating_inspector.open_rule_builder_requested.connect(func(cid: String):
 		_rule_builder.open_for_connection(cid)
 	)
+	_floating_inspector.hook_apply_requested.connect(func(msg: Dictionary):
+		command_requested.emit(msg)
+	)
 	add_child(_floating_inspector)
 
 	# 6. Floating / Modal ABM & Hybrid Configuration Dialog

@@ -28,6 +28,7 @@ mutable struct SimulationInstance
     interrupt_requested::Threads.Atomic{Bool}
     clock_speed::Float64
     created_at::Float64
+    zone_hooks::Dict{String, ZoneHooks}
 end
 
 function SimulationInstance(
@@ -53,7 +54,8 @@ function SimulationInstance(
         Threads.Atomic{Bool}(true),
         Threads.Atomic{Bool}(false),
         clock_speed,
-        time()
+        time(),
+        Dict{String, ZoneHooks}()
     )
 end
 

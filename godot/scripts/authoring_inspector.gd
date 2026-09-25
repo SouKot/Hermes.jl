@@ -6,6 +6,7 @@ extends ScrollContainer
 const SceneTypes := preload("res://scripts/scenespec_types.gd")
 const DocumentStore := preload("res://scripts/authoring_document_store.gd")
 const Catalog := preload("res://scripts/authoring_catalog.gd")
+const RulePanel := preload("res://scripts/authoring_rule_panel.gd")
 
 signal duplicate_requested(element_id: String)
 signal delete_requested(element_id: String)
@@ -41,6 +42,7 @@ var _spin_rot: SpinBox = null
 var _name_input: LineEdit = null
 var _is_refreshing: bool = false
 var _refresh_pending: bool = false
+var _rule_panel: RulePanel = null
 
 func _init(p_store: DocumentStore = null, p_catalog: Catalog = null) -> void:
 	doc_store = p_store
@@ -116,6 +118,7 @@ func _do_refresh() -> void:
 
 	_spin_rot = null
 	_name_input = null
+	_rule_panel = null
 
 	if doc_store == null or doc_store.active_document == null:
 		_render_empty_state("No active document.")
@@ -399,6 +402,14 @@ func _render_single_element(elem_id: String) -> void:
 
 		_container.add_child(HSeparator.new())
 
+
+	if elem.kind in ["queue", "server"]:
+		if _rule_panel == null:
+			_rule_panel = RulePanel.new()
+			_rule_panel.rule_changed.connect(_on_rule_changed)
+			_container.add_child(_rule_panel)
+		_rule_panel.configure(elem.id, elem.kind, elem.properties)
+		_rule_panel.visible = true
 	# 3. Position Coordinates (Compact X, Y, Z glance)
 	var pos_lbl := Label.new()
 	pos_lbl.text = "POSITION (X, Y, Z)"
@@ -835,6 +846,14 @@ func _render_connection(conn_id: String) -> void:
 		no_cond.add_theme_color_override("font_color", MUTED)
 		_container.add_child(no_cond)
 
+
+	if _rule_panel == null:
+		_rule_panel = RulePanel.new()
+		_rule_panel.rule_changed.connect(_on_rule_changed)
+		_container.add_child(_rule_panel)
+	var cond_dict = target_conn.condition if target_conn.condition is Dictionary else {}
+	_rule_panel.configure(target_conn.id, "connection", cond_dict)
+	_rule_panel.visible = true
 	var rule_btn := Button.new()
 	rule_btn.text = "Edit Condition / Rule..."
 	rule_btn.add_theme_font_size_override("font_size", 10)
@@ -1522,3 +1541,21 @@ func _render_subgraph(sub_id: String) -> void:
 				r.add_child(v_edit)
 				ov_vbox.add_child(r)
 		_container.add_child(ov_vbox)
+
+func _on_rule_changed(element_id: String, property_path: String, value) -> void:
+	if doc_store == null: return
+	var elem = doc_store.get_element(element_id)
+	if elem != null:
+		doc_store.set_element_property(element_id, property_path, value)
+		return
+	
+	if doc_store.active_document != null:
+		var target_conn = null
+		for c in doc_store.active_document.connections:
+			if c.id == element_id:
+				target_conn = c
+				break
+		if target_conn != null:
+			var cond = target_conn.condition if target_conn.condition is Dictionary else {}
+			cond[property_path] = value
+			doc_store.update_connection_condition(element_id, cond)

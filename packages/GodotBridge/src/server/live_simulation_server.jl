@@ -16,6 +16,12 @@ import MsgPack
 
 const LIVE_SERVER_PORT = try parse(Int, get(ENV, "SIMVIZ_PORT", "9107")) catch; 9107 end
 
+const VALID_HOOK_EVENTS = Dict(
+    "on_entry"            => :on_entry,
+    "on_service_start"    => :on_service_start,
+    "on_service_complete" => :on_service_complete,
+    "on_exit"             => :on_exit,
+)
 """
     create_default_scene() -> Dict{String, Any}
 
@@ -192,6 +198,30 @@ function start_live_server(; host::String="127.0.0.1", port::Int=LIVE_SERVER_POR
                 broadcast_current_snapshot(manager.active_instance.world.time)
             end
             return create_ack(message.envelope.message_id, status="accepted", details="Clock speed updated to $spd")
+
+        elseif cmd_type == "set_hook" || action == "set_hook"
+            element_id = get(cmd_dict, "element_id", "")
+            event_name = get(cmd_dict, "event", "")
+            code_src   = get(cmd_dict, "code",  "")
+
+            if isempty(element_id) || isempty(event_name)
+                return create_ack(message.envelope.message_id, status="rejected", details="set_hook requires element_id and event")
+            elseif !haskey(VALID_HOOK_EVENTS, event_name)
+                return create_ack(message.envelope.message_id, status="rejected", details="Unknown hook event '$(event_name)'; valid: $(join(keys(VALID_HOOK_EVENTS), ", "))")
+            elseif manager.active_instance === nothing
+                return create_ack(message.envelope.message_id, status="rejected", details="No active simulation instance")
+            else
+                try
+                    fn = isempty(code_src) ? nothing : parse_hook_expr(code_src)
+                    hooks = get!(manager.active_instance.zone_hooks, element_id, ZoneHooks())
+                    field = VALID_HOOK_EVENTS[event_name]
+                    setfield!(hooks, field, fn)
+                    manager.active_instance.zone_hooks[element_id] = hooks
+                    return create_ack(message.envelope.message_id, status="accepted", details="Hook set for $(element_id)")
+                catch e
+                    return create_ack(message.envelope.message_id, status="rejected", details="Hook compile error: $(sprint(showerror, e))")
+                end
+            end
         end
 
         return create_ack(message.envelope.message_id, status="ignored", details="Unknown command $cmd_type")

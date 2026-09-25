@@ -190,3 +190,32 @@ begin
     @assert ir_prod.product_def.width ≈ 0.6 "Expected width=0.6"
     println("  ✓ ProductDefinition round-trip OK")
 end
+
+# --- Test: Logic Catalog discipline parsing ---
+begin
+    println("[TEST] Logic Catalog: discipline parsing...")
+    @assert GodotBridge.parse_discipline("FIFO") isa GodotBridge.FIFODiscipline
+    @assert GodotBridge.parse_discipline(:priority) isa GodotBridge.PriorityHOLDiscipline
+    @assert GodotBridge.parse_discipline("edd") isa GodotBridge.EarliestDueDateDiscipline
+    @assert GodotBridge.parse_discipline("lifo") isa GodotBridge.LIFODiscipline
+    @assert GodotBridge.parse_discipline("spt") isa GodotBridge.SPTDiscipline
+    println("  ✓ discipline parsing OK")
+end
+
+# --- Test: ZoneHooks parse_hook_expr ---
+begin
+    println("[TEST] ZoneHooks: parse_hook_expr...")
+    fn = GodotBridge.parse_hook_expr("nothing")
+    @assert fn isa Function
+    fn(1, "zone1", 0.5)  # must not throw
+    println("  ✓ parse_hook_expr OK")
+end
+
+# --- Test: ZoneHooks call_hook! auto-disable on error ---
+begin
+    println("[TEST] ZoneHooks: auto-disable broken hook...")
+    hooks = GodotBridge.ZoneHooks(on_entry = (e, z, t) -> error("intentional"))
+    GodotBridge.call_hook!(hooks, :on_entry, 1, "z1", 0.0)  # must not throw
+    @assert hooks.on_entry === nothing  # auto-disabled
+    println("  ✓ auto-disable OK")
+end

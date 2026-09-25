@@ -82,6 +82,10 @@ func _build_authoring_shell() -> void:
     authoring_shell.step_requested.connect(_on_step)
     authoring_shell.reset_requested.connect(_on_reset)
     authoring_shell.speed_changed.connect(_on_speed_changed)
+    authoring_shell.command_requested.connect(func(msg: Dictionary):
+        if connection_manager != null:
+            connection_manager.send_message(msg)
+    )
     if authoring_shell.doc_store != null:
         authoring_shell.doc_store.document_modified.connect(func():
             is_sim_compiled = false

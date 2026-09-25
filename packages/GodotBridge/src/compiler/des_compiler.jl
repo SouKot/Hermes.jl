@@ -224,7 +224,8 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
 
             # Station capacity = queue capacity + server count
             total_capacity = q_node.capacity + srv_node.num_servers
-            discipline = q_node.discipline == :priority ? PRIORITY_HOL : FIFO
+            rule = parse_discipline(q_node.discipline)
+            discipline = to_simdes_discipline(rule)
             srv_dist = srv_node.service_dist_obj isa UnivariateDistribution ?
                        ServiceDist(srv_node.service_dist_obj) : ServiceDist(Dirac(1.0))
             arrival = get(zone_arrivals, zid, NoArrival())
@@ -313,7 +314,8 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
             q_node = node
             arrival = get(zone_arrivals, zid, NoArrival())
             routing = resolve_routing(elem_id)
-            discipline = q_node.discipline == :priority ? PRIORITY_HOL : FIFO
+            rule = parse_discipline(q_node.discipline)
+            discipline = to_simdes_discipline(rule)
 
             cfg = ZoneConfig(
                 id = zid,
