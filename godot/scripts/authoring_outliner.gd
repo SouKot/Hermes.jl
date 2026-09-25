@@ -37,6 +37,12 @@ func _ready() -> void:
 	_tree.item_selected.connect(_on_item_selected)
 	add_child(_tree)
 
+func _notification(what: int) -> void:
+	# When the Outliner tab becomes visible, immediately rebuild from cached data
+	if what == NOTIFICATION_VISIBILITY_CHANGED and visible:
+		rebuild(_last_entities)
+
+
 func setup(doc_store: DocumentStore) -> void:
 	_doc_store = doc_store
 	if _doc_store != null:
@@ -47,7 +53,9 @@ func setup(doc_store: DocumentStore) -> void:
 func feed_telemetry(elements_by_id: Dictionary, entities: Array) -> void:
 	_last_snapshot = elements_by_id
 	_last_entities = entities
-	rebuild(entities)
+	# Only do the expensive Tree rebuild when the outliner tab is actually visible
+	if visible:
+		rebuild(entities)
 
 func rebuild(entities: Array) -> void:
 	if _tree == null:
@@ -73,7 +81,14 @@ func rebuild(entities: Array) -> void:
 	var ents_by_elem: Dictionary = {}  # element_id -> Array[dict]
 	for ent in entities:
 		if ent is Dictionary:
-			var eid: String = str(ent.get("element_id", ent.get("element", "")))
+			# Julia sends element ref as "current_location" (top-level) or
+			# "element_id" inside properties (added by telemetry_adapter B-1c)
+			var eid: String = str(ent.get("element_id",
+				ent.get("current_location",
+				ent.get("element", ""))))
+			# Also check properties dict if top-level key missing
+			if eid.is_empty() and ent.has("properties") and ent["properties"] is Dictionary:
+				eid = str(ent["properties"].get("element_id", ""))
 			if not eid.is_empty():
 				if not ents_by_elem.has(eid):
 					ents_by_elem[eid] = []

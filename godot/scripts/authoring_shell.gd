@@ -839,10 +839,13 @@ func update_simulation_telemetry(state: Dictionary) -> void:
 		_canvas_2d.update_element_telemetry(elems)
 	if _plot_studio != null and _plot_studio.has_method("feed_telemetry"):
 		_plot_studio.feed_telemetry(sim_time, elems, abm if abm is Dictionary else {})
-	if _outliner != null and is_instance_valid(_outliner) and _outliner.visible:
+	if _outliner != null and is_instance_valid(_outliner):
+		# Always collect entities; outliner skips Tree rebuild when not visible
 		var entities: Array = []
-		if abm is Dictionary:
-			entities = abm.get("entities", [])
+		if state.has("entities_by_id") and state["entities_by_id"] is Dictionary:
+			entities = state["entities_by_id"].values()
+		elif state.has("entities") and state["entities"] is Array:
+			entities = state["entities"]
 		_outliner.feed_telemetry(elems, entities)
 
 func switch_view(mode: ViewMode) -> void:
