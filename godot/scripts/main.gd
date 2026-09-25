@@ -43,7 +43,7 @@ var endpoint_text := "127.0.0.1:9107"
 var simulation_time := 0.0
 var running := false
 var is_sim_compiled := false
-var connection_manager: SimVizConnectionManager
+var connection_manager: ConnectionManager
 var state_store: RefCounted
 var pending_commands: Dictionary = {}
 var selected_kind := ""
@@ -603,7 +603,7 @@ func _send_command(command_type: String, command: Dictionary) -> void:
             "apply_at_time": null
         }
     }
-    var error_code := connection_manager.send_message(message)
+    var error_code: int = connection_manager.send_message(message)
     if error_code == OK:
         _last_command_status = command_type
         _update_status("command", command_type)
