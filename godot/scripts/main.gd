@@ -83,8 +83,19 @@ func _build_authoring_shell() -> void:
     authoring_shell.reset_requested.connect(_on_reset)
     authoring_shell.speed_changed.connect(_on_speed_changed)
     authoring_shell.command_requested.connect(func(msg: Dictionary):
-        if connection_manager != null:
-            connection_manager.send_message(msg)
+        if msg.has("envelope_version"):
+            if connection_manager != null:
+                connection_manager.send_message(msg)
+        else:
+            var cmd_type := str(msg.get("action", msg.get("type", "command")))
+            if cmd_type == "load_example":
+                running = false
+                is_sim_compiled = false
+                simulation_time = 0.0
+                if authoring_shell != null:
+                    authoring_shell.is_sim_running = false
+                    authoring_shell.update_sim_time(0.0)
+            _send_command(cmd_type, msg)
     )
     if authoring_shell.doc_store != null:
         authoring_shell.doc_store.document_modified.connect(func():

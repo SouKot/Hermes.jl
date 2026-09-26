@@ -5,6 +5,7 @@
 # arrival processes, and bi-directional source mapping records.
 
 using SimDES: ZoneConfig, ServiceDist, RoutingPolicy, ExitSystem, FixedRoute, ProbRoute
+using SimDES: ShortestQueueRoute, RoundRobinRoute, DynamicPolicyRoute
 using SimDES: ArrivalProcess, NoArrival, PoissonArrival, QueueDiscipline, FIFO, PRIORITY_HOL
 using SimDES: FailureModel, NoFailure, BernoulliFailure
 using SimDES: deterministic_service, exponential_service, erlang_service
@@ -16,18 +17,51 @@ using Distributions: UnivariateDistribution, Dirac, Exponential
 
 Custom callable arrival process wrapping an arbitrary sampler: `(rng::AbstractRNG) -> Float64`.
 Enables any authored distribution (Triangular, Normal, Erlang, Dirac, Uniform) to drive
-entity arrivals into SimDES without modifying SimDES core.
+entity arrivals into SimDES without modifying SimDES core, preserving source priority.
 """
 struct CustomArrivalProcess{F} <: ArrivalProcess
     sampler::F
+    priority::Int
+    last_scheduled_t::Base.RefValue{Float64}
 end
+CustomArrivalProcess(sampler::F, priority::Int=0) where {F} = CustomArrivalProcess{F}(sampler, priority, Ref(0.01))
 
 # Extend SimDES arrival scheduling for CustomArrivalProcess via multiple dispatch
 function SimDES._schedule_next_arrival!(world::SimCore.SimWorld, fel::SimDES.FutureEventList,
                                         rng::AbstractRNG, zone_id::Int,
                                         a::CustomArrivalProcess, t::Float64)
     Δt = max(0.0001, Float64(a.sampler(rng)))
-    SimDES.schedule!(fel, SimCore.EntityArrival(SimCore.new_entity_id!(world), zone_id, t + Δt), t + Δt)
+    t_next = t + Δt
+    a.last_scheduled_t[] = t_next
+    SimDES.schedule!(fel, SimCore.EntityArrival(SimCore.new_entity_id!(world), zone_id, t_next, a.priority, true), t_next)
+    return nothing
+end
+
+"""
+    CompositeArrivalProcess <: ArrivalProcess
+
+Superposes multiple independent `CustomArrivalProcess` streams feeding a single target zone
+(e.g., a high-priority VIP source and a standard source feeding the same dispatch queue).
+"""
+struct CompositeArrivalProcess <: ArrivalProcess
+    processes::Vector{CustomArrivalProcess}
+end
+
+function SimDES._schedule_next_arrival!(world::SimCore.SimWorld, fel::SimDES.FutureEventList,
+                                        rng::AbstractRNG, zone_id::Int,
+                                        a::CompositeArrivalProcess, t::Float64)
+    isempty(a.processes) && return nothing
+    # Find the sub-process whose scheduled arrival just fired at time `t`
+    best_idx = 1
+    best_diff = Inf
+    for (idx, proc) in enumerate(a.processes)
+        d = abs(proc.last_scheduled_t[] - t)
+        if d < best_diff
+            best_diff = d
+            best_idx = idx
+        end
+    end
+    SimDES._schedule_next_arrival!(world, fel, rng, zone_id, a.processes[best_idx], t)
     return nothing
 end
 
@@ -51,7 +85,7 @@ Result of lowering ExecutionGraphIR into DES runtime structures.
 struct DESCompilationArtifacts
     zone_configs::Dict{Int, ZoneConfig}
     source_map::SourceMap
-    initial_arrivals::Vector{Tuple{Int, Float64}} # (zone_id, t_arrival)
+    initial_arrivals::Vector{Tuple{Int, Float64, Int}} # (zone_id, t_arrival, priority)
     diagnostics::Vector{CompilerDiagnostic}
 end
 
@@ -65,7 +99,7 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
     diagnostics = CompilerDiagnostic[]
     zone_configs = Dict{Int, ZoneConfig}()
     source_map = SourceMap()
-    initial_arrivals = Tuple{Int, Float64}[]
+    initial_arrivals = Tuple{Int, Float64, Int}[]
 
     # 1. Topology analysis: classify connections and find Queue -> Server fusion candidates
     # downstream_conns[source_elem_id] = [(target_elem_id, from_port, to_port, conn_id), ...]
@@ -127,7 +161,7 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
 
     # 3. Determine arrival processes for nodes fed by IRSourceNodes
     zone_arrivals = Dict{Int, ArrivalProcess}()
-    zone_first_arrival = Dict{Int, Float64}()
+    zone_proc_lists = Dict{Int, Vector{CustomArrivalProcess}}()
 
     for (elem_id, node) in ir.nodes
         if node isa IRSourceNode
@@ -157,15 +191,18 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
                     continue
                 end
 
-                # Create arrival process
-                arr_proc = CustomArrivalProcess(node.arrival_sampler)
-                zone_arrivals[dest_zone] = arr_proc
-                # Seed first arrival immediately (0.01s) so the simulation has active flow on start
-                initial_t = 0.01
-                zone_first_arrival[dest_zone] = initial_t
-                push!(initial_arrivals, (dest_zone, initial_t))
+                plist = get!(zone_proc_lists, dest_zone, CustomArrivalProcess[])
+                stream_offset = length(plist) * 0.0001
+                initial_t = 0.01 + stream_offset
+                arr_proc = CustomArrivalProcess(node.arrival_sampler, node.priority, Ref(initial_t))
+                push!(plist, arr_proc)
+                push!(initial_arrivals, (dest_zone, initial_t, node.priority))
             end
         end
+    end
+
+    for (zid, plist) in zone_proc_lists
+        zone_arrivals[zid] = length(plist) == 1 ? plist[1] : CompositeArrivalProcess(plist)
     end
 
     # 4. Helper to resolve downstream routing for a given station
@@ -175,14 +212,31 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
             return ExitSystem()
         end
 
+        from_node = get(ir.nodes, from_elem_id, nothing)
+        r_rule = :fixed
+        r_weights = Dict{String, Float64}()
+        if from_node isa IRServerNode || from_node isa IRQueueNode || from_node isa IRConveyorNode
+            r_rule = from_node.routing_rule
+            r_weights = from_node.routing_weights
+        end
+        # If fused server has default :fixed rule, check if its paired queue specified a rule
+        if r_rule == :fixed && haskey(server_to_queue, from_elem_id)
+            q_node = get(ir.nodes, server_to_queue[from_elem_id], nothing)
+            if q_node isa IRQueueNode && q_node.routing_rule != :fixed
+                r_rule = q_node.routing_rule
+                r_weights = q_node.routing_weights
+            end
+        end
+
         valid_targets = Tuple{Union{Int, Nothing}, Float64}[]
         for (dest_id, _, _, _) in conns
             dest_node = get(ir.nodes, dest_id, nothing)
+            w = max(0.0, get(r_weights, dest_id, 1.0))
             if dest_node isa IRSinkNode
-                push!(valid_targets, (nothing, 1.0))
+                push!(valid_targets, (nothing, w))
             elseif haskey(element_to_zone, dest_id)
                 target_zid = element_to_zone[dest_id]
-                push!(valid_targets, (target_zid, 1.0))
+                push!(valid_targets, (target_zid, w))
             else
                 push!(diagnostics, CompilerDiagnostic(
                     "DES_UNKNOWN_DESTINATION",
@@ -200,10 +254,23 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
             dest, _ = first(valid_targets)
             return dest === nothing ? ExitSystem() : FixedRoute(dest)
         else
-            # Normalize split probabilities evenly
-            p = 1.0 / length(valid_targets)
-            choices = [(dest, p) for (dest, _) in valid_targets]
-            return ProbRoute(choices)
+            if r_rule in (:shortest_queue, :sq)
+                cands = Int[dest for (dest, _) in valid_targets if dest !== nothing]
+                return isempty(cands) ? ExitSystem() : ShortestQueueRoute(cands)
+            elseif r_rule in (:round_robin, :rr)
+                cands = Int[dest for (dest, _) in valid_targets if dest !== nothing]
+                return isempty(cands) ? ExitSystem() : RoundRobinRoute(cands)
+            else
+                total_w = sum(w for (_, w) in valid_targets)
+                if total_w <= 0.0
+                    p = 1.0 / length(valid_targets)
+                    choices = [(dest, p) for (dest, _) in valid_targets]
+                    return ProbRoute(choices)
+                else
+                    choices = [(dest, w / total_w) for (dest, w) in valid_targets]
+                    return ProbRoute(choices)
+                end
+            end
         end
     end
 

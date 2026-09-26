@@ -110,9 +110,11 @@ function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationRe
                 cap = 1
             end
             disc_str = lowercase(string(get(props, "discipline", "fifo")))
-            disc = disc_str == "priority" ? :priority : (disc_str == "lifo" ? :lifo : :fifo)
+            disc = disc_str in ("priority", "hol", "priority_hol") ? :priority : (disc_str == "lifo" ? :lifo : :fifo)
             init_occ = Int(get(props, "initial_occupancy", 0))
-            ir.nodes[elem_id] = IRQueueNode(elem_id, cap, disc, init_occ)
+            r_rule = Symbol(lowercase(string(get(props, "routing_rule", "fixed"))))
+            r_weights = _parse_routing_weights(get(props, "routing_weights", nothing))
+            ir.nodes[elem_id] = IRQueueNode(elem_id, cap, disc, init_occ, r_rule, r_weights)
 
         elseif kind == "server" || endswith(kind, "/server")
             num_srv = Int(get(props, "servers", 1))
@@ -127,7 +129,9 @@ function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationRe
             f_model = Symbol(lowercase(string(get(props, "failure_model", "none"))))
             mtbf_v = Float64(get(props, "mtbf", 3600.0))
             mttr_v = Float64(get(props, "mttr", 120.0))
-            ir.nodes[elem_id] = IRServerNode(elem_id, num_srv, dist_obj, sampler, f_model, mtbf_v, mttr_v)
+            r_rule = Symbol(lowercase(string(get(props, "routing_rule", "fixed"))))
+            r_weights = _parse_routing_weights(get(props, "routing_weights", nothing))
+            ir.nodes[elem_id] = IRServerNode(elem_id, num_srv, dist_obj, sampler, f_model, mtbf_v, mttr_v, r_rule, r_weights)
 
         elseif kind == "conveyor" || endswith(kind, "/conveyor")
             spd = max(0.01, Float64(get(props, "speed", 1.5)))
@@ -138,7 +142,9 @@ function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationRe
                 len = 2.0
             end
             transit_tau = len / spd
-            ir.nodes[elem_id] = IRConveyorNode(elem_id, len, spd, transit_tau, cap)
+            r_rule = Symbol(lowercase(string(get(props, "routing_rule", "fixed"))))
+            r_weights = _parse_routing_weights(get(props, "routing_weights", nothing))
+            ir.nodes[elem_id] = IRConveyorNode(elem_id, len, spd, transit_tau, cap, r_rule, r_weights)
 
         elseif kind == "sink" || endswith(kind, "/sink")
             rec_soj = Bool(get(props, "record_sojourn", true))
@@ -248,6 +254,8 @@ function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationRe
     for (_, cfg) in des_artifacts.zone_configs
         SimDES.build_world!(world, cfg)
     end
+    # Register synthetic zone 0 for end-to-end system sojourn W and per-priority stats (-100 - priority)
+    world.zone_stats[0] = SimCore.SimStats()
     for zs in values(world.zone_stats)
         zs.warmup_complete = true
     end
@@ -258,10 +266,22 @@ function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationRe
     end
 
     # 8. Seed initial events
-    for (zid, t_arr) in des_artifacts.initial_arrivals
+    for (zid, t_arr, prio) in des_artifacts.initial_arrivals
         ent_id = SimCore.new_entity_id!(world)
-        SimDES.schedule!(fel, SimCore.EntityArrival(ent_id, zid, t_arr), t_arr)
+        SimDES.schedule!(fel, SimCore.EntityArrival(ent_id, zid, t_arr, prio, true), t_arr)
     end
 
     return CompilationResult(true, world, fel, des_artifacts.zone_configs, des_artifacts.source_map, all_diagnostics, ir)
+end
+
+function _parse_routing_weights(raw)::Dict{String, Float64}
+    res = Dict{String, Float64}()
+    if raw isa AbstractDict
+        for (k, v) in raw
+            if v isa Real
+                res[string(k)] = Float64(v)
+            end
+        end
+    end
+    return res
 end

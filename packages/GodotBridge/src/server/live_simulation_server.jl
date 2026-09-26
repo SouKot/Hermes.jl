@@ -222,6 +222,25 @@ function start_live_server(; host::String="127.0.0.1", port::Int=LIVE_SERVER_POR
                     return create_ack(message.envelope.message_id, status="rejected", details="Hook compile error: $(sprint(showerror, e))")
                 end
             end
+
+        elseif cmd_type == "load_example" || action == "load_example"
+            ex_id = String(get(cmd_dict, "example_id", ""))
+            try
+                GodotBridge.pause!(manager)
+                ex_spec = haskey(cmd_dict, "scenespec") && cmd_dict["scenespec"] isa AbstractDict ?
+                          cmd_dict["scenespec"] : get_example_scenespec(ex_id)
+                default_spec = ex_spec
+                success, diags = stage_and_activate!(manager, ex_spec)
+                if success
+                    broadcast_current_snapshot(0.0)
+                    return create_ack(message.envelope.message_id, status="accepted", details="Loaded example '$ex_id'")
+                else
+                    diag_messages = join([d.message for d in diags], "; ")
+                    return create_ack(message.envelope.message_id, status="rejected", details="Example '$ex_id' failed to compile: $diag_messages")
+                end
+            catch e
+                return create_ack(message.envelope.message_id, status="rejected", details="Failed to load example '$ex_id': $(sprint(showerror, e))")
+            end
         end
 
         return create_ack(message.envelope.message_id, status="ignored", details="Unknown command $cmd_type")

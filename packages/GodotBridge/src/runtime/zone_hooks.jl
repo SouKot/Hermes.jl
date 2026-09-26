@@ -30,7 +30,7 @@ function call_hook!(hooks::ZoneHooks, field::Symbol, entity_id::Int, zone_id::St
     fn = getfield(hooks, field)
     fn === nothing && return
     try
-        fn(entity_id, zone_id, t)
+        Base.invokelatest(fn, entity_id, zone_id, t)
     catch e
         @warn "Hook :$(field) on zone $(zone_id) threw an exception — auto-disabling" exception=(e, catch_backtrace())
         setfield!(hooks, field, nothing)

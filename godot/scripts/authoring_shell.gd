@@ -21,6 +21,7 @@ const SceneDiff := preload("res://scripts/scenespec_diff.gd")
 const SceneCodec := preload("res://scripts/scenespec_codec.gd")
 const PlotStudio := preload("res://scripts/authoring_plot_studio.gd")
 const AuthoringOutliner := preload("res://scripts/authoring_outliner.gd")
+const ExamplesCatalog := preload("res://scripts/authoring_examples_catalog.gd")
 
 enum ViewMode { VIEW_2D, VIEW_3D }
 
@@ -49,6 +50,7 @@ var current_view: ViewMode = ViewMode.VIEW_2D
 var _doc_title_label: Label
 var _autosave_status_label: Label
 var _file_menu: MenuButton
+var _examples_menu: MenuButton
 var _recent_menu: PopupMenu
 var _file_dialog: FileDialog
 var _diff_dialog: DiffDialog
@@ -424,6 +426,42 @@ func _build_header() -> Control:
 	popup.id_pressed.connect(_on_file_menu_id_pressed)
 	popup.about_to_popup.connect(_refresh_recent_menu)
 	row.add_child(_file_menu)
+
+	# Examples MenuButton (DES, ABM & Hybrid, Optimization)
+	_examples_menu = MenuButton.new()
+	_examples_menu.text = "📚 Examples"
+	_examples_menu.flat = false
+	_examples_menu.tooltip_text = "Load built-in DES, ABM/Hybrid, and SimOptim benchmark models"
+	var ex_popup: PopupMenu = _examples_menu.get_popup()
+
+	var des_sub := PopupMenu.new()
+	des_sub.name = "DESExamplesMenu"
+	des_sub.add_item("Tandem Manufacturing Cell", 101)
+	des_sub.add_item("M/M/c Station with Failures", 102)
+	des_sub.id_pressed.connect(_on_example_menu_id_pressed)
+	ex_popup.add_child(des_sub)
+	ex_popup.add_submenu_item("DES Models", "DESExamplesMenu", 100)
+
+	var abm_sub := PopupMenu.new()
+	abm_sub.name = "ABMExamplesMenu"
+	abm_sub.add_item("Pedestrian Corridor Flow", 201)
+	abm_sub.add_item("Hybrid Security Checkpoint", 202)
+	abm_sub.id_pressed.connect(_on_example_menu_id_pressed)
+	ex_popup.add_child(abm_sub)
+	ex_popup.add_submenu_item("ABM & Hybrid Models", "ABMExamplesMenu", 200)
+
+	ex_popup.add_separator()
+
+	var opt_sub := PopupMenu.new()
+	opt_sub.name = "OptimizationExamplesMenu"
+	opt_sub.add_item("1. ER Server Allocation (Parameter)", 301)
+	opt_sub.add_item("2. VIP Support Dispatcher (Policy)", 302)
+	opt_sub.add_item("3. Sorting Hub Conveyor (Topology)", 303)
+	opt_sub.id_pressed.connect(_on_example_menu_id_pressed)
+	ex_popup.add_child(opt_sub)
+	ex_popup.add_submenu_item("Optimization Problems", "OptimizationExamplesMenu", 300)
+
+	row.add_child(_examples_menu)
 
 	var btn_val := Button.new()
 	btn_val.text = "Validate"
@@ -1434,3 +1472,48 @@ func _on_unsaved_action_canceled(_action_context: Dictionary) -> void:
 
 
 
+
+func _on_example_menu_id_pressed(id: int) -> void:
+	var ex_map := {
+		101: "des_tandem_cell",
+		102: "des_mmc_failures",
+		201: "abm_corridor_crowd",
+		202: "hybrid_security_gate",
+		301: "opt_p1_er_allocation",
+		302: "opt_p2_vip_dispatch",
+		303: "opt_p3_conveyor_topology"
+	}
+	if ex_map.has(id):
+		load_example_model(ex_map[id])
+
+func load_example_model(example_id: String) -> bool:
+	if doc_store == null:
+		return false
+	var spec: Dictionary = ExamplesCatalog.get_example_scenespec(example_id)
+	if spec.is_empty():
+		return false
+	var ok: bool = doc_store.load_from_dictionary(spec)
+	if not ok:
+		return false
+	is_sim_running = false
+	update_sim_time(0.0)
+	_update_abm_status_pill()
+	if _doc_title_label != null:
+		_doc_title_label.text = str(spec.get("scene", {}).get("name", example_id))
+	if _autosave_status_label != null:
+		var has_opt: bool = spec.has("optimization")
+		_autosave_status_label.text = "● Loaded Optimization Benchmark" if has_opt else "● Loaded Example Model"
+	if _canvas_2d != null:
+		_canvas_2d.rebuild_blocks()
+		_canvas_2d.call_deferred("frame_all")
+	if _viewport_3d != null:
+		_viewport_3d.rebuild_3d_scene()
+		_viewport_3d.call_deferred("frame_scene")
+	if _outliner != null and _outliner.has_method("rebuild"):
+		_outliner.rebuild([])
+	command_requested.emit({
+		"action": "load_example",
+		"example_id": example_id,
+		"scenespec": spec
+	})
+	return true

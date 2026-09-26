@@ -116,14 +116,6 @@ function build_snapshot(
                         metrics["transit_delay"] = node isa IRConveyorNode ? node.transit_delay : (conv_len / max(0.01, conv_spd))
                         metrics["total_transited"] = zs !== nothing ? zs.total_departures : 0
                         metrics["badge"] = "[ $(zstate.busy_servers) transit ]"
-                    elseif map_rec.role_in_zone == :sink_drain
-                        occ = UInt32(0)
-                        dep_count = world.stats.total_departures
-                        rate_sec = curr_t > 0.0 ? round(Float64(dep_count) / curr_t, digits=2) : 0.0
-                        metrics["total_departures"] = dep_count
-                        metrics["throughput_per_sec"] = rate_sec
-                        metrics["throughput_per_min"] = round(rate_sec * 60.0, digits=1)
-                        metrics["badge"] = "[ $(dep_count) done ]"
                     elseif map_rec.role_in_zone == :standalone
                         if node isa IRSourceNode
                             arr_count = world.stats.total_arrivals
@@ -137,6 +129,18 @@ function build_snapshot(
                     end
                 end
             end
+        end
+
+        if node isa IRSinkNode
+            sys_zs = get(world.zone_stats, 0, world.stats)
+            dep_count = sys_zs.total_departures > 0 ? sys_zs.total_departures : world.stats.total_departures
+            sys_soj = sys_zs.sojourn_time_samples > 0 ? round(sys_zs.sojourn_time_sum / sys_zs.sojourn_time_samples, digits=2) : 0.0
+            rate_sec = curr_t > 0.0 ? round(Float64(dep_count) / curr_t, digits=2) : 0.0
+            metrics["total_departures"] = dep_count
+            metrics["system_sojourn_mean"] = sys_soj
+            metrics["throughput_per_sec"] = rate_sec
+            metrics["throughput_per_min"] = round(rate_sec * 60.0, digits=1)
+            metrics["badge"] = "[ $(dep_count) done ]"
         end
 
         push!(elements_state, DirectSnapshotElement(
@@ -344,17 +348,30 @@ function build_snapshot(
 
     sojourn_mean = world.stats.sojourn_time_samples > 0 ? round(world.stats.sojourn_time_sum / world.stats.sojourn_time_samples, digits=2) : 0.0
     wait_mean = world.stats.wait_time_samples > 0 ? round(world.stats.wait_time_sum / world.stats.wait_time_samples, digits=2) : 0.0
-    th_eff = curr_t > 0.0 ? round(Float64(tot_dep) / curr_t, digits=3) : 0.0
+    sys_zs = get(world.zone_stats, 0, nothing)
+    sys_sojourn_mean = (sys_zs !== nothing && sys_zs.sojourn_time_samples > 0) ?
+                       round(sys_zs.sojourn_time_sum / sys_zs.sojourn_time_samples, digits=2) : sojourn_mean
+    sys_departures = (sys_zs !== nothing && sys_zs.total_departures > 0) ? sys_zs.total_departures : tot_dep
+    prio_wait_means = Dict{String, Float64}()
+    for (zk, zstat) in world.zone_stats
+        if zk <= -100 && zstat.wait_time_samples > 0
+            prio = -100 - zk
+            prio_wait_means[string(prio)] = round(zstat.wait_time_sum / zstat.wait_time_samples, digits=2)
+        end
+    end
+    th_eff = curr_t > 0.0 ? round(Float64(sys_departures) / curr_t, digits=3) : 0.0
     
     flow_err = abs(tot_arr - (tot_dep + act_wip))
     flow_ok = flow_err == 0
 
     # Little's Law check (L = lambda * W)
     L_obs = Float64(act_wip)
-    lambda_eff = curr_t > 0.0 ? (Float64(tot_dep) / curr_t) : 0.0
-    W_obs = world.stats.sojourn_time_samples > 0 ? (world.stats.sojourn_time_sum / world.stats.sojourn_time_samples) : 0.0
+    lambda_eff = curr_t > 0.0 ? (Float64(sys_departures) / curr_t) : 0.0
+    W_obs = (sys_zs !== nothing && sys_zs.sojourn_time_samples > 0) ?
+            (sys_zs.sojourn_time_sum / sys_zs.sojourn_time_samples) :
+            (world.stats.sojourn_time_samples > 0 ? (world.stats.sojourn_time_sum / world.stats.sojourn_time_samples) : 0.0)
     
-    littles_err, littles_status = if tot_dep < 15
+    littles_err, littles_status = if sys_departures < 15
         (0.0, "warming_up")
     else
         exp_L = lambda_eff * W_obs
@@ -367,16 +384,19 @@ function build_snapshot(
         "wip_total" => act_wip,
         "total_arrivals" => tot_arr,
         "total_departures" => tot_dep,
+        "system_departures" => sys_departures,
         "active_in_queues" => act_q,
         "active_in_service" => act_srv,
         "active_on_conveyors" => act_conv,
         "sojourn_mean" => sojourn_mean,
+        "system_sojourn_mean" => sys_sojourn_mean,
         "wait_mean" => wait_mean,
+        "priority_wait_means" => prio_wait_means,
         "throughput_eff" => th_eff,
         "throughput_per_min" => round(th_eff * 60.0, digits=1),
         "flow_balance_error" => flow_err,
         "flow_balance_ok" => flow_ok,
-        "warmup_complete" => tot_dep >= 30,
+        "warmup_complete" => sys_departures >= 30,
         "littles_law_error_pct" => littles_err,
         "littles_law_status" => littles_status
     )

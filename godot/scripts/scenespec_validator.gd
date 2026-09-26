@@ -773,7 +773,7 @@ func _validate_graph_topology(doc: RefCounted, diagnostics: Array, elems_by_id: 
 				})
 
 	# Zero-delay cycle detection
-	var stateful_kinds := ["queue", "server", "buffer", "delay", "station"]
+	var stateful_kinds := ["queue", "server", "conveyor", "buffer", "delay", "station"]
 	var visited := {}
 	for elem in elems:
 		visited[str(_prop(elem, "id", ""))] = 0

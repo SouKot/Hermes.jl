@@ -778,7 +778,7 @@ function _validate_graph_topology!(
 
     # 2. Zero-delay feedback cycle detection (causes discrete-event livelock)
     # Stateful buffers/stations that break zero-delay livelocks:
-    stateful_kinds = Set{String}(["queue", "server", "buffer", "delay", "station"])
+    stateful_kinds = Set{String}(["queue", "server", "conveyor", "buffer", "delay", "station"])
 
     visited = Dict{String, Int}() # 0=unvisited, 1=visiting (on stack), 2=visited
     for elem in spec.elements

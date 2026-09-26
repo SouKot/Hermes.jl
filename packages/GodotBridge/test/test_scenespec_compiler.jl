@@ -207,7 +207,7 @@ begin
     println("[TEST] ZoneHooks: parse_hook_expr...")
     fn = GodotBridge.parse_hook_expr("nothing")
     @assert fn isa Function
-    fn(1, "zone1", 0.5)  # must not throw
+    Base.invokelatest(fn, 1, "zone1", 0.5)  # must not throw
     println("  ✓ parse_hook_expr OK")
 end
 
@@ -219,3 +219,93 @@ begin
     @assert hooks.on_entry === nothing  # auto-disabled
     println("  ✓ auto-disable OK")
 end
+
+@testset "Sub-Phase 7E-1: Engine Foundations & Examples Catalog" begin
+    # 1. All 7 built-in examples validate, compile, and run
+    ex_list = GodotBridge.list_examples()
+    @test length(ex_list) == 7
+
+    for ex_meta in ex_list
+        ex_id = ex_meta["id"]
+        spec_dict = GodotBridge.get_example_scenespec(ex_id)
+        typed_spec = GodotBridge.parse_typed_scenespec(spec_dict)
+        val_rec = GodotBridge.validate_scenespec(typed_spec)
+        @test val_rec.is_valid
+
+        comp = GodotBridge.compile_scenespec(spec_dict)
+        @test comp.success
+        @test !GodotBridge.has_errors(comp.diagnostics)
+
+        inst = GodotBridge.SimulationInstance(
+            ex_id, comp.world, comp.fel, comp.zone_configs, comp.source_map, comp.execution_ir;
+            seed = 123, clock_speed = Inf
+        )
+        GodotBridge.step_until!(inst, 120.0; fast_forward = true)
+        @test inst.world.time >= 120.0
+        @test haskey(inst.world.zone_stats, 0)
+        @test inst.world.zone_stats[0].total_departures > 0
+        @test SimCore.mean_sojourn_time(inst.world.zone_stats[0]) > 0.0
+
+        snap = GodotBridge.build_snapshot(inst; scene_id = ex_id)
+        @test haskey(snap.abm_state, "system_sojourn_mean")
+        @test snap.abm_state["system_departures"] > 0
+
+        if ex_meta["category"] == "optimization"
+            @test haskey(spec_dict, "optimization")
+            @test !isempty(spec_dict["optimization"]["decision_variables"])
+        end
+    end
+
+    # 2. ShortestQueueRoute & RoundRobinRoute compilation and execution
+    sec_spec = GodotBridge.get_example_scenespec("hybrid_security_gate")
+    comp_sq = GodotBridge.compile_scenespec(sec_spec)
+    @test comp_sq.success
+    has_sq_route = any(cfg -> cfg.routing isa SimDES.ShortestQueueRoute, values(comp_sq.zone_configs))
+    @test has_sq_route
+
+    # 3. Multi-source priority (CompositeArrivalProcess) & PRIORITY_HOL vs FIFO in Problem 2
+    p2_fifo = GodotBridge.get_example_scenespec("opt_p2_vip_dispatch")
+    comp_fifo = GodotBridge.compile_scenespec(p2_fifo)
+    inst_fifo = GodotBridge.SimulationInstance(
+        "p2_fifo", comp_fifo.world, comp_fifo.fel, comp_fifo.zone_configs, comp_fifo.source_map, comp_fifo.execution_ir;
+        seed = 42, clock_speed = Inf
+    )
+    GodotBridge.step_until!(inst_fifo, 600.0; fast_forward = true)
+    @test haskey(inst_fifo.world.zone_stats, -100) # Standard (priority 0)
+    @test haskey(inst_fifo.world.zone_stats, -101) # VIP (priority 1)
+    vip_wait_fifo = SimCore.mean_wait_time(inst_fifo.world.zone_stats[-101])
+
+    # Now switch Queue_Dispatch and Pool queues to priority discipline
+    p2_prio = deepcopy(p2_fifo)
+    for el in p2_prio["elements"]
+        if el["kind"] == "queue"
+            el["properties"]["discipline"] = "priority"
+        end
+    end
+    comp_prio = GodotBridge.compile_scenespec(p2_prio)
+    inst_prio = GodotBridge.SimulationInstance(
+        "p2_prio", comp_prio.world, comp_prio.fel, comp_prio.zone_configs, comp_prio.source_map, comp_prio.execution_ir;
+        seed = 42, clock_speed = Inf
+    )
+    GodotBridge.step_until!(inst_prio, 600.0; fast_forward = true)
+    vip_wait_prio = SimCore.mean_wait_time(inst_prio.world.zone_stats[-101])
+    @test vip_wait_prio <= vip_wait_fifo
+
+    # 4. Live ZoneHooks invocation during step_until!
+    tandem_spec = GodotBridge.get_example_scenespec("des_tandem_cell")
+    comp_t = GodotBridge.compile_scenespec(tandem_spec)
+    inst_t = GodotBridge.SimulationInstance(
+        "tandem_hooks", comp_t.world, comp_t.fel, comp_t.zone_configs, comp_t.source_map, comp_t.execution_ir;
+        seed = 77, clock_speed = Inf
+    )
+    entry_count = Ref(0)
+    exit_count = Ref(0)
+    inst_t.zone_hooks["Server_CNC"] = GodotBridge.ZoneHooks(
+        on_entry = (eid, zid, t) -> (entry_count[] += 1; nothing),
+        on_exit  = (eid, zid, t) -> (exit_count[] += 1; nothing)
+    )
+    GodotBridge.step_until!(inst_t, 50.0; fast_forward = true)
+    @test entry_count[] > 0
+    @test exit_count[] > 0
+end
+

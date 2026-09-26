@@ -32,7 +32,11 @@ struct IRQueueNode <: AbstractIRNode
     capacity::Int
     discipline::Symbol  # :fifo, :lifo, :priority
     initial_occupancy::Int
+    routing_rule::Symbol
+    routing_weights::Dict{String, Float64}
 end
+IRQueueNode(id::String, capacity::Int, discipline::Symbol, initial_occupancy::Int) =
+    IRQueueNode(id, capacity, discipline, initial_occupancy, :fixed, Dict{String, Float64}())
 
 """
     IRServerNode <: AbstractIRNode
@@ -47,7 +51,11 @@ struct IRServerNode <: AbstractIRNode
     failure_model::Symbol  # :none, :mtbf_mttr
     mtbf::Float64
     mttr::Float64
+    routing_rule::Symbol
+    routing_weights::Dict{String, Float64}
 end
+IRServerNode(id::String, num_servers::Int, service_dist_obj, service_sampler, failure_model::Symbol, mtbf::Float64, mttr::Float64) =
+    IRServerNode(id, num_servers, service_dist_obj, service_sampler, failure_model, mtbf, mttr, :fixed, Dict{String, Float64}())
 
 """
     IRConveyorNode <: AbstractIRNode
@@ -60,7 +68,11 @@ struct IRConveyorNode <: AbstractIRNode
     speed::Float64
     transit_delay::Float64
     capacity::Int
+    routing_rule::Symbol
+    routing_weights::Dict{String, Float64}
 end
+IRConveyorNode(id::String, length::Float64, speed::Float64, transit_delay::Float64, capacity::Int) =
+    IRConveyorNode(id, length, speed, transit_delay, capacity, :fixed, Dict{String, Float64}())
 
 """
     IRSinkNode <: AbstractIRNode

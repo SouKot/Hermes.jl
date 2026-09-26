@@ -102,6 +102,10 @@ function step_until!(
 
         SimDES.dispatch!(instance.world, instance.fel, instance.configs, instance.rng, cev.inner, t)
 
+        if !isempty(instance.zone_hooks)
+            _fire_event_hooks!(instance, cev.inner, t)
+        end
+
         events_since_tick += 1
         now_wall = time()
         if (now_wall - last_tick_wall) >= tick_interval_sec || events_since_tick >= 2000
@@ -142,4 +146,35 @@ Updates clock speed multiplier (1.0 = real-time, 10.0 = 10x, Inf = max compute s
 function set_speed!(instance::SimulationInstance, speed::Float64)
     instance.clock_speed = max(0.001, speed)
     SimCore.set_speed!(instance.clock, instance.clock_speed)
+end
+
+function _fire_event_hooks!(instance::SimulationInstance, ev, t::Float64)
+    if ev isa SimCore.EntityArrival
+        zid = ev.zone_id
+        ent_id = Int(ev.entity_id)
+        recs = get(instance.source_map.by_zone, zid, SourceMapRecord[])
+        agent = SimCore.get_des_agent(instance.world, ev.entity_id)
+        started_service = agent !== nothing && agent.service_start_time == t
+        for rec in recs
+            hooks = get(instance.zone_hooks, rec.element_id, nothing)
+            if hooks !== nothing
+                call_hook!(hooks, :on_entry, ent_id, rec.element_id, t)
+                if started_service
+                    call_hook!(hooks, :on_service_start, ent_id, rec.element_id, t)
+                end
+            end
+        end
+    elseif ev isa SimCore.ProcessComplete
+        zid = ev.station_id
+        ent_id = Int(ev.entity_id)
+        recs = get(instance.source_map.by_zone, zid, SourceMapRecord[])
+        for rec in recs
+            hooks = get(instance.zone_hooks, rec.element_id, nothing)
+            if hooks !== nothing
+                call_hook!(hooks, :on_service_complete, ent_id, rec.element_id, t)
+                call_hook!(hooks, :on_exit, ent_id, rec.element_id, t)
+            end
+        end
+    end
+    return nothing
 end

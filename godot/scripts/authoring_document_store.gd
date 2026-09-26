@@ -144,6 +144,38 @@ func load_from_file(path: String) -> bool:
 	document_loaded.emit(active_document)
 	return true
 
+func load_from_dictionary(raw_dict: Dictionary) -> bool:
+	if raw_dict.is_empty():
+		return false
+	var doc := SceneTypes.SceneDocument.from_dict(raw_dict)
+	if doc == null:
+		return false
+	active_document = doc
+	file_path = ""
+	is_dirty = false
+	current_scope_id = ""
+	_undo_stack.clear()
+	_redo_stack.clear()
+	selected_id = ""
+	selected_type = ""
+	validate()
+	scope_changed.emit("", "Root")
+	document_loaded.emit(active_document)
+	return true
+
+func get_optimization_spec() -> Dictionary:
+	if active_document != null:
+		var opt = active_document.get_extension("optimization", {})
+		if opt is Dictionary:
+			return opt.duplicate(true)
+	return {}
+
+func set_optimization_spec(opt: Dictionary) -> void:
+	if active_document != null:
+		_record_undo()
+		active_document.set_extension("optimization", opt.duplicate(true))
+		document_modified.emit()
+
 func export_to_dictionary() -> Dictionary:
 	if active_document != null and active_document.has_method("to_dict"):
 		return active_document.to_dict()

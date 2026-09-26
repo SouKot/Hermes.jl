@@ -1,128 +1,86 @@
-# Phase 7D: Checkpoint & Session Resume Handoff
+# Phase 7D & 7E: Checkpoint & Session Resume Handoff
 
-**Timestamp**: 2026-09-22T14:15:00-07:00  
+**Timestamp**: 2026-09-26T00:37:00-07:00  
 **Workspace**: `/run/media/sourabh/SANDISK-2TB/antigravity/ABM`  
 **Git Branch**: `main`  
-**Current Milestone**: Phase 7D-06 through 7D-09 Completed & Accepted (100% Tests Passing, All 25 Suites Clean)  
-**Next Immediate Milestone**: Phase 7D-10 (Subgraphs, Hierarchical Grouping & Reusable Station Templates) or Phase 7D-11 / 7D-12 (Julia Compiler & Runtime Activation)  
-**Detailed Walkthrough**: [`walkthrough.md`](file:///home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/walkthrough.md)
+**Conversation ID**: `b190f1d8-e577-4d2d-9386-35c84a7dd33a`  
+**Current Milestone**: Phase 7D (through 7D-12C) + **Sub-Phase 7E-1** & **Sub-Phase 7E-2** Completed & Verified (100% Tests Passing)  
+**Next Immediate Milestone**: **Sub-Phase 7E-3** (Template-Free Bilevel Graph & 2D Spatial Optimizer for Problem 3: Conveyor Topology)  
+**Master Implementation Plan**: [`plan_phase7e_simoptim.md`](file:///home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/plan_phase7e_simoptim.md)  
+**Session Handoff Artifact**: [`task_handoff.md`](file:///home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/task_handoff.md)
 
 ---
 
-## 1. Executive Status Summary
+## 1. Instructions for Resuming After IDE / Computer Restart
 
-### Completed Milestones
-1. **Phase 7D-00 through 7D-05 (Contract, Registries, Document Store, Validation, Two-View Authoring Shell)**:
-   - Full SceneSpec v1 specification, golden fixtures, Julia & Godot round-trip codecs.
-   - Two-view layout: `[ 2D LAYOUT ]` and `[ 3D LAYOUT ]` with persistent simulation transport.
-   - Single entity block 3-part layout (Left Flow bay, Center physical body, Right Control/Metric bay).
+When you restart the IDE or computer, paste this exact prompt:
 
-2. **Phase 7D-06 & 7D-06A (Physical Layout & 3D Spatial Synchronization)**:
-   - Multi-selection deletion, duplication (`Ctrl+D`), continuous arbitrary rotation ($0^\circ\text{–}360^\circ$ with $45^\circ$ snap and $15^\circ$ fine rotate via `R` / `Shift+R`).
-   - 3D click picking with selection indicator highlight.
-   - Viewport camera framing modes: Perspective & Orthographic, frame all scene elements (`F`), frame selected element.
-
-3. **Phase 7D-07 (Typed Process Graph Editor & Topological Auto-Layout)**:
-   - Semantic port colors: Flow (emerald green `#2ecc71`), Metric (amethyst purple `#9b59b6`), Signal (cobalt blue `#3498db`), Control (warm amber `#e67e22`), Event (coral red `#e74c3c`).
-   - Interactive link rejection with live tooltip badges (`🚫 Incompatible kinds`, `🚫 Port already connected (cardinality: one)`).
-   - Single vs. Multi-link cardinality enforcement.
-   - Hierarchical DAG auto-layout (`auto_layout_dag`) organizing blocks in topological order preserving $20\text{ px/m}$ parity.
-
-4. **Phase 7D-08 (Schema-Driven Inspector, Statistical Distributions, Rules & Edit Policies)**:
-   - Declarative component property schemas (`conveyor`, `queue`, `server`, `source`, `sink`).
-   - Statistical distribution selector (Triangular, Exponential, Normal, Uniform, Constant) with real-time SVG probability sparklines (`DistributionSparkline`).
-   - Dedicated port buffer editing (Chute Buffer Capacity, Handshake Latency).
-   - Multi-selection mixed values (`— Mixed Values —`) with single-transaction atomic batch undo.
-   - No-code rule builder modal with live metric auto-discovery (`authoring_rule_builder.gd`).
-   - Active simulation edit policy (`[🟢 LIVE]` vs `[🟡 RESTART]`).
-
-5. **Dock, Inspector & Floating Window Refinements**:
-   - **Streamlined Docked Inspector**: Displays only essential entity metadata, compact coordinates, and quick actions.
-   - **~1cm Collapsible Docks**: Left and Right docks configured with `custom_minimum_size.x = 38` ($\approx 1\text{ cm}$) and `clip_contents = true`.
-   - **Floating Tabbed Properties Window (`authoring_floating_inspector.gd`)**: 4 comprehensive tabs for Process & DES, Spatial / CAD, Ports & Interfaces, and Reliability & Rules.
-
-6. **Phase 7D-09 (ABM & Hybrid Multi-Paradigm Configuration & Agent Visualization)**:
-   - **Component Catalog Crowd & Hybrid Primitives**:
-     - `crowd_spawner` (Ingress): Continuous agent generation with spawn rate, target velocity, and arrival distribution.
-     - `exit_goal` (Egress): Destination doorway absorbing pedestrians with configurable width and removal policy.
-     - `walkable_room` (Concourse): Continuous walking surface with surface friction and navmesh flags.
-     - `obstacle_wall` (Pillars/Partitions): Architectural barriers repelling crowd agents.
-     - `hybrid_portal` (Turnstiles): Bidirectional conversion between discrete queue entities and continuous crowd agents.
-   - **Schema-Driven ABM & Hybrid Configuration Dialog (`authoring_abm_dialog.gd`)**:
-     - Model selector: Social Force Model (SFM), Optimal Reciprocal Collision Avoidance (ORCA), Hybrid Finite State Machine (HybridFSM), and Cellular Spatial Markov (CSM).
-     - Hardware Execution Backends: `Auto`, `CPU (Julia Multithreading)`, `GPU (CUDA/OneAPI Accelerators)`.
-     - Fallback policy (`allow` / `strict`).
-     - Calibrated presets (e.g. Standard, Dense Rush Hour, Emergency Evacuation) and dynamic parameter editing with real-time migration previews.
-     - Dynamic custom experimental parameters (`+ Add Custom Parameter`).
-     - Real-time header status pill (`[● ABM: SFM]` vs `[○ ABM: OFF]`).
-   - **2D Canvas Agent Visualization**:
-     - Dedicated `_agents_layer` between blocks and wires.
-     - Circular discs scaled to physical body radius $r_{\text{body}}$ ($20\text{ px/m}$).
-     - Dynamic speed/state color palette (free-flow green $\ge 1.0\text{ m/s}$, amber $0.35\text{--}1.0\text{ m/s}$, high-contact red $< 0.35\text{ m/s}$, queuing blue).
-     - Directional heading chevrons along velocity vectors $\vec{v}$.
-     - Fading trajectory ribbons and selection highlight rings.
-   - **3D Viewport Agent Visualization & Tracking**:
-     - High-performance GPU-instanced crowd rendering via `MultiMeshInstance3D` capsules (LOD 1) and procedural mannequin with foot contact shadow (LOD 0).
-     - Exact spatial mapping from SceneSpec Z-up to Godot 3D Y-up $(X \to X, Z+0.85 \to Y, -Y \to Z)$ and velocity heading yaw.
-     - Smooth "Follow Agent" camera tracking mode locking viewpoint onto any designated agent.
-   - **3D Procedural Mesh Factory Builders**:
-     - Procedural 3D models for all 5 crowd/hybrid elements (spawner volume, doorway, walkable room, barrier wall, turnstile bank).
-
-7. **Inspector OptionButton Empty Options Fix**:
-   - Resolved Godot runtime crash `Index p_which = 0 is out of bounds` when selecting or instantiating catalog items.
-   - Standardized catalog schemas (`spawn_distribution`, `conversion_mode`) to use `enum_options` with fallback to `options`.
-   - Added safety guards in `authoring_inspector.gd` and `authoring_floating_inspector.gd` verifying `opt.item_count > 0` before selecting.
+> **"We are implementing Phase 7E (`SimOptim` Engine & Two-Window Optimization GUI) in `/run/media/sourabh/SANDISK-2TB/antigravity/ABM`. Sub-Phases 7E-1 and 7E-2 are implemented, tested, and committed. Please read `docs/PHASE_7D_RESUME_CHECKPOINT.md` and `/home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/plan_phase7e_simoptim.md`, and proceed with implementing Sub-Phase 7E-3."**
 
 ---
 
-## 2. Test Verification & Evidence
+## 2. Progress Summary Across Phase 7E Sub-Phases
 
-All automated test suites pass 100% with zero regressions:
-
-1. **Godot Headless Smoke Test (All 25 Suites Passing)**:
-   ```bash
-   /home/sourabh/.local/bin/godot --headless --path godot --script res://tests/scenespec_authoring_shell_smoke.gd
-   ```
-   - **Result**: `● ALL 25 TEST SUITES PASSED CLEANLY (Phase 7D-07, 7D-08, 7D-09 Verified)`
-
-2. **Master Phase 7D Acceptance Suite (12/12 Steps Passing)**:
-   ```bash
-   bash run_phase7d_roundtrip_acceptance.sh
-   ```
-   - **Result**: `✓ Phase 7D (7D-00 through 7D-05) SceneSpec Authoring Shell, Catalog, PBR 3D Factory & Cross-Roundtrip ACCEPTED`
-
-3. **Master Julia Test Suite**:
-   ```bash
-   julia --project=packages/GodotBridge packages/GodotBridge/test/runtests.jl
-   ```
-   - **Result**: 533/533 passed cleanly.
+| Sub-Phase | Name | Status | Verification Suite |
+|---|---|---|---|
+| **7E-1** | **Engine Readiness & `📚 Examples` Menu** | ✅ **COMPLETED** | `test_scenespec_compiler.jl` (106/106 pass)<br>`test_examples_menu.gd` (12/12 pass) |
+| **7E-2** | **General `SimOptim` Core, SciML Bridge & P1/P2 Solvers** | ✅ **COMPLETED** | `test_phase7e2_sciml_p1_p2.jl` (40/40 pass) |
+| **7E-3** | **Template-Free Bilevel Graph & 2D Spatial Search (P3)** | ⏳ **NEXT** | `test_phase7e3_graph_search.jl` |
+| **7E-4** | **Window 1: `⚡ Optimization Setup`, Compact Progress HUD & Server Streaming** | 🔜 Pending | `test_phase7e4_optim_setup.gd` |
+| **7E-5** | **Window 2: `📊 Optimization Report & Live Feedback` (Charts + Top-$K$ Snapshots)** | 🔜 Pending | `test_phase7e5_optim_feedback.gd` |
 
 ---
 
-## 3. How to Run the Demo
+## 3. What Was Delivered in 7E-1 & 7E-2
 
-To launch the live interactive simulation and authoring GUI:
-```bash
-bash run_phase7c_demo.sh
-```
+### Sub-Phase 7E-1: Engine Readiness & `📚 Examples` Menu
+1. **`SimDES` Routing & End-to-End Wait/Sojourn Tracking (`packages/SimDES/src/zone.jl`, `dispatch.jl`)**:
+   - Added `ShortestQueueRoute(candidates)` and `DynamicPolicyRoute(candidates, policy_fn)` routing policies.
+   - Added `RoundRobinRoute(candidates, cursor)` and `RecirculatingLoopRoute(next_zone, sink_zone, inspect_zone, exit_prob, recirc_prob)`.
+   - Tracked true end-to-end system sojourn time $W = t_{\text{exit}} - t_{\text{entry}}$ in `world.zone_stats[-1]`, cumulative multi-stage queue wait time in `world.zone_stats[0]`, and priority-stratified wait time in `world.zone_stats[-100 - priority]`.
+2. **`GodotBridge` Multi-Source Priority, Dynamic Routing & ZoneHooks (`packages/GodotBridge/src/compiler/des_compiler.jl`, `simulation_instance.jl`)**:
+   - Added `priority::Int` to `IRSourceNode` and `CustomArrivalProcess`.
+   - Added `CompositeArrivalProcess` so multiple sources (e.g. VIP $\lambda=0.45$, priority 2 and Standard $\lambda=1.35$, priority 1) can feed a single intake queue.
+   - Wired `ZoneHooks` (`on_entry`, `on_service_start`, `on_service_complete`, `on_exit`) to fire during `step_until!`.
+   - Added `load_example` WebSocket command in `live_simulation_server.jl`.
+3. **Built-In Examples Catalog & Top-Bar `📚 Examples` Menu (`examples_catalog.jl`, `authoring_examples_catalog.gd`, `authoring_shell.gd`)**:
+   - Created 7 complete `SceneSpec` models across 3 categories:
+     - **DES**: `des_tandem_cell`, `des_mmc_failures`
+     - **ABM & Hybrid**: `abm_corridor_crowd`, `hybrid_security_gate`
+     - **Optimization**: `opt_p1_er_allocation` (3-stage ER `[3,1,1]`), `opt_p2_vip_dispatch` (VIP + Standard 4-agent dispatcher), `opt_p3_conveyor_topology` (100m Linear Spine)
+   - Preserved `SceneSpec["optimization"]` across both Julia (`ExecutionGraphIR.optimization_spec`) and Godot (`SceneDocument.optimization` + `load_from_dictionary`).
 
-**Key Interactions to Verify**:
-- Drag left and right dock splitters all the way to collapse them to ~1 cm (38px).
-- Left-click an entity block to view the clean, uncluttered docked summary.
-- Right-click an entity block to open the floating tabbed properties window.
-- Switch to Tab 2 (Ports & Interfaces) to inspect/edit port aliases, cardinality, buffer capacity, latency, and sever individual wires.
+### Sub-Phase 7E-2: General `SimOptim` Core, SciML Bridge & P1/P2 Solvers
+1. **New Package `packages/SimOptim` (`Project.toml`, `SimOptim.jl`, `spec.jl`, `sciml_bridge.jl`)**:
+   - Integrated `SciMLBase v3.55.0`, `CommonSolve v0.2.14`, `Optim v1.13.3`, and `Graphs v1.15.0`.
+   - Defined `ParamDecisionVar`, `PolicyDecisionVar`, `GraphTopologyDecisionVar`, `ObjectiveSpec`, `ConstraintSpec`, `SolverConfig`, `SimOptimizationSpec`, `HallOfFameCandidate`, and `HallOfFameArchive`.
+   - Implemented `build_sciml_problem(base_scenespec, spec) -> (SciMLBase.OptimizationProblem, OptimizationContext)` and `CommonSolve.solve(prob, alg)` (`ConstrainedEnumerationAlg`, `HybridPolicyEvolutionAlg`, `AdaptiveGeneticAlg`, `NelderMeadSimAlg`).
+   - Implemented `evaluate_scenespec` with Common Random Numbers (CRN) across replications, warmup window stats reset (`_reset_warmup_stats!`), priority-stratified wait time, and exact M/M/c Erlang-C (`erlang_c_wq`).
+2. **Verified Optimization Benchmarks (`test_phase7e2_sciml_p1_p2.jl` — 40/40 assertions passing)**:
+   - **Custom User Problem**: Round-trips `SimOptimizationSpec` via Dict, compiles into `SciMLBase.OptimizationProblem`, and solves via `CommonSolve.solve`.
+   - **Problem 1 (ER Server Allocation, $N_{\max}=5$)**: Finds `[1, 2, 2]`, `[2, 1, 2]`, `[2, 2, 1]` ($W_q = 26.29\text{ min}$) and ranks them `#1..#3` in the Top-$K$ Hall of Fame ahead of baseline `[3, 1, 1]` ($W_q = 48.14\text{ min}$).
+   - **Problem 2 (VIP Support Dispatcher)**: Discovers $\pi^*(s)$ (`route_pol = dynamic_policy`, `disc_b = priority`, `srv_a = 1`, `srv_b = 3`, $\theta_{\text{VIP}} = 1.0$, $\theta_{\text{util}} = 0.85$), achieving $W_q^{\text{VIP}} = 0.36\text{ min} \le 3.0\text{ min}$ SLA while reducing $W_q^{\text{Std}}$ from $10.82\text{ min}$ to $0.10\text{ min}$.
 
 ---
 
-## 4. Current Status: Can You Create & Run a DES Model?
+## 4. Next Step: Sub-Phase 7E-3 (Template-Free Bilevel Graph & 2D Spatial Search for Problem 3)
 
-- **Creating (Authoring) a DES Model**: **YES**, fully functional now. You can place Sources, Queues, Conveyors, Servers, Sinks, connect their typed ports, tune service/arrival distributions, set chute buffer limits, view in 2D/3D, and save the `.scenespec.json` document.
-- **Running the Authored Model**: **NO, not yet.** Currently, pressing `▶ PLAY` connects to the demonstration fixture server (`fixture_server_phase7c.jl`), which streams test orbiting entities to verify telemetry rather than compiling your authored canvas blocks into the Julia engine.
-- **Milestone for Running Authored Models**: **Phase 7D-12 (Julia Compiler & Runtime Activation)** will ingest the authored `SceneSpec`, compile it into `SimDES` runtime structures (`ZoneConfig`, `FutureEventList`, `ArrivalProcess`), and stream real simulation entities moving through your authored layout.
+### Scope of 7E-3
+- Create `packages/SimOptim/src/graph_search.jl` and export from `packages/SimOptim/src/SimOptim.jl`.
+- Implement the **4 Physical Feasibility Constraints** (`check_topology_feasibility(g, coords, spec)`):
+  1. End-to-End Flow Reachability (`has_path` from Source to every Workstation and from every Workstation to Sink)
+  2. Port Degree & Structural Limits ($d^-(v) \le 2, d^+(v) \le 2$)
+  3. Minimum Station Clearance ($\|p_u - p_v\|_2 \ge d_{\min} = 5.0\text{ m}$)
+  4. Conveyor Segment Span Bounds ($L_{\min} \le \|p_u - p_v\|_2 \le L_{\max}$)
+- Implement **Outer Discrete Graph Mutation Operators** (`mutate_reroute_tail!`, `mutate_bypass_chord!`, `mutate_toggle_recirculation!`) + **Inner Continuous 2D Coordinate Folding** (using `Optim.NelderMead` / penalty-projected coordinate optimization to fold any cyclic topology in 2D space so closing a loop reduces total belt length $L_{\text{total}} = \sum_{(u,v)\in E} \|p_u - p_v\|_2$ from $100\text{m}$ to $\approx 60\text{m}$).
+- Implement `BilevelGraphSpatialAlg <: AbstractSimOptimAlg` and wire it into `CommonSolve.solve` and `run_optimization!`.
+- Create `packages/SimOptim/test/test_phase7e3_graph_search.jl` verifying that starting strictly from `opt_p3_conveyor_topology` (100m Linear Spine, $W \approx 73.2\text{ s}$) **without any hardcoded candidate templates**, the solver discovers the closed recirculating loop ($L_{\text{total}} \approx 60\text{ m}$, $W \approx 48.2\text{ s}$) and populates the Top-$K$ Hall of Fame with mutated `SceneSpec` snapshots (updated `connections` and 2D `[x, y, z]` `transform.position` coordinates).
 
 ---
 
-## 5. Instructions for Resuming the Session
+## 5. Critical Technical Rules to Remember
 
-When you restart or begin a new conversation, simply say:
-> **"Resume Phase 7D based on docs/PHASE_7D_RESUME_CHECKPOINT.md and walkthrough.md. Proceed with the next milestone."**
+1. **SimCore Protection**: Never remove fields from `packages/SimCore/src/stats.jl` (`SimStats`).
+2. **Godot Script Editing**: Always check line endings before editing `godot/scripts/*.gd`; never use `class_name` as a cross-file type annotation in headless tests (use `preload("res://...")` constants).
+3. **SciMLBase v3.55.0 Solution Construction**: `SciMLBase.build_solution` requires `SciMLBase.DefaultOptimizationCache(prob.f, prob.p)` as its first argument.
+4. **Offline Package Resolution**: Julia packages (`SciMLBase`, `CommonSolve`, `Optim`, `Graphs`) are cached locally in `~/.julia/packages`; use `Pkg.offline(true)` if modifying `Project.toml`.

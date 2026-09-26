@@ -83,6 +83,7 @@ include("compiler/logic_catalog.jl")
 include("compiler/des_compiler.jl")
 include("compiler/crowd_compiler.jl")
 include("compiler/scenespec_compiler.jl")
+include("compiler/examples_catalog.jl")
 include("runtime/zone_hooks.jl")
 include("runtime/simulation_instance.jl")
 include("runtime/runtime_manager.jl")
@@ -175,7 +176,8 @@ export num_connected_clients, is_server_running
 
 # Dynamic Compiler & Live Simulation Exports (Phase 7D-12A)
 export CompilerDiagnostic, DiagnosticSeverity, SourceMap, SourceMapRecord, has_errors
-export ExecutionGraphIR, ProductDefinition, compile_scenespec, CompilationResult, CustomArrivalProcess
+export ExecutionGraphIR, ProductDefinition, compile_scenespec, CompilationResult, CustomArrivalProcess, CompositeArrivalProcess
+export list_examples, get_example_scenespec
 export SimulationInstance, step_until!, set_speed!
 export RuntimeManager, stage_and_activate!, play!, pause!, step!
 export build_snapshot, start_live_server, create_default_scene
