@@ -218,6 +218,7 @@ func rebuild_blocks() -> void:
 		var gx: float = elem.editor.graph_position.x if elem.editor.graph_position != Vector2.ZERO else float(elem.transform.position[0]) * 20.0
 		var gy: float = elem.editor.graph_position.y if elem.editor.graph_position != Vector2.ZERO else float(elem.transform.position[1]) * 20.0
 		b.position = pan_offset + (Vector2(gx, gy) * zoom_level)
+		b.scale = Vector2(zoom_level, zoom_level)
 
 		b.block_selected.connect(_on_block_selected)
 		b.block_moved.connect(_on_block_moved)
@@ -255,6 +256,7 @@ func rebuild_blocks() -> void:
 		var gx: float = sub.editor.graph_position.x if sub.editor != null and sub.editor.graph_position != Vector2.ZERO else float(sub.transform.position.x) * 20.0
 		var gy: float = sub.editor.graph_position.y if sub.editor != null and sub.editor.graph_position != Vector2.ZERO else float(sub.transform.position.y) * 20.0
 		b.position = pan_offset + (Vector2(gx, gy) * zoom_level)
+		b.scale = Vector2(zoom_level, zoom_level)
 
 		b.block_selected.connect(_on_block_selected)
 		b.block_moved.connect(_on_block_moved)
@@ -329,6 +331,8 @@ func _on_block_selected(elem_id: String) -> void:
 	element_selected.emit(elem_id)
 
 func _on_block_moved(elem_id: String, new_pos: Vector2) -> void:
+	if not new_pos.is_finite():
+		return
 	var elem := doc_store.get_element(elem_id)
 	var sub := doc_store.get_subgraph(elem_id) if elem == null else null
 	if elem != null:
@@ -336,8 +340,8 @@ func _on_block_moved(elem_id: String, new_pos: Vector2) -> void:
 		var prev_y: float = float(elem.transform.position[1])
 
 		var unscaled: Vector2 = (new_pos - pan_offset) / max(zoom_level, 0.01)
-		var target_x: float = snapped(unscaled.x / 20.0, 0.05)
-		var target_y: float = snapped(unscaled.y / 20.0, 0.05)
+		var target_x: float = clamp(snapped(unscaled.x / 20.0, 0.05), -500.0, 500.0)
+		var target_y: float = clamp(snapped(unscaled.y / 20.0, 0.05), -500.0, 500.0)
 
 		var dims := _get_elem_dims(elem)
 		var snap_dist := 0.35
@@ -391,8 +395,8 @@ func _on_block_moved(elem_id: String, new_pos: Vector2) -> void:
 		var prev_x: float = float(sub.transform.position.x)
 		var prev_y: float = float(sub.transform.position.y)
 		var unscaled: Vector2 = (new_pos - pan_offset) / max(zoom_level, 0.01)
-		var target_x: float = snapped(unscaled.x / 20.0, 0.05)
-		var target_y: float = snapped(unscaled.y / 20.0, 0.05)
+		var target_x: float = clamp(snapped(unscaled.x / 20.0, 0.05), -500.0, 500.0)
+		var target_y: float = clamp(snapped(unscaled.y / 20.0, 0.05), -500.0, 500.0)
 		var delta_x: float = target_x - prev_x
 		var delta_y: float = target_y - prev_y
 		sub.transform.position.x = target_x
@@ -1147,6 +1151,11 @@ func _resolve_port_position(elem_id: String, port_id: String) -> Vector2:
 	return Vector2.ZERO
 
 func _draw_spline(target: CanvasItem, from: Vector2, to: Vector2, col: Color, width: float, dashed: bool) -> void:
+	if not from.is_finite() or not to.is_finite():
+		return
+	if from.distance_squared_to(to) < 1.0:
+		return
+
 	var dx := (to.x - from.x) * 0.5
 	var cp1 := from + Vector2(max(abs(dx), 40.0), 0)
 	var cp2 := to - Vector2(max(abs(dx), 40.0), 0)
@@ -1166,8 +1175,13 @@ func _draw_spline(target: CanvasItem, from: Vector2, to: Vector2, col: Color, wi
 
 	# Draw arrowhead at target
 	if points.size() >= 2:
-		var dir := (to - points[points.size() - 2]).normalized()
-		var perp := Vector2(-dir.y, dir.x) * 5.0
-		var a1 := to - (dir * 10.0) + perp
-		var a2 := to - (dir * 10.0) - perp
-		target.draw_colored_polygon(PackedVector2Array([to, a1, a2]), col)
+		var seg_vec := to - points[points.size() - 2]
+		if seg_vec.length_squared() < 1e-4:
+			seg_vec = to - from
+		if seg_vec.length_squared() >= 1e-4:
+			var dir := seg_vec.normalized()
+			var perp := Vector2(-dir.y, dir.x) * 5.0
+			var a1 := to - (dir * 10.0) + perp
+			var a2 := to - (dir * 10.0) - perp
+			if abs((a1 - to).cross(a2 - to)) > 1.0:
+				target.draw_colored_polygon(PackedVector2Array([to, a1, a2]), col)

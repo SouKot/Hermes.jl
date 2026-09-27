@@ -1,0 +1,37 @@
+name = "SimOptim"
+uuid = "9f8e7d6c-5b4a-4f3e-8d2c-1b0a9f8e7d6c"
+version = "0.1.0"
+authors = ["Sourabh Kotnala <sauravkotnala@gmail.com>"]
+
+[deps]
+CommonSolve = "38540f10-b2f7-11e9-35d8-d573e4eb0ff2"
+DataStructures = "864edb3b-99cc-5e75-8d2d-829cb0a9cfe8"
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+GodotBridge = "7a8b9e3c-2d4f-5e6a-9b1c-3d4e5f6a7b8c"
+Graphs = "86223c79-3864-5bf0-83f7-82e725a168b6"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Optim = "429524aa-4258-5aef-a3af-852621145aeb"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
+SimCore = "0c356fe6-1c88-4cf8-b16c-a521627c3420"
+SimDES = "4b36ed4b-0aee-48cb-8514-e2c6d0980b55"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+StatsBase = "2913bbd2-ae8a-5f71-8c99-4fb6c76f3a91"
+UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
+
+[sources]
+GodotBridge = {path = "../GodotBridge"}
+SimCore = {path = "../SimCore"}
+SimDES = {path = "../SimDES"}
+
+[compat]
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

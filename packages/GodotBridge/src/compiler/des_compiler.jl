@@ -260,6 +260,32 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
             elseif r_rule in (:round_robin, :rr)
                 cands = Int[dest for (dest, _) in valid_targets if dest !== nothing]
                 return isempty(cands) ? ExitSystem() : RoundRobinRoute(cands)
+            elseif r_rule in (:dynamic_policy, :state_threshold, :vip_threshold)
+                cands = Int[dest for (dest, _) in valid_targets if dest !== nothing]
+                isempty(cands) && return ExitSystem()
+                θ_q = get(r_weights, "vip_queue_threshold", 1.0)
+                θ_ρ = get(r_weights, "pool_util_threshold", 0.85)
+                policy_fn = (world, entity_id, agent, cand_ids) -> begin
+                    length(cand_ids) == 1 && return cand_ids[1]
+                    z_ded = get(world.zone_states, cand_ids[1], nothing)
+                    z_pool = get(world.zone_states, cand_ids[2], nothing)
+                    (z_ded === nothing || z_pool === nothing) && return cand_ids[1]
+                    if agent.priority >= 1
+                        # State-dependent VIP policy π*(s):
+                        # effective_vip_q = 0 if a dedicated server is free, else 1 + queue_length
+                        eff_q = z_ded.busy_servers < z_ded.num_servers ? 0 : (1 + z_ded.queue_length)
+                        ρ_pool = z_pool.busy_servers / max(1, z_pool.num_servers)
+                        if eff_q < θ_q || ρ_pool > θ_ρ
+                            return cand_ids[1]
+                        else
+                            return cand_ids[2]
+                        end
+                    else
+                        # Standard customer -> route to shared pool (cand_ids[2])
+                        return cand_ids[2]
+                    end
+                end
+                return DynamicPolicyRoute(cands, policy_fn)
             else
                 total_w = sum(w for (_, w) in valid_targets)
                 if total_w <= 0.0

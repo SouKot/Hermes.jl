@@ -22,6 +22,57 @@ const VALID_HOOK_EVENTS = Dict(
     "on_service_complete" => :on_service_complete,
     "on_exit"             => :on_exit,
 )
+
+function _to_plain_dict(x)
+    if x isa AbstractDict
+        d = Dict{String, Any}()
+        for (k, v) in x
+            d[string(k)] = _to_plain_dict(v)
+        end
+        return d
+    elseif x isa AbstractVector
+        return Any[_to_plain_dict(v) for v in x]
+    else
+        return x
+    end
+end
+
+function _ensure_simoptim_loaded()
+    for (pkgid, mod) in Base.loaded_modules
+        if pkgid.name == "SimOptim"
+            return mod
+        end
+    end
+    simoptim_dir = normpath(joinpath(@__DIR__, "..", "..", "..", "SimOptim"))
+    if !(simoptim_dir in LOAD_PATH)
+        push!(LOAD_PATH, simoptim_dir)
+    end
+    @eval Main using SimOptim
+    for (pkgid, mod) in Base.loaded_modules
+        if pkgid.name == "SimOptim"
+            return mod
+        end
+    end
+    error("Failed to load SimOptim module from $simoptim_dir")
+end
+
+function _default_optim_state()
+    return Dict{String, Any}(
+        "status" => "idle",
+        "iteration" => 0,
+        "max_iterations" => 0,
+        "progress_pct" => 0.0,
+        "elapsed_sec" => 0.0,
+        "feasible_count" => 0,
+        "best_score" => 0.0,
+        "best_primary" => 0.0,
+        "best_label" => "—",
+        "convergence_history" => Any[],
+        "scatter_points" => Any[],
+        "top_k_solutions" => Any[]
+    )
+end
+
 """
     create_default_scene() -> Dict{String, Any}
 
@@ -98,7 +149,7 @@ end
 
 Initializes and starts the production live simulation server.
 """
-function start_live_server(; host::String="127.0.0.1", port::Int=LIVE_SERVER_PORT, debug::Bool=false)
+function start_live_server(; host::String="127.0.0.1", port::Int=LIVE_SERVER_PORT, debug::Bool=false, autostart_ws::Bool=true)
     server = GodotBridgeServer(host=host, port=port, snapshot_rate_hz=30, debug=debug)
     manager = RuntimeManager()
 
@@ -107,6 +158,9 @@ function start_live_server(; host::String="127.0.0.1", port::Int=LIVE_SERVER_POR
     stage_and_activate!(manager, default_spec)
 
     step_counter = Ref{UInt64}(0)
+    optim_state_ref = Ref{Dict{String, Any}}(_default_optim_state())
+    optim_stop_ref = Ref{Bool}(false)
+    optim_task_ref = Ref{Any}(nothing)
 
     # Broadcast callback for simulation ticks
     function broadcast_current_snapshot(sim_t::Float64)
@@ -115,6 +169,7 @@ function start_live_server(; host::String="127.0.0.1", port::Int=LIVE_SERVER_POR
             if inst !== nothing
                 step_counter[] += 1
                 snap = build_snapshot(inst; scene_id=inst.id, step_count=step_counter[])
+                snap.abm_state["optim_state"] = optim_state_ref[]
                 # Broadcast DirectSnapshotPayload to clients
                 broadcast_snapshot(server, snap)
             end
@@ -185,6 +240,7 @@ function start_live_server(; host::String="127.0.0.1", port::Int=LIVE_SERVER_POR
 
         elseif cmd_type == "reset" || action == "reset"
             GodotBridge.pause!(manager)
+            optim_stop_ref[] = true
             # Recompile current active or default scene to reset all state cleanly
             raw_spec = get(cmd_dict, "scenespec", default_spec)
             stage_and_activate!(manager, raw_spec)
@@ -227,8 +283,10 @@ function start_live_server(; host::String="127.0.0.1", port::Int=LIVE_SERVER_POR
             ex_id = String(get(cmd_dict, "example_id", ""))
             try
                 GodotBridge.pause!(manager)
+                optim_stop_ref[] = true
+                optim_state_ref[] = _default_optim_state()
                 ex_spec = haskey(cmd_dict, "scenespec") && cmd_dict["scenespec"] isa AbstractDict ?
-                          cmd_dict["scenespec"] : get_example_scenespec(ex_id)
+                          _to_plain_dict(cmd_dict["scenespec"]) : get_example_scenespec(ex_id)
                 default_spec = ex_spec
                 success, diags = stage_and_activate!(manager, ex_spec)
                 if success
@@ -241,13 +299,117 @@ function start_live_server(; host::String="127.0.0.1", port::Int=LIVE_SERVER_POR
             catch e
                 return create_ack(message.envelope.message_id, status="rejected", details="Failed to load example '$ex_id': $(sprint(showerror, e))")
             end
+
+        elseif cmd_type in ("run_optimization", "start_optimization") || action in ("run_optimization", "start_optimization")
+            try
+                GodotBridge.pause!(manager)
+                optim_stop_ref[] = true
+                if optim_task_ref[] isa Task && !istaskdone(optim_task_ref[])
+                    sleep(0.05)
+                end
+
+                simoptim_mod = _ensure_simoptim_loaded()
+                raw_spec = haskey(cmd_dict, "scenespec") && cmd_dict["scenespec"] isa AbstractDict ?
+                           _to_plain_dict(cmd_dict["scenespec"]) : deepcopy(default_spec)
+                if haskey(cmd_dict, "optimization") && cmd_dict["optimization"] isa AbstractDict
+                    raw_spec["optimization"] = _to_plain_dict(cmd_dict["optimization"])
+                end
+
+                if !haskey(raw_spec, "optimization") || !(raw_spec["optimization"] isa AbstractDict)
+                    return create_ack(message.envelope.message_id, status="rejected", details="SceneSpec does not contain an 'optimization' specification")
+                end
+
+                optim_stop_ref[] = false
+                optim_state_ref[] = merge(_default_optim_state(), Dict{String, Any}("status" => "running"))
+                broadcast_current_snapshot(0.0)
+
+                optim_task_ref[] = @async begin
+                    try
+                        progress_cb = function(ctx)
+                            st = Base.invokelatest(simoptim_mod.optim_state_to_dict, ctx; status="running")
+                            optim_state_ref[] = st
+                            broadcast_current_snapshot(0.0)
+                            yield()
+                        end
+                        _, final_ctx = Base.invokelatest(
+                            simoptim_mod.run_optimization!,
+                            raw_spec;
+                            on_progress = progress_cb,
+                            stop_requested = optim_stop_ref
+                        )
+                        final_status = optim_stop_ref[] ? "stopped" : "completed"
+                        optim_state_ref[] = Base.invokelatest(simoptim_mod.optim_state_to_dict, final_ctx; status=final_status)
+                        broadcast_current_snapshot(0.0)
+                    catch err
+                        @error "Async SimOptim task failed" exception=(err, catch_backtrace())
+                        st_err = copy(optim_state_ref[])
+                        st_err["status"] = "error"
+                        st_err["error_message"] = sprint(showerror, err)
+                        optim_state_ref[] = st_err
+                        broadcast_current_snapshot(0.0)
+                    end
+                end
+
+                return create_ack(message.envelope.message_id, status="accepted", details="Optimization started asynchronously")
+            catch e
+                return create_ack(message.envelope.message_id, status="rejected", details="Failed to start optimization: $(sprint(showerror, e))")
+            end
+
+        elseif cmd_type == "stop_optimization" || action == "stop_optimization"
+            optim_stop_ref[] = true
+            st = copy(optim_state_ref[])
+            if get(st, "status", "idle") == "running"
+                st["status"] = "stopped"
+                optim_state_ref[] = st
+            end
+            broadcast_current_snapshot(0.0)
+            return create_ack(message.envelope.message_id, status="accepted", details="Optimization stop requested")
+
+        elseif cmd_type in ("apply_best_solution", "apply_solution") || action in ("apply_best_solution", "apply_solution")
+            try
+                GodotBridge.pause!(manager)
+                cand_spec = nothing
+                if haskey(cmd_dict, "scenespec") && cmd_dict["scenespec"] isa AbstractDict
+                    cand_spec = _to_plain_dict(cmd_dict["scenespec"])
+                else
+                    rank = Int(get(cmd_dict, "rank", 1))
+                    top_k = get(optim_state_ref[], "top_k_solutions", Any[])
+                    for item in top_k
+                        if item isa AbstractDict && Int(get(item, "rank", 0)) == rank && haskey(item, "scenespec")
+                            cand_spec = _to_plain_dict(item["scenespec"])
+                            break
+                        end
+                    end
+                    if cand_spec === nothing && !isempty(top_k) && top_k[1] isa AbstractDict && haskey(top_k[1], "scenespec")
+                        cand_spec = _to_plain_dict(top_k[1]["scenespec"])
+                    end
+                end
+
+                if cand_spec === nothing
+                    return create_ack(message.envelope.message_id, status="rejected", details="No candidate SceneSpec available to apply")
+                end
+
+                default_spec = cand_spec
+                success, diags = stage_and_activate!(manager, cand_spec)
+                if success
+                    broadcast_current_snapshot(0.0)
+                    return create_ack(message.envelope.message_id, status="accepted", details="Applied candidate solution to active simulation runtime")
+                else
+                    diag_messages = join([d.message for d in diags], "; ")
+                    return create_ack(message.envelope.message_id, status="rejected", details="Candidate failed to compile: $diag_messages")
+                end
+            catch e
+                return create_ack(message.envelope.message_id, status="rejected", details="Failed to apply candidate solution: $(sprint(showerror, e))")
+            end
         end
 
         return create_ack(message.envelope.message_id, status="ignored", details="Unknown command $cmd_type")
     end)
 
-    @async GodotBridge.start(server)
-    sleep(0.3)
+    if autostart_ws
+        @async GodotBridge.start(server)
+        sleep(0.3)
+    end
     return (server, manager)
 end
 

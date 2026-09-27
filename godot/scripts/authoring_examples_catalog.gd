@@ -187,58 +187,51 @@ static func get_example_scenespec(example_id: String) -> Dictionary:
 
 	elif eid == "opt_p1_er_allocation":
 		var elems := [
-			_elem("Source_Patients", "ER Walk-In & Ambulance", "source", [-18.0, 0.0, 0.0], [2.8, 2.2, 1.2], {"interarrival_time": {"type": "exponential", "mean": 2.0}, "priority": 0}, "#f39c12"),
-			_elem("Queue_Triage", "Triage Waiting Room", "queue", [-12.5, 0.0, 0.0], [3.8, 2.2, 0.8], {"capacity": 50, "discipline": "fifo"}, "#3498db"),
-			_elem("Server_Triage", "Triage Nurses (c1)", "server", [-7.0, 0.0, 0.0], [3.0, 2.2, 1.8], {"servers": 1, "service_time": {"type": "exponential", "mean": 3.2}, "routing_rule": "prob", "routing_weights": {"Queue_FastTrack": 0.50, "Queue_Acute": 0.35, "Queue_Trauma": 0.15}}, "#e67e22"),
-			_elem("Queue_FastTrack", "Fast-Track Waiting", "queue", [0.0, -6.0, 0.0], [3.8, 1.8, 0.8], {"capacity": 40, "discipline": "fifo"}, "#3498db"),
-			_elem("Server_FastTrack", "Fast-Track PA/NP (c2)", "server", [5.5, -6.0, 0.0], [3.0, 1.8, 1.8], {"servers": 1, "service_time": {"type": "exponential", "mean": 4.2}}, "#e67e22"),
-			_elem("Queue_Acute", "Acute Care Bays", "queue", [0.0, 0.0, 0.0], [3.8, 1.8, 0.8], {"capacity": 40, "discipline": "fifo"}, "#3498db"),
-			_elem("Server_Acute", "Acute Physicians (c3)", "server", [5.5, 0.0, 0.0], [3.0, 1.8, 1.8], {"servers": 1, "service_time": {"type": "exponential", "mean": 6.0}}, "#e67e22"),
-			_elem("Queue_Trauma", "Trauma Resus Queue", "queue", [0.0, 6.0, 0.0], [3.8, 1.8, 0.8], {"capacity": 40, "discipline": "fifo"}, "#3498db"),
-			_elem("Server_Trauma", "Trauma Team (c4)", "server", [5.5, 6.0, 0.0], [3.0, 1.8, 1.8], {"servers": 7, "service_time": {"type": "exponential", "mean": 8.0}}, "#e67e22"),
-			_elem("Sink_Discharge", "ER Discharge / Admit", "sink", [13.0, 0.0, 0.0], [2.8, 2.4, 1.2], {"record_sojourn": true}, "#e74c3c")
+			_elem("Source_Patients", "ER Walk-In & Ambulance", "source", [-18.0, 0.0, 0.0], [2.8, 2.2, 1.2], {"interarrival_time": {"type": "exponential", "mean": 1.0 / 0.85}, "priority": 0}, "#f39c12"),
+			_elem("Queue_Triage", "Stage 1: Triage Queue", "queue", [-12.5, 0.0, 0.0], [3.6, 2.2, 0.8], {"capacity": 60, "discipline": "fifo"}, "#3498db"),
+			_elem("Server_Triage", "Stage 1: Triage Nurses (s1)", "server", [-7.5, 0.0, 0.0], [3.0, 2.2, 1.8], {"servers": 3, "service_time": {"type": "exponential", "mean": 1.0}}, "#e67e22"),
+			_elem("Queue_Exam", "Stage 2: Diagnostic Queue", "queue", [-2.0, 0.0, 0.0], [3.6, 2.2, 0.8], {"capacity": 60, "discipline": "fifo"}, "#3498db"),
+			_elem("Server_Exam", "Stage 2: Diagnostic / Imaging (s2)", "server", [3.0, 0.0, 0.0], [3.0, 2.2, 1.8], {"servers": 1, "service_time": {"type": "exponential", "mean": 1.0}}, "#e67e22"),
+			_elem("Queue_Treat", "Stage 3: Treatment Queue", "queue", [8.5, 0.0, 0.0], [3.6, 2.2, 0.8], {"capacity": 60, "discipline": "fifo"}, "#3498db"),
+			_elem("Server_Treat", "Stage 3: ER Physicians (s3)", "server", [13.5, 0.0, 0.0], [3.0, 2.2, 1.8], {"servers": 1, "service_time": {"type": "exponential", "mean": 1.0}}, "#e67e22"),
+			_elem("Sink_Discharge", "ER Discharge / Admit", "sink", [19.0, 0.0, 0.0], [2.8, 2.4, 1.2], {"record_sojourn": true}, "#e74c3c")
 		]
 		var conns := [
 			_conn("c1", "Source_Patients", "Queue_Triage"),
 			_conn("c2", "Queue_Triage", "Server_Triage"),
-			_conn("c3", "Server_Triage", "Queue_FastTrack", 1),
-			_conn("c4", "Server_Triage", "Queue_Acute", 2),
-			_conn("c5", "Server_Triage", "Queue_Trauma", 3),
-			_conn("c6", "Queue_FastTrack", "Server_FastTrack"),
-			_conn("c7", "Queue_Acute", "Server_Acute"),
-			_conn("c8", "Queue_Trauma", "Server_Trauma"),
-			_conn("c9", "Server_FastTrack", "Sink_Discharge"),
-			_conn("c10", "Server_Acute", "Sink_Discharge"),
-			_conn("c11", "Server_Trauma", "Sink_Discharge")
+			_conn("c3", "Server_Triage", "Queue_Exam"),
+			_conn("c4", "Queue_Exam", "Server_Exam"),
+			_conn("c5", "Server_Exam", "Queue_Treat"),
+			_conn("c6", "Queue_Treat", "Server_Treat"),
+			_conn("c7", "Server_Treat", "Sink_Discharge")
 		]
 		var opt := {
 			"problem_id": "opt_p1_er_allocation",
 			"problem_class": "parameter",
-			"title": "ER Server Allocation (Discrete Resource Budgeting)",
+			"title": "ER Server Allocation (3-Stage Tandem Queue)",
 			"decision_variables": [
-				{"id": "c1", "element_id": "Server_Triage", "property": "servers", "type": "int", "lower": 1, "upper": 6, "initial": 1, "label": "Triage Nurses (c1)"},
-				{"id": "c2", "element_id": "Server_FastTrack", "property": "servers", "type": "int", "lower": 1, "upper": 6, "initial": 1, "label": "Fast-Track Staff (c2)"},
-				{"id": "c3", "element_id": "Server_Acute", "property": "servers", "type": "int", "lower": 1, "upper": 6, "initial": 1, "label": "Acute Physicians (c3)"},
-				{"id": "c4", "element_id": "Server_Trauma", "property": "servers", "type": "int", "lower": 1, "upper": 6, "initial": 7, "label": "Trauma Team (c4)"}
+				{"id": "s1", "element_id": "Server_Triage", "property": "servers", "type": "int", "lower": 1, "upper": 3, "initial": 3, "label": "Stage 1: Triage Staff (s1)"},
+				{"id": "s2", "element_id": "Server_Exam", "property": "servers", "type": "int", "lower": 1, "upper": 3, "initial": 1, "label": "Stage 2: Exam Staff (s2)"},
+				{"id": "s3", "element_id": "Server_Treat", "property": "servers", "type": "int", "lower": 1, "upper": 3, "initial": 1, "label": "Stage 3: Treatment Staff (s3)"}
 			],
 			"constraints": [
-				{"id": "staff_budget", "kind": "linear_sum", "variables": ["c1", "c2", "c3", "c4"], "relation": "<=", "rhs": 10.0, "penalty_weight": 50.0, "description": "Total ER shift headcount c1 + c2 + c3 + c4 <= 10"}
+				{"id": "staff_budget", "kind": "linear_sum", "variables": ["s1", "s2", "s3"], "relation": "<=", "rhs": 5.0, "penalty_weight": 50.0, "description": "Total ER shift headcount s1 + s2 + s3 <= 5"}
 			],
-			"objective": {"sense": "minimize", "metric": "system_sojourn_mean", "description": "Minimize mean end-to-end patient sojourn time E[W] (seconds)"},
-			"solver": {"algorithm": "eca", "max_evaluations": 40, "population_size": 10, "replications_per_eval": 4, "sim_horizon": 500.0, "warmup_time": 80.0, "use_crn": true, "top_k": 5}
+			"objective": {"sense": "minimize", "metric": "er_wait_mean", "secondary_metric": "total_servers", "description": "Minimize total expected queue waiting time E[W_q] (minutes)"},
+			"solver": {"algorithm": "eca", "max_evaluations": 27, "population_size": 9, "replications_per_eval": 3, "sim_horizon": 500.0, "warmup_time": 80.0, "use_crn": true, "top_k": 5}
 		}
-		return _base_doc("opt_p1_er_allocation", "1. ER Server Allocation", "Allocate 10 clinical staff across Triage, Fast-Track, Acute Care, and Trauma to minimize patient sojourn time.", elems, conns, "des_only", false, opt)
+		return _base_doc("opt_p1_er_allocation", "1. ER Server Allocation", "Allocate 5 clinical staff across 3 tandem ER stages (s1 + s2 + s3 <= 5) to reduce queue wait from 48.1 min ([3,1,1]) to 26.3 min ([2,2,1]).", elems, conns, "des_only", false, opt)
 
 	elif eid == "opt_p2_vip_dispatch":
 		var elems := [
-			_elem("Source_VIP", "VIP Enterprise Callers (P1)", "source", [-16.0, -3.5, 0.0], [2.8, 2.0, 1.2], {"interarrival_time": {"type": "exponential", "mean": 4.5}, "priority": 1}, "#f1c40f"),
-			_elem("Source_Standard", "Standard Callers (P0)", "source", [-16.0, 3.5, 0.0], [2.8, 2.0, 1.2], {"interarrival_time": {"type": "exponential", "mean": 1.8}, "priority": 0}, "#f39c12"),
-			_elem("Queue_Dispatch", "Central Dispatch Queue", "queue", [-8.5, 0.0, 0.0], [4.2, 2.4, 0.8], {"capacity": 60, "discipline": "fifo"}, "#3498db"),
-			_elem("Server_Router", "Automated Triage Router", "server", [-2.5, 0.0, 0.0], [3.0, 2.2, 1.8], {"servers": 2, "service_time": {"type": "exponential", "mean": 1.2}, "routing_rule": "prob"}, "#e67e22"),
-			_elem("Queue_PoolA", "Support Pool A Queue", "queue", [4.0, -3.5, 0.0], [3.8, 2.0, 0.8], {"capacity": 40, "discipline": "fifo"}, "#3498db"),
-			_elem("Server_PoolA", "Support Engineers A", "server", [9.5, -3.5, 0.0], [3.0, 2.0, 1.8], {"servers": 2, "service_time": {"type": "exponential", "mean": 4.2}}, "#e67e22"),
-			_elem("Queue_PoolB", "Support Pool B Queue", "queue", [4.0, 3.5, 0.0], [3.8, 2.0, 0.8], {"capacity": 40, "discipline": "fifo"}, "#3498db"),
-			_elem("Server_PoolB", "Support Engineers B", "server", [9.5, 3.5, 0.0], [3.0, 2.0, 1.8], {"servers": 2, "service_time": {"type": "exponential", "mean": 4.2}}, "#e67e22"),
+			_elem("Source_VIP", "VIP Enterprise Callers (P1)", "source", [-16.0, -3.5, 0.0], [2.8, 2.0, 1.2], {"interarrival_time": {"type": "exponential", "mean": 1.25}, "priority": 1}, "#f1c40f"),
+			_elem("Source_Standard", "Standard Callers (P0)", "source", [-16.0, 3.5, 0.0], [2.8, 2.0, 1.2], {"interarrival_time": {"type": "exponential", "mean": 1.0 / 2.4}, "priority": 0}, "#f39c12"),
+			_elem("Queue_Dispatch", "Central Dispatch Intake", "queue", [-8.5, 0.0, 0.0], [4.2, 2.4, 0.8], {"capacity": 80, "discipline": "priority"}, "#3498db"),
+			_elem("Server_Router", "State-Dependent Triage Router", "server", [-2.5, 0.0, 0.0], [3.0, 2.2, 1.8], {"servers": 4, "service_time": {"type": "exponential", "mean": 0.02}, "routing_rule": "dynamic_policy", "vip_queue_threshold": 3.0, "pool_util_threshold": 0.85}, "#9b59b6"),
+			_elem("Queue_PoolA", "Dedicated VIP Bay Queue (A)", "queue", [4.0, -3.5, 0.0], [3.8, 2.0, 0.8], {"capacity": 60, "discipline": "priority"}, "#3498db"),
+			_elem("Server_PoolA", "Dedicated VIP Specialists (srv_a)", "server", [9.5, -3.5, 0.0], [3.0, 2.0, 1.8], {"servers": 2, "service_time": {"type": "exponential", "mean": 1.0}}, "#e67e22"),
+			_elem("Queue_PoolB", "Shared Pool Queue (B)", "queue", [4.0, 3.5, 0.0], [3.8, 2.0, 0.8], {"capacity": 80, "discipline": "fifo"}, "#3498db"),
+			_elem("Server_PoolB", "Shared Pool Engineers (srv_b)", "server", [9.5, 3.5, 0.0], [3.0, 2.0, 1.8], {"servers": 2, "service_time": {"type": "exponential", "mean": 1.0}}, "#e67e22"),
 			_elem("Sink_Resolved", "Tickets Resolved", "sink", [16.0, 0.0, 0.0], [2.8, 2.2, 1.2], {"record_sojourn": true}, "#e74c3c")
 		]
 		var conns := [
@@ -255,74 +248,83 @@ static func get_example_scenespec(example_id: String) -> Dictionary:
 		var opt := {
 			"problem_id": "opt_p2_vip_dispatch",
 			"problem_class": "policy",
-			"title": "VIP Support Dispatcher (Queue Discipline & Routing Policy)",
+			"title": "VIP Support Dispatcher (State-Dependent Dynamic Policy)",
 			"decision_variables": [
-				{"id": "disc_main", "element_id": "Queue_Dispatch", "property": "discipline", "type": "categorical", "categories": ["fifo", "priority"], "initial": "fifo", "label": "Dispatch Queue Discipline"},
-				{"id": "route_pol", "element_id": "Server_Router", "property": "routing_rule", "type": "categorical", "categories": ["prob", "round_robin", "shortest_queue"], "initial": "prob", "label": "Pool Routing Policy"},
-				{"id": "disc_a", "element_id": "Queue_PoolA", "property": "discipline", "type": "categorical", "categories": ["fifo", "priority"], "initial": "fifo", "label": "Pool A Discipline"},
-				{"id": "disc_b", "element_id": "Queue_PoolB", "property": "discipline", "type": "categorical", "categories": ["fifo", "priority"], "initial": "fifo", "label": "Pool B Discipline"},
-				{"id": "srv_a", "element_id": "Server_PoolA", "property": "servers", "type": "int", "lower": 1, "upper": 5, "initial": 2, "label": "Pool A Engineers"},
-				{"id": "srv_b", "element_id": "Server_PoolB", "property": "servers", "type": "int", "lower": 1, "upper": 5, "initial": 2, "label": "Pool B Engineers"}
+				{"id": "route_pol", "element_id": "Server_Router", "property": "routing_rule", "type": "categorical", "categories": ["prob", "shortest_queue", "dynamic_policy"], "initial": "dynamic_policy", "label": "Router Dispatch Policy"},
+				{"id": "disc_b", "element_id": "Queue_PoolB", "property": "discipline", "type": "categorical", "categories": ["fifo", "priority"], "initial": "fifo", "label": "Shared Pool B Discipline"},
+				{"id": "srv_a", "element_id": "Server_PoolA", "property": "servers", "type": "int", "lower": 1, "upper": 3, "initial": 2, "label": "Dedicated VIP Staff (srv_a)"},
+				{"id": "srv_b", "element_id": "Server_PoolB", "property": "servers", "type": "int", "lower": 1, "upper": 3, "initial": 2, "label": "Shared Pool Staff (srv_b)"},
+				{"id": "vip_q_thresh", "element_id": "Server_Router", "property": "vip_queue_threshold", "type": "policy_param", "lower": 1.0, "upper": 4.0, "initial": 3.0, "label": "VIP Overflow Queue Threshold (θ_q)"},
+				{"id": "pool_util_thresh", "element_id": "Server_Router", "property": "pool_util_threshold", "type": "policy_param", "lower": 0.5, "upper": 0.98, "initial": 0.85, "label": "Shared Pool Reserve Cap (θ_ρ)"}
 			],
 			"constraints": [
-				{"id": "vip_sla", "kind": "metric_bound", "metric": "vip_wait_mean", "relation": "<=", "rhs": 1.5, "penalty_weight": 60.0, "description": "VIP mean queue wait W_q(VIP) <= 1.5s SLA"},
-				{"id": "pool_budget", "kind": "linear_sum", "variables": ["srv_a", "srv_b"], "relation": "<=", "rhs": 6.0, "penalty_weight": 40.0, "description": "Total support engineers srv_a + srv_b <= 6"}
+				{"id": "vip_sla", "kind": "metric_bound", "metric": "vip_wait_mean", "relation": "<=", "rhs": 3.0, "penalty_weight": 80.0, "description": "VIP SLA: E[W_q(VIP)] <= 3.0 minutes"},
+				{"id": "pool_budget", "kind": "linear_sum", "variables": ["srv_a", "srv_b"], "relation": "<=", "rhs": 4.0, "penalty_weight": 60.0, "description": "Total support engineers srv_a + srv_b <= 4"}
 			],
-			"objective": {"sense": "minimize", "metric": "weighted_vip_std_cost", "description": "Minimize 5*W_q(VIP) + 1*W_q(Std) + 0.8*(srv_a + srv_b)"},
-			"solver": {"algorithm": "mixed_ga", "max_evaluations": 36, "population_size": 9, "replications_per_eval": 4, "sim_horizon": 500.0, "warmup_time": 80.0, "use_crn": true, "top_k": 5}
+			"objective": {"sense": "minimize", "metric": "std_wait_mean", "secondary_metric": "vip_wait_mean", "description": "Minimize Standard customer queue wait E[W_q(Std)] subject to VIP SLA <= 3.0 min"},
+			"solver": {"algorithm": "policy_search", "max_evaluations": 30, "population_size": 10, "replications_per_eval": 3, "sim_horizon": 500.0, "warmup_time": 80.0, "use_crn": true, "top_k": 5}
 		}
-		return _base_doc("opt_p2_vip_dispatch", "2. VIP Support Dispatcher", "Optimize queue discipline (FIFO vs Priority HOL), pool routing rule, and engineer staffing under a VIP SLA.", elems, conns, "des_only", false, opt)
+		return _base_doc("opt_p2_vip_dispatch", "2. VIP Support Dispatcher", "Synthesize a state-dependent dynamic routing & HOL priority policy across 4 servers to satisfy VIP SLA <= 3.0m while minimizing Standard wait.", elems, conns, "des_only", false, opt)
 
 	elif eid == "opt_p3_conveyor_topology":
 		var elems := [
-			_elem("Source_Inbound", "Inbound Parcel Unloader", "source", [-18.0, -4.0, 0.0], [2.8, 2.0, 1.2], {"interarrival_time": {"type": "exponential", "mean": 1.1}, "priority": 0}, "#f39c12"),
-			_elem("Queue_Infeed", "Induction Staging", "queue", [-12.5, -4.0, 0.0], [3.5, 2.0, 0.8], {"capacity": 12, "discipline": "fifo"}, "#3498db"),
-			_elem("Conveyor_West", "West Induction Belt", "conveyor", [-7.0, -4.0, 0.0], [5.5, 1.2, 0.8], {"speed": 1.2, "length": 5.5, "capacity": 6, "routing_rule": "prob"}, "#2ecc71"),
-			_elem("Conveyor_North", "North Spine Belt", "conveyor", [0.5, -4.0, 0.0], [6.0, 1.2, 0.8], {"speed": 1.2, "length": 6.0, "capacity": 6, "routing_rule": "prob"}, "#2ecc71"),
-			_elem("Conveyor_East", "East Transfer Belt", "conveyor", [7.5, 0.0, 0.0], [1.2, 6.0, 0.8], {"speed": 1.2, "length": 6.0, "capacity": 6, "routing_rule": "prob"}, "#2ecc71"),
-			_elem("Conveyor_South", "South Distribution Belt", "conveyor", [0.5, 4.0, 0.0], [6.0, 1.2, 0.8], {"speed": 1.2, "length": 6.0, "capacity": 6, "routing_rule": "prob"}, "#2ecc71"),
-			_elem("Queue_ChuteA", "Chute A Buffer", "queue", [9.5, -4.5, 0.0], [3.2, 1.8, 0.8], {"capacity": 10, "discipline": "fifo"}, "#3498db"),
-			_elem("Server_SorterA", "Optical Sorter A", "server", [14.0, -4.5, 0.0], [2.8, 1.8, 1.8], {"servers": 1, "service_time": {"type": "exponential", "mean": 2.8}}, "#e67e22"),
-			_elem("Queue_ChuteB", "Chute B Buffer", "queue", [9.5, 0.0, 0.0], [3.2, 1.8, 0.8], {"capacity": 10, "discipline": "fifo"}, "#3498db"),
-			_elem("Server_SorterB", "Optical Sorter B", "server", [14.0, 0.0, 0.0], [2.8, 1.8, 1.8], {"servers": 1, "service_time": {"type": "exponential", "mean": 2.8}}, "#e67e22"),
-			_elem("Queue_ChuteC", "Chute C Buffer", "queue", [9.5, 4.5, 0.0], [3.2, 1.8, 0.8], {"capacity": 10, "discipline": "fifo"}, "#3498db"),
-			_elem("Server_SorterC", "Optical Sorter C", "server", [14.0, 4.5, 0.0], [2.8, 1.8, 1.8], {"servers": 1, "service_time": {"type": "exponential", "mean": 2.8}}, "#e67e22"),
-			_elem("Sink_Outbound", "Outbound Shipping Docks", "sink", [19.5, 0.0, 0.0], [2.8, 2.4, 1.2], {"record_sojourn": true}, "#e74c3c")
+			_elem("Source_Inbound", "Inbound Parcel Unloader", "source", [-33.0, 0.0, 0.0], [2.8, 2.0, 1.2], {"interarrival_time": {"type": "exponential", "mean": 7.5}, "priority": 0}, "#f39c12"),
+			_elem("Queue_Infeed", "Induction Staging", "queue", [-28.0, 0.0, 0.0], [3.2, 2.0, 0.8], {"capacity": 25, "discipline": "fifo"}, "#3498db"),
+			_elem("Conveyor_West", "Station 1 Conveyor (West)", "conveyor", [-22.5, 0.0, 0.0], [6.0, 1.2, 0.8], {"speed": 1.0, "length": 25.0, "spur_length": 10.0, "spur_mode": "spurs_10m", "layout_mode": "collinear_1d", "z_constraint": "constant_z", "capacity": 10, "routing_rule": "shortest_queue"}, "#2ecc71"),
+			_elem("Conveyor_North", "Station 2 Conveyor (North)", "conveyor", [-7.5, 0.0, 0.0], [6.0, 1.2, 0.8], {"speed": 1.0, "length": 25.0, "spur_length": 10.0, "spur_mode": "spurs_10m", "layout_mode": "collinear_1d", "z_constraint": "constant_z", "capacity": 10, "routing_rule": "shortest_queue"}, "#2ecc71"),
+			_elem("Conveyor_East", "Station 3 Conveyor (East)", "conveyor", [7.5, 0.0, 0.0], [6.0, 1.2, 0.8], {"speed": 1.0, "length": 25.0, "spur_length": 10.0, "spur_mode": "spurs_10m", "layout_mode": "collinear_1d", "z_constraint": "constant_z", "capacity": 10, "routing_rule": "shortest_queue"}, "#2ecc71"),
+			_elem("Conveyor_South", "Station 4 Conveyor (South)", "conveyor", [22.5, 0.0, 0.0], [6.0, 1.2, 0.8], {"speed": 1.0, "length": 25.0, "spur_length": 10.0, "spur_mode": "spurs_10m", "layout_mode": "collinear_1d", "z_constraint": "constant_z", "capacity": 10, "routing_rule": "shortest_queue"}, "#2ecc71"),
+			_elem("Queue_ChuteA", "Station 1 Buffer (K=2)", "queue", [-22.5, 5.0, 0.0], [2.8, 1.8, 0.8], {"capacity": 2, "discipline": "fifo"}, "#3498db"),
+			_elem("Server_SorterA", "Optical Sorter 1", "server", [-22.5, 9.5, 0.0], [2.8, 1.8, 1.8], {"servers": 1, "service_time": {"type": "exponential", "mean": 20.0}}, "#e67e22"),
+			_elem("Queue_ChuteB", "Station 2 Buffer (K=2)", "queue", [-7.5, 5.0, 0.0], [2.8, 1.8, 0.8], {"capacity": 2, "discipline": "fifo"}, "#3498db"),
+			_elem("Server_SorterB", "Optical Sorter 2", "server", [-7.5, 9.5, 0.0], [2.8, 1.8, 1.8], {"servers": 1, "service_time": {"type": "exponential", "mean": 20.0}}, "#e67e22"),
+			_elem("Queue_ChuteC", "Station 3 Buffer (K=2)", "queue", [7.5, 5.0, 0.0], [2.8, 1.8, 0.8], {"capacity": 2, "discipline": "fifo"}, "#3498db"),
+			_elem("Server_SorterC", "Optical Sorter 3", "server", [7.5, 9.5, 0.0], [2.8, 1.8, 1.8], {"servers": 1, "service_time": {"type": "exponential", "mean": 20.0}}, "#e67e22"),
+			_elem("Queue_ChuteD", "Station 4 Buffer (K=2)", "queue", [22.5, 5.0, 0.0], [2.8, 1.8, 0.8], {"capacity": 2, "discipline": "fifo"}, "#3498db"),
+			_elem("Server_SorterD", "Optical Sorter 4", "server", [22.5, 9.5, 0.0], [2.8, 1.8, 1.8], {"servers": 1, "service_time": {"type": "exponential", "mean": 20.0}}, "#e67e22"),
+			_elem("Sink_Outbound", "Outbound Shipping Docks", "sink", [0.0, 15.0, 0.0], [3.2, 2.4, 1.2], {"record_sojourn": true}, "#e74c3c")
 		]
 		var conns := [
 			_conn("c1", "Source_Inbound", "Queue_Infeed"),
 			_conn("c2", "Queue_Infeed", "Conveyor_West"),
-			_conn("c3", "Conveyor_West", "Conveyor_North"),
-			_conn("c4", "Conveyor_North", "Conveyor_East"),
-			_conn("c5", "Conveyor_East", "Conveyor_South"),
-			_conn("c6", "Conveyor_North", "Queue_ChuteA", 1),
-			_conn("c7", "Conveyor_East", "Queue_ChuteB", 1),
-			_conn("c8", "Conveyor_South", "Queue_ChuteC", 1),
-			_conn("c9", "Queue_ChuteA", "Server_SorterA"),
-			_conn("c10", "Queue_ChuteB", "Server_SorterB"),
-			_conn("c11", "Queue_ChuteC", "Server_SorterC"),
-			_conn("c12", "Server_SorterA", "Sink_Outbound"),
-			_conn("c13", "Server_SorterB", "Sink_Outbound"),
-			_conn("c14", "Server_SorterC", "Sink_Outbound")
+			_conn("c3", "Conveyor_West", "Conveyor_North", 1),
+			_conn("c4", "Conveyor_North", "Conveyor_East", 1),
+			_conn("c5", "Conveyor_East", "Conveyor_South", 1),
+			_conn("c6", "Conveyor_West", "Queue_ChuteA", 2),
+			_conn("c7", "Conveyor_North", "Queue_ChuteB", 2),
+			_conn("c8", "Conveyor_East", "Queue_ChuteC", 2),
+			_conn("c9", "Conveyor_South", "Queue_ChuteD", 1),
+			_conn("c10", "Queue_ChuteA", "Server_SorterA"),
+			_conn("c11", "Queue_ChuteB", "Server_SorterB"),
+			_conn("c12", "Queue_ChuteC", "Server_SorterC"),
+			_conn("c13", "Queue_ChuteD", "Server_SorterD"),
+			_conn("c14", "Server_SorterA", "Sink_Outbound"),
+			_conn("c15", "Server_SorterB", "Sink_Outbound"),
+			_conn("c16", "Server_SorterC", "Sink_Outbound"),
+			_conn("c17", "Server_SorterD", "Sink_Outbound")
 		]
 		var opt := {
 			"problem_id": "opt_p3_conveyor_topology",
 			"problem_class": "topology",
-			"title": "Sorting Hub Conveyor (Grammar-Based Topology Evolution)",
+			"title": "Sorting Hub Conveyor (Template-Free Bilevel Graph & 3D/2D Spatial Search)",
 			"decision_variables": [
-				{"id": "spd_w", "element_id": "Conveyor_West", "property": "speed", "type": "float", "lower": 1.0, "upper": 3.5, "initial": 1.2, "label": "West Belt Speed (m/s)"},
-				{"id": "spd_n", "element_id": "Conveyor_North", "property": "speed", "type": "float", "lower": 1.0, "upper": 3.5, "initial": 1.2, "label": "North Belt Speed (m/s)"},
-				{"id": "spd_e", "element_id": "Conveyor_East", "property": "speed", "type": "float", "lower": 1.0, "upper": 3.5, "initial": 1.2, "label": "East Belt Speed (m/s)"},
-				{"id": "spd_s", "element_id": "Conveyor_South", "property": "speed", "type": "float", "lower": 1.0, "upper": 3.5, "initial": 1.2, "label": "South Belt Speed (m/s)"},
-				{"id": "route_n", "element_id": "Conveyor_North", "property": "routing_rule", "type": "categorical", "categories": ["prob", "shortest_queue", "round_robin"], "initial": "prob", "label": "North Diverter Rule"},
-				{"id": "route_e", "element_id": "Conveyor_East", "property": "routing_rule", "type": "categorical", "categories": ["prob", "shortest_queue", "round_robin"], "initial": "prob", "label": "East Diverter Rule"},
-				{"id": "topology_loop", "element_id": "Conveyor_South", "property": "recirculation_edge", "type": "grammar_edge", "candidates": ["none", "Conveyor_West", "Queue_ChuteA", "Queue_ChuteB"], "initial": "none", "label": "Recirculation / Bypass Link"}
+				{"id": "edge_w", "element_id": "Conveyor_West", "property": "out_edge", "type": "grammar_edge", "candidates": ["none", "Conveyor_North", "Conveyor_East", "Conveyor_South"], "initial": "Conveyor_North", "label": "Station 1 Outgoing Belt"},
+				{"id": "edge_n", "element_id": "Conveyor_North", "property": "out_edge", "type": "grammar_edge", "candidates": ["none", "Conveyor_West", "Conveyor_East", "Conveyor_South"], "initial": "Conveyor_East", "label": "Station 2 Outgoing Belt"},
+				{"id": "edge_e", "element_id": "Conveyor_East", "property": "out_edge", "type": "grammar_edge", "candidates": ["none", "Conveyor_West", "Conveyor_North", "Conveyor_South"], "initial": "Conveyor_South", "label": "Station 3 Outgoing Belt"},
+				{"id": "edge_s", "element_id": "Conveyor_South", "property": "out_edge", "type": "grammar_edge", "candidates": ["none", "Conveyor_West", "Conveyor_North", "Conveyor_East"], "initial": "none", "label": "Station 4 Outgoing Belt (Loop Closure)"},
+				{"id": "spur_mode", "element_id": "Conveyor_West", "property": "spur_mode", "type": "categorical", "categories": ["spurs_10m", "direct_ring"], "initial": "spurs_10m", "label": "Station Induction Spur Mode"},
+				{"id": "layout_mode", "element_id": "Conveyor_West", "property": "layout_mode", "type": "categorical", "categories": ["collinear_1d", "folded_2d"], "initial": "collinear_1d", "label": "Spatial Coordinate Folding"},
+				{"id": "route_rule", "element_id": "Conveyor_West", "property": "routing_rule", "type": "categorical", "categories": ["shortest_queue", "prob", "round_robin"], "initial": "shortest_queue", "label": "Diverter Routing Policy"}
 			],
 			"constraints": [
-				{"id": "max_conveyor_budget", "kind": "topology_budget", "metric": "total_conveyor_length", "relation": "<=", "rhs": 35.0, "penalty_weight": 25.0, "description": "Total conveyor network length <= 35m and DAG/Loop reachability to Sink"}
+				{"id": "max_conveyor_budget", "kind": "topology_budget", "metric": "total_conveyor_length", "relation": "<=", "rhs": 65.0, "penalty_weight": 40.0, "description": "Total 3D Euclidean belt length L_total <= 65.0m"},
+				{"id": "station_separation", "kind": "metric_bound", "metric": "min_station_separation", "relation": ">=", "rhs": 15.0, "penalty_weight": 100.0, "description": "Minimum pairwise 3D station distance ||p_i - p_j||_2 >= 15.0m"},
+				{"id": "constant_z_elevation", "kind": "metric_bound", "metric": "z_elevation_deviation", "relation": "<=", "rhs": 0.0, "penalty_weight": 200.0, "description": "Constant floor elevation z_i == z_0 across all conveyors"},
+				{"id": "port_degree_bound", "kind": "metric_bound", "metric": "max_port_degree", "relation": "<=", "rhs": 2.0, "penalty_weight": 100.0, "description": "Binary mechanical diverter/merge port limit (in-deg <= 2, out-deg <= 2)"},
+				{"id": "induction_overflow_safety", "kind": "metric_bound", "metric": "deadlock_free_spurs", "relation": ">=", "rhs": 1.0, "penalty_weight": 150.0, "description": "Open acyclic topologies require 10m accumulation spurs; closed loops allow 0m direct ring"}
 			],
-			"objective": {"sense": "minimize", "metric": "conveyor_jam_and_sojourn", "description": "Minimize parcel sojourn time E[W] + congestion penalty (maximize sorting throughput)"},
-			"solver": {"algorithm": "grammar_ga", "max_evaluations": 36, "population_size": 9, "replications_per_eval": 3, "sim_horizon": 400.0, "warmup_time": 60.0, "use_crn": true, "top_k": 5}
+			"objective": {"sense": "minimize", "metric": "system_sojourn_mean", "secondary_metric": "total_conveyor_length", "description": "Minimize expected parcel sojourn time E[W] = E[T_belt] + E[W_q] + E[S] (seconds)"},
+			"solver": {"algorithm": "bilevel_graph_sa", "max_evaluations": 30, "population_size": 8, "replications_per_eval": 2, "sim_horizon": 300.0, "warmup_time": 40.0, "use_crn": true, "top_k": 5}
 		}
-		return _base_doc("opt_p3_conveyor_topology", "3. Sorting Hub Conveyor", "Evolve a congested linear spine conveyor into a closed-loop recirculation sorting hub.", elems, conns, "des_only", false, opt)
+		return _base_doc("opt_p3_conveyor_topology", "3. Sorting Hub Conveyor", "Discover a 60m 2D Closed-Loop recirculation ring (E[W]=48.2s) from a 100m 1D Linear Spine (E[W]=73.2s) via template-free bilevel graph mutation and 3D/2D coordinate folding.", elems, conns, "des_only", false, opt)
 	return {}

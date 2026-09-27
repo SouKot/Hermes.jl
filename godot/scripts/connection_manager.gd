@@ -21,6 +21,14 @@ var reconnect_delay := 0.5
 var reconnect_timer := 0.0
 var endpoint_path := "/"
 
+func _configure_socket(ws: WebSocketPeer) -> void:
+    ws.inbound_buffer_size = 16 * 1024 * 1024
+    ws.outbound_buffer_size = 16 * 1024 * 1024
+    ws.max_queued_packets = 4096
+
+func _ready() -> void:
+    _configure_socket(socket)
+
 func _process(delta: float) -> void:
     if state == ConnectionState.CONNECTING or state == ConnectionState.CONNECTED:
         socket.poll()
@@ -36,6 +44,7 @@ func connect_to(target_host: String = host, target_port: int = port, path := "/"
     endpoint_path = path
     _set_state(ConnectionState.CONNECTING, "ws://%s:%d%s" % [host, port, endpoint_path])
     socket = WebSocketPeer.new()
+    _configure_socket(socket)
     var error := socket.connect_to_url("ws://%s:%d%s" % [host, port, endpoint_path])
     if error != OK:
         _schedule_reconnect("connect error: %s" % error)

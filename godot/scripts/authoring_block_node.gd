@@ -55,6 +55,8 @@ const MAX_SPARKLINE_POINTS: int = 40
 var hovered_port_id: String = ""
 var _dragging: bool = false
 var _drag_offset: Vector2 = Vector2.ZERO
+var _drag_start_node_pos: Vector2 = Vector2.ZERO
+var _drag_start_canvas_mouse: Vector2 = Vector2.ZERO
 enum ResizeCorner {
 	NONE,
 	TOP_LEFT,
@@ -139,6 +141,14 @@ func get_port_global_position(port_id: String) -> Vector2:
 	if is_inside_tree():
 		return get_global_transform() * local_pos
 	return get_port_canvas_position(port_id)
+
+func _event_canvas_mouse_pos(ev_pos: Vector2, ev_global_pos: Vector2) -> Vector2:
+	if ev_global_pos != Vector2.ZERO:
+		var p := get_parent()
+		if p is CanvasItem and (p as CanvasItem).is_inside_tree():
+			return (p as CanvasItem).get_global_transform().affine_inverse() * ev_global_pos
+		return ev_global_pos
+	return get_transform() * ev_pos
 
 func get_port_info(port_id: String) -> Dictionary:
 	if _port_sockets.is_empty():
@@ -496,6 +506,8 @@ func _gui_input(event: InputEvent) -> void:
 				# 4. Center body clicked -> drag block
 				_dragging = true
 				_drag_offset = mb.position
+				_drag_start_node_pos = position
+				_drag_start_canvas_mouse = _event_canvas_mouse_pos(mb.position, mb.global_position)
 				block_selected.emit(nid)
 				accept_event()
 			else:
@@ -594,8 +606,11 @@ func _gui_input(event: InputEvent) -> void:
 			element_resized.emit(nid, Vector3(new_len, new_wid, _resize_start_dims.z))
 			accept_event()
 		elif _dragging:
-			position += mm.position - _drag_offset
-			block_moved.emit(nid, position)
+			var cur_canvas_mouse := _event_canvas_mouse_pos(mm.position, mm.global_position)
+			var desired_pos := _drag_start_node_pos + (cur_canvas_mouse - _drag_start_canvas_mouse)
+			if desired_pos.is_finite():
+				position = desired_pos
+				block_moved.emit(nid, position)
 			accept_event()
 		else:
 			var corner := _hit_test_resize_corner(mm.position)
