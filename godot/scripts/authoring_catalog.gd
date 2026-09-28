@@ -712,6 +712,17 @@ func create_element_instance(kind: String, id_val: String, pos: Vector2) -> Scen
 		"elevation_start": entry.default_elevation_start,
 		"elevation_end": entry.default_elevation_end
 	}
+	if entry.kind == "conveyor":
+		elem.geometry["shape_preset"] = "straight"
+		elem.geometry["auto_join"] = true
+		elem.geometry["shape_params"] = {
+			"bend_radius": 2.0,
+			"bend_angle_deg": 90.0,
+			"sweep_angle_deg": 90.0,
+			"passes": 3,
+			"pitch": 2.4,
+			"helix_turns": 1.5
+		}
 
 	elem.editor.graph_position = Vector2(pos.x * 20.0, pos.y * 20.0) # Scale to pixel coordinates
 	elem.editor.color = "#%s" % entry.color.to_html(false)

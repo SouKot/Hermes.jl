@@ -23,6 +23,7 @@ const PlotStudio := preload("res://scripts/authoring_plot_studio.gd")
 const AuthoringOutliner := preload("res://scripts/authoring_outliner.gd")
 const ExamplesCatalog := preload("res://scripts/authoring_examples_catalog.gd")
 const OptimSetup := preload("res://scripts/authoring_optim_setup.gd")
+const OptimFeedback := preload("res://scripts/authoring_optim_feedback.gd")
 
 enum ViewMode { VIEW_2D, VIEW_3D }
 
@@ -95,6 +96,7 @@ var _abm_status_pill: Label
 var _plot_studio: PlotStudio
 var _btn_plots: Button
 var _optim_setup: OptimSetup
+var _optim_feedback: OptimFeedback
 var _btn_optimize: Button
 var _btn_opt_report: Button
 
@@ -394,6 +396,39 @@ func _build_ui() -> void:
 	)
 	add_child(_optim_setup)
 
+	# 13. SimOptim Window 2 (Optimization Report & Live Feedback + Lightbox Modal)
+	_optim_feedback = OptimFeedback.new(doc_store)
+	_optim_feedback.closed.connect(func():
+		if _btn_opt_report != null: _btn_opt_report.modulate = Color.WHITE
+	)
+	_optim_feedback.stop_optimization_requested.connect(func():
+		command_requested.emit({"action": "stop_optimization"})
+	)
+	_optim_feedback.open_setup_requested.connect(func():
+		if _optim_setup != null:
+			_optim_setup.open_setup()
+			if _btn_optimize != null: _btn_optimize.modulate = ACCENT
+	)
+	_optim_feedback.apply_solution_requested.connect(func(cand_spec: Dictionary, rank: int):
+		if not cand_spec.is_empty() and doc_store != null:
+			doc_store.load_from_dictionary(cand_spec)
+			if _canvas_2d != null:
+				_canvas_2d.rebuild_blocks()
+			if _viewport_3d != null:
+				_viewport_3d.rebuild_3d_scene()
+		command_requested.emit({
+			"action": "apply_best_solution",
+			"scenespec": cand_spec,
+			"rank": rank
+		})
+	)
+	_optim_setup.open_feedback_requested.connect(func():
+		if _optim_feedback != null:
+			_optim_feedback.open_report()
+			if _btn_opt_report != null: _btn_opt_report.modulate = ACCENT
+	)
+	add_child(_optim_feedback)
+
 func _build_header() -> Control:
 	var panel := PanelContainer.new()
 	panel.custom_minimum_size.y = 52
@@ -572,11 +607,11 @@ func _build_header() -> Control:
 
 	_btn_opt_report = Button.new()
 	_btn_opt_report.text = "📋 Report"
-	_btn_opt_report.tooltip_text = "Open Optimization Progress & Report Window"
+	_btn_opt_report.tooltip_text = "Open Window 2: Optimization Report & Live Feedback (Charts, Top-K Leaderboard, 2D Schematic Snapshot)"
 	_btn_opt_report.pressed.connect(func():
-		if _optim_setup != null:
-			_optim_setup.open_progress_hud()
-			_optim_setup.open_feedback_requested.emit()
+		if _optim_feedback != null:
+			_optim_feedback.toggle_report()
+			_btn_opt_report.modulate = ACCENT if _optim_feedback.is_report_visible() else Color.WHITE
 	)
 	row.add_child(_btn_opt_report)
 
@@ -936,14 +971,17 @@ func update_simulation_telemetry(state: Dictionary) -> void:
 		_canvas_2d.update_element_telemetry(elems)
 	if _plot_studio != null and _plot_studio.has_method("feed_telemetry"):
 		_plot_studio.feed_telemetry(sim_time, elems, abm if abm is Dictionary else {})
-	if _optim_setup != null and _optim_setup.has_method("feed_optim_state"):
+	if _optim_setup != null or _optim_feedback != null:
 		var opt_st: Dictionary = {}
 		if abm is Dictionary and abm.has("optim_state") and abm["optim_state"] is Dictionary:
 			opt_st = abm["optim_state"]
 		elif state.has("optim_state") and state["optim_state"] is Dictionary:
 			opt_st = state["optim_state"]
 		if not opt_st.is_empty():
-			_optim_setup.feed_optim_state(opt_st)
+			if _optim_setup != null and _optim_setup.has_method("feed_optim_state"):
+				_optim_setup.feed_optim_state(opt_st)
+			if _optim_feedback != null and _optim_feedback.has_method("feed_optim_state"):
+				_optim_feedback.feed_optim_state(opt_st)
 	if _outliner != null and is_instance_valid(_outliner):
 		# Always collect entities; outliner skips Tree rebuild when not visible
 		var entities: Array = []

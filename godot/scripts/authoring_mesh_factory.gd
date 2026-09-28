@@ -4,6 +4,7 @@ class_name SimVizAuthoringMeshFactory
 extends RefCounted
 
 const SceneTypes := preload("res://scripts/scenespec_types.gd")
+const ConveyorCurve3D := preload("res://scripts/conveyor_curve_3d.gd")
 
 # Reusable PBR Materials
 static var _mat_steel: StandardMaterial3D
@@ -124,14 +125,14 @@ static func _ensure_materials() -> void:
 	_mat_scope_screen.emission = Color("#00d2ff")
 	_mat_scope_screen.emission_energy_multiplier = 1.2
 
-static func create_3d_node_for_element(elem: SceneTypes.SceneElement) -> Node3D:
+static func create_3d_node_for_element(elem: SceneTypes.SceneElement, doc_store = null) -> Node3D:
 	_ensure_materials()
 	var root := Node3D.new()
 	root.name = "Elem3D_" + elem.id
 
 	match elem.kind:
 		"conveyor":
-			_build_conveyor(root, elem)
+			_build_conveyor(root, elem, doc_store)
 		"server":
 			_build_server(root, elem)
 		"queue":
@@ -157,76 +158,161 @@ static func create_3d_node_for_element(elem: SceneTypes.SceneElement) -> Node3D:
 
 	return root
 
-static func _build_conveyor(root: Node3D, elem: SceneTypes.SceneElement) -> void:
-	var dims := _get_dims(elem, Vector3(8.0, 1.2, 0.2))
-	var length: float = dims.x
-	var width: float = dims.y
-	var bed_thickness: float = 0.15
+static func _append_quad(verts: PackedVector3Array, norms: PackedVector3Array, a: Vector3, b: Vector3, c: Vector3, d: Vector3, n: Vector3) -> void:
+	verts.append(a); verts.append(b); verts.append(c)
+	verts.append(a); verts.append(c); verts.append(d)
+	for _i in range(6):
+		norms.append(n)
 
+static func _extrude_profile_along_frames(centers: PackedVector3Array, rights: PackedVector3Array, half_w: float, half_h: float, mat: Material) -> MeshInstance3D:
+	var n_pts: int = centers.size()
+	var verts := PackedVector3Array()
+	var norms := PackedVector3Array()
+
+	for i in range(n_pts - 1):
+		var c0 := centers[i]
+		var c1 := centers[i + 1]
+		var r0 := rights[i] * half_w
+		var r1 := rights[i + 1] * half_w
+		var u_vec := Vector3(0.0, half_h, 0.0)
+
+		var tl0 := c0 - r0 + u_vec
+		var tr0 := c0 + r0 + u_vec
+		var bl0 := c0 - r0 - u_vec
+		var br0 := c0 + r0 - u_vec
+
+		var tl1 := c1 - r1 + u_vec
+		var tr1 := c1 + r1 + u_vec
+		var bl1 := c1 - r1 - u_vec
+		var br1 := c1 + r1 - u_vec
+
+		# Top face (+Y)
+		_append_quad(verts, norms, tl0, tr0, tr1, tl1, Vector3.UP)
+		# Bottom face (-Y)
+		_append_quad(verts, norms, br0, bl0, bl1, br1, Vector3.DOWN)
+		# Right outer face
+		var n_right := rights[i]
+		_append_quad(verts, norms, tr0, br0, br1, tr1, n_right)
+		# Left outer face
+		_append_quad(verts, norms, bl0, tl0, tl1, bl1, -n_right)
+
+		if i == 0:
+			var n_start := -(c1 - c0).normalized()
+			_append_quad(verts, norms, bl0, br0, tr0, tl0, n_start)
+		if i == n_pts - 2:
+			var n_end := (c1 - c0).normalized()
+			_append_quad(verts, norms, tr1, br1, bl1, tl1, n_end)
+
+	var arr_mesh := ArrayMesh.new()
+	if verts.size() > 0:
+		var arrays := []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = verts
+		arrays[Mesh.ARRAY_NORMAL] = norms
+		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		arr_mesh.surface_set_material(0, mat)
+
+	var mi := MeshInstance3D.new()
+	mi.mesh = arr_mesh
+	return mi
+
+static func _build_conveyor(root: Node3D, elem: SceneTypes.SceneElement, doc_store = null) -> void:
+	var dims := _get_dims(elem, Vector3(8.0, 1.2, 0.2))
+	var width: float = maxf(0.4, dims.y)
+	var bed_thickness: float = 0.15
 	var z_start: float = float(elem.geometry.get("elevation_start", 0.8))
 	var z_end: float = float(elem.geometry.get("elevation_end", z_start))
-	var dz := z_end - z_start
-	var length_3d := sqrt((length * length) + (dz * dz))
-	var pitch_rad := asin(clamp(dz / max(length_3d, 0.001), -1.0, 1.0))
 
-	# Conveyor Bed Assembly (pitched)
+	var base_pos := elem.transform.position if elem.transform != null else Vector3.ZERO
+	var curve_data := ConveyorCurve3D.sample_world_curve(elem, doc_store, 40)
+	var world_pts: PackedVector3Array = curve_data["points"]
+	var world_tans: PackedVector3Array = curve_data["tangents"]
+	var arc_s: PackedFloat64Array = curve_data["arc_lengths"]
+	var total_len: float = float(curve_data["total_length"])
+
+	var n_pts: int = world_pts.size()
+	if n_pts < 2:
+		return
+
+	var belt_centers := PackedVector3Array()
+	var left_rail_centers := PackedVector3Array()
+	var right_rail_centers := PackedVector3Array()
+	var rights := PackedVector3Array()
+
+	var rail_offset: float = (width * 0.5) - 0.03
+	for i in range(n_pts):
+		var rel_p: Vector3 = world_pts[i] - base_pos
+		var t_zup: Vector3 = world_tans[i]
+		# Convert Z-up (X East, Y South, Z Up) -> Godot 3D (X East, Y Up, Z = -Y)
+		var g_pos := Vector3(rel_p.x, rel_p.z + z_start, -rel_p.y)
+		var g_tan := Vector3(t_zup.x, t_zup.z, -t_zup.y)
+		var g_tan_flat := Vector3(g_tan.x, 0.0, g_tan.z)
+		if g_tan_flat.length_squared() < 1e-6:
+			g_tan_flat = Vector3(1.0, 0.0, 0.0)
+		else:
+			g_tan_flat = g_tan_flat.normalized()
+		var g_right := g_tan_flat.cross(Vector3.UP).normalized()
+
+		rights.append(g_right)
+		belt_centers.append(g_pos + Vector3(0.0, bed_thickness * 0.25, 0.0))
+		left_rail_centers.append(g_pos + g_right * rail_offset + Vector3(0.0, bed_thickness * 0.5, 0.0))
+		right_rail_centers.append(g_pos - g_right * rail_offset + Vector3(0.0, bed_thickness * 0.5, 0.0))
+
 	var bed_pivot := Node3D.new()
 	bed_pivot.name = "BedPivot"
-	# Godot 3D: X East, Y Up, Z South (so ground plan is X/Z, elevation is Y)
-	# Canonical Z-up is projected: X -> X, Y -> -Z, Z -> Y
-	bed_pivot.position = Vector3(0, z_start, 0)
-	bed_pivot.rotation.z = pitch_rad # incline along X axis
+	bed_pivot.position = Vector3(0.0, z_start, 0.0)
+	bed_pivot.rotation.z = atan2(z_end - z_start, maxf(total_len, 0.1))
 	root.add_child(bed_pivot)
 
-	# 1. Rubber Belt
-	var belt_mesh := BoxMesh.new()
-	belt_mesh.size = Vector3(length_3d, bed_thickness * 0.5, width * 0.9)
-	belt_mesh.material = _mat_belt
-	var belt_inst := MeshInstance3D.new()
-	belt_inst.mesh = belt_mesh
-	belt_inst.position = Vector3(length_3d * 0.5, bed_thickness * 0.25, 0)
-	bed_pivot.add_child(belt_inst)
+	var belt_assembly := Node3D.new()
+	belt_assembly.name = "BeltAssembly"
+	belt_assembly.transform = bed_pivot.transform.affine_inverse()
+	bed_pivot.add_child(belt_assembly)
 
-	# 2. Side Steel Channel Frames
-	var side_mesh := BoxMesh.new()
-	side_mesh.size = Vector3(length_3d, bed_thickness * 1.5, 0.06)
-	side_mesh.material = _mat_steel
+	# 1. Extruded Rubber Belt Surface
+	var belt_inst := _extrude_profile_along_frames(belt_centers, rights, width * 0.44, bed_thickness * 0.25, _mat_belt)
+	belt_inst.name = "BeltMesh"
+	belt_assembly.add_child(belt_inst)
 
-	var side_left := MeshInstance3D.new()
-	side_left.mesh = side_mesh
-	side_left.position = Vector3(length_3d * 0.5, bed_thickness * 0.5, (width * 0.5) - 0.03)
-	bed_pivot.add_child(side_left)
+	# 2. Extruded Left & Right Steel Channel Frames
+	var side_left := _extrude_profile_along_frames(left_rail_centers, rights, 0.035, bed_thickness * 0.75, _mat_steel)
+	side_left.name = "SideRailLeft"
+	belt_assembly.add_child(side_left)
 
-	var side_right := MeshInstance3D.new()
-	side_right.mesh = side_mesh
-	side_right.position = Vector3(length_3d * 0.5, bed_thickness * 0.5, -(width * 0.5) + 0.03)
-	bed_pivot.add_child(side_right)
+	var side_right := _extrude_profile_along_frames(right_rail_centers, rights, 0.035, bed_thickness * 0.75, _mat_steel)
+	side_right.name = "SideRailRight"
+	belt_assembly.add_child(side_right)
 
-	# 3. Support Legs with Leveling Feet anchored to Floor
-	var leg_spacing := 2.0
-	var leg_count: int = max(2, int(ceil(length / leg_spacing)) + 1)
+	# 3. Support Legs with Leveling Feet anchored to Floor along the curve arc length
+	var leg_spacing := 2.4
+	var leg_count: int = clampi(int(ceil(total_len / leg_spacing)) + 1, 2, 24)
 	for i in range(leg_count):
-		var t: float = float(i) / float(max(1, leg_count - 1))
-		var x_pos: float = t * length
-		var z_elev: float = z_start + (t * dz) # height from floor
-		var leg_height: float = max(z_elev, 0.1)
+		var target_s: float = (float(i) / float(maxi(1, leg_count - 1))) * total_len
+		var s_idx: int = 0
+		for k in range(n_pts - 1):
+			if arc_s[k + 1] >= target_s:
+				s_idx = k
+				break
+		var rel_p: Vector3 = world_pts[s_idx] - base_pos
+		var g_right: Vector3 = rights[s_idx]
+		var z_elev: float = base_pos.z + rel_p.z + z_start
+		var leg_height: float = maxf(z_elev, 0.1)
 
 		var leg_assembly := Node3D.new()
-		leg_assembly.position = Vector3(x_pos, 0, 0) # On floor
+		leg_assembly.position = Vector3(rel_p.x, -base_pos.z, -rel_p.y)
 		root.add_child(leg_assembly)
 
-		# Left and Right vertical tubes
 		for side_sign in [-1.0, 1.0]:
+			var lat_off: Vector3 = g_right * (side_sign * width * 0.45)
 			var tube_mesh := BoxMesh.new()
 			tube_mesh.size = Vector3(0.08, leg_height, 0.08)
 			tube_mesh.material = _mat_steel
 
 			var tube_inst := MeshInstance3D.new()
 			tube_inst.mesh = tube_mesh
-			tube_inst.position = Vector3(0, leg_height * 0.5, side_sign * (width * 0.45))
+			tube_inst.position = Vector3(lat_off.x, leg_height * 0.5, lat_off.z)
 			leg_assembly.add_child(tube_inst)
 
-			# Circular leveling foot on floor
 			var foot_mesh := CylinderMesh.new()
 			foot_mesh.top_radius = 0.08
 			foot_mesh.bottom_radius = 0.10
@@ -235,17 +321,9 @@ static func _build_conveyor(root: Node3D, elem: SceneTypes.SceneElement) -> void
 
 			var foot_inst := MeshInstance3D.new()
 			foot_inst.mesh = foot_mesh
-			foot_inst.position = Vector3(0, 0.015, side_sign * (width * 0.45))
+			foot_inst.position = Vector3(lat_off.x, 0.015, lat_off.z)
 			leg_assembly.add_child(foot_inst)
 
-		# Cross brace between left and right tube
-		var brace_mesh := BoxMesh.new()
-		brace_mesh.size = Vector3(0.06, 0.06, width * 0.8)
-		brace_mesh.material = _mat_steel
-		var brace_inst := MeshInstance3D.new()
-		brace_inst.mesh = brace_mesh
-		brace_inst.position = Vector3(0, leg_height * 0.4, 0)
-		leg_assembly.add_child(brace_inst)
 
 static func _build_server(root: Node3D, elem: SceneTypes.SceneElement) -> void:
 	var dims := _get_dims(elem, Vector3(3.0, 2.0, 1.8))

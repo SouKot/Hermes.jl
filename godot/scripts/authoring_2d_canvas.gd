@@ -6,6 +6,7 @@ extends Control
 const BlockNode := preload("res://scripts/authoring_block_node.gd")
 const SceneTypes := preload("res://scripts/scenespec_types.gd")
 const DocumentStore := preload("res://scripts/authoring_document_store.gd")
+const ConveyorCurve3D := preload("res://scripts/conveyor_curve_3d.gd")
 
 signal element_selected(element_id: String)
 signal connection_created(conn: SceneTypes.SceneConnection)
@@ -90,7 +91,11 @@ func _process(delta: float) -> void:
 	for aid in _agent_target_positions.keys():
 		var target: Vector2 = _agent_target_positions[aid]
 		var cur: Vector2 = _agent_smoothed_positions.get(aid, target)
-		if cur.distance_squared_to(target) > 0.0001:
+		var d2: float = cur.distance_squared_to(target)
+		if d2 > 64.0:
+			_agent_smoothed_positions[aid] = target
+			needs_redraw = true
+		elif d2 > 0.0001:
 			_agent_smoothed_positions[aid] = cur.lerp(target, lerp_weight)
 			needs_redraw = true
 
@@ -215,9 +220,8 @@ func rebuild_blocks() -> void:
 		add_child(b)
 		_block_nodes[elem.id] = b
 
-		var gx: float = elem.editor.graph_position.x if elem.editor.graph_position != Vector2.ZERO else float(elem.transform.position[0]) * 20.0
-		var gy: float = elem.editor.graph_position.y if elem.editor.graph_position != Vector2.ZERO else float(elem.transform.position[1]) * 20.0
-		b.position = pan_offset + (Vector2(gx, gy) * zoom_level)
+		var gpos := _compute_element_graph_position(elem, b)
+		b.position = pan_offset + (gpos * zoom_level)
 		b.scale = Vector2(zoom_level, zoom_level)
 
 		b.block_selected.connect(_on_block_selected)
@@ -290,6 +294,45 @@ func rebuild_blocks() -> void:
 	move_child(_wires_layer, -1)
 	_redraw_all()
 
+func _is_curved_or_joined_conveyor_elem(elem: SceneTypes.SceneElement) -> bool:
+	if elem == null or elem.kind != "conveyor":
+		return false
+	if elem.geometry.has("inlet_pose") or elem.geometry.has("outlet_pose"):
+		return true
+	var preset: String = str(elem.geometry.get("shape_preset", "straight")).to_lower()
+	return preset != "straight" and not preset.is_empty()
+
+func _compute_element_graph_position(elem: SceneTypes.SceneElement, b: BlockNode) -> Vector2:
+	if _is_curved_or_joined_conveyor_elem(elem):
+		var pts_m := ConveyorCurve3D.sample_2d_polyline(elem, doc_store, 20)
+		if pts_m.size() >= 2:
+			var mid_idx: int = pts_m.size() / 2
+			var mid_m: Vector2 = pts_m[mid_idx]
+			var p_prev: Vector2 = pts_m[max(0, mid_idx - 1)]
+			var p_next: Vector2 = pts_m[min(pts_m.size() - 1, mid_idx + 1)]
+			var tan_v: Vector2 = (p_next - p_prev)
+			if tan_v.length_squared() > 1e-6:
+				tan_v = tan_v.normalized()
+			else:
+				tan_v = Vector2(1.0, 0.0)
+			var norm_v := Vector2(tan_v.y, -tan_v.x)
+			var offset_px: Vector2 = norm_v * 38.0 - (b.size * 0.5)
+			return (mid_m * 20.0) + offset_px
+	var gx: float = elem.editor.graph_position.x if elem.editor.graph_position != Vector2.ZERO else float(elem.transform.position[0]) * 20.0
+	var gy: float = elem.editor.graph_position.y if elem.editor.graph_position != Vector2.ZERO else float(elem.transform.position[1]) * 20.0
+	return Vector2(gx, gy)
+
+func _translate_conveyor_poses(elem: SceneTypes.SceneElement, dx: float, dy: float) -> void:
+	if elem == null or elem.kind != "conveyor":
+		return
+	for pose_key in ["inlet_pose", "outlet_pose"]:
+		if elem.geometry.has(pose_key) and elem.geometry[pose_key] is Dictionary:
+			var pd: Dictionary = elem.geometry[pose_key]
+			if pd.has("position") and pd["position"] is Array and pd["position"].size() >= 2:
+				var pos_arr: Array = pd["position"]
+				pos_arr[0] = float(pos_arr[0]) + dx
+				pos_arr[1] = float(pos_arr[1]) + dy
+
 func _on_document_reloaded(_doc: SceneTypes.SceneDocument) -> void:
 	rebuild_blocks()
 
@@ -302,15 +345,14 @@ func _on_document_modified() -> void:
 func _update_blocks_transform() -> void:
 	for id_val in _block_nodes.keys():
 		var b: BlockNode = _block_nodes[id_val]
-		var gx := 0.0
-		var gy := 0.0
+		var gpos := Vector2.ZERO
 		if b.element != null:
-			gx = b.element.editor.graph_position.x if b.element.editor.graph_position != Vector2.ZERO else float(b.element.transform.position[0]) * 20.0
-			gy = b.element.editor.graph_position.y if b.element.editor.graph_position != Vector2.ZERO else float(b.element.transform.position[1]) * 20.0
+			gpos = _compute_element_graph_position(b.element, b)
 		elif b.subgraph != null:
-			gx = b.subgraph.editor.graph_position.x if b.subgraph.editor != null and b.subgraph.editor.graph_position != Vector2.ZERO else float(b.subgraph.transform.position.x) * 20.0
-			gy = b.subgraph.editor.graph_position.y if b.subgraph.editor != null and b.subgraph.editor.graph_position != Vector2.ZERO else float(b.subgraph.transform.position.y) * 20.0
-		b.position = pan_offset + (Vector2(gx, gy) * zoom_level)
+			var gx: float = b.subgraph.editor.graph_position.x if b.subgraph.editor != null and b.subgraph.editor.graph_position != Vector2.ZERO else float(b.subgraph.transform.position.x) * 20.0
+			var gy: float = b.subgraph.editor.graph_position.y if b.subgraph.editor != null and b.subgraph.editor.graph_position != Vector2.ZERO else float(b.subgraph.transform.position.y) * 20.0
+			gpos = Vector2(gx, gy)
+		b.position = pan_offset + (gpos * zoom_level)
 		b.scale = Vector2(zoom_level, zoom_level)
 
 func _on_selection_changed(sel_id: String, _sel_type: String) -> void:
@@ -346,7 +388,7 @@ func _on_block_moved(elem_id: String, new_pos: Vector2) -> void:
 		var dims := _get_elem_dims(elem)
 		var snap_dist := 0.35
 
-		if doc_store != null and doc_store.active_document != null:
+		if doc_store != null and doc_store.active_document != null and not _is_curved_or_joined_conveyor_elem(elem):
 			for other in doc_store.active_document.elements:
 				if other.id == elem_id or (doc_store.is_element_selected(other.id) and doc_store.selected_elements.size() > 1):
 					continue
@@ -370,9 +412,11 @@ func _on_block_moved(elem_id: String, new_pos: Vector2) -> void:
 		elem.transform.position.x = target_x
 		elem.transform.position.y = target_y
 		elem.editor.graph_position = Vector2(target_x * 20.0, target_y * 20.0)
+		_translate_conveyor_poses(elem, delta_x, delta_y)
 
 		if _block_nodes.has(elem_id):
-			_block_nodes[elem_id].position = pan_offset + (elem.editor.graph_position * zoom_level)
+			var b_node: BlockNode = _block_nodes[elem_id]
+			b_node.position = pan_offset + (_compute_element_graph_position(elem, b_node) * zoom_level)
 
 		if doc_store != null and doc_store.is_element_selected(elem_id) and doc_store.selected_elements.size() > 1:
 			for other_id in doc_store.selected_elements:
@@ -383,8 +427,10 @@ func _on_block_moved(elem_id: String, new_pos: Vector2) -> void:
 					other.transform.position.x = snapped(other.transform.position.x + delta_x, 0.05)
 					other.transform.position.y = snapped(other.transform.position.y + delta_y, 0.05)
 					other.editor.graph_position = Vector2(other.transform.position.x * 20.0, other.transform.position.y * 20.0)
+					_translate_conveyor_poses(other, delta_x, delta_y)
 					if _block_nodes.has(other_id):
-						_block_nodes[other_id].position = pan_offset + (other.editor.graph_position * zoom_level)
+						var ob_node: BlockNode = _block_nodes[other_id]
+						ob_node.position = pan_offset + (_compute_element_graph_position(other, ob_node) * zoom_level)
 
 		if doc_store != null:
 			doc_store.is_dirty = true
@@ -750,6 +796,18 @@ func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
+			var hit_track := _hit_test_conveyor_track(mb.position)
+			if not hit_track.is_empty():
+				if mb.double_click:
+					_on_block_selected(hit_track)
+					var spos: Vector2 = mb.global_position if mb.global_position != Vector2.ZERO else mb.position
+					floating_properties_requested.emit(hit_track, spos)
+				else:
+					_on_block_selected(hit_track)
+				_redraw_all()
+				accept_event()
+				return
+
 			var hit_conn := _hit_test_connection(mb.position)
 			if not hit_conn.is_empty():
 				if doc_store != null:
@@ -763,6 +821,15 @@ func _gui_input(event: InputEvent) -> void:
 					_redraw_all()
 
 		elif mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
+			var hit_track := _hit_test_conveyor_track(mb.position)
+			if not hit_track.is_empty():
+				_on_block_selected(hit_track)
+				var spos: Vector2 = mb.global_position if mb.global_position != Vector2.ZERO else mb.position
+				floating_properties_requested.emit(hit_track, spos)
+				_redraw_all()
+				accept_event()
+				return
+
 			var hit_conn := _hit_test_connection(mb.position)
 			if not hit_conn.is_empty():
 				if doc_store != null:
@@ -830,6 +897,14 @@ func frame_all() -> void:
 		min_p.y = min(min_p.y, py)
 		max_p.x = max(max_p.x, px + pw)
 		max_p.y = max(max_p.y, py + ph)
+		if elem.kind == "conveyor":
+			var pts_m := ConveyorCurve3D.sample_2d_polyline(elem, doc_store, 16)
+			for pt_m in pts_m:
+				var c_px := pt_m * 20.0
+				min_p.x = min(min_p.x, c_px.x - 40.0)
+				min_p.y = min(min_p.y, c_px.y - 40.0)
+				max_p.x = max(max_p.x, c_px.x + 40.0)
+				max_p.y = max(max_p.y, c_px.y + 40.0)
 
 	var span := max_p - min_p
 	span.x = max(span.x, 100.0)
@@ -860,6 +935,138 @@ func _draw() -> void:
 
 	# 2. CAD Floorplan Grid & Architectural Walls
 	_draw_cad_background()
+
+	# 3. Joined & Curved Conveyor Belt Tracks
+	_draw_conveyor_tracks()
+
+func _draw_conveyor_tracks() -> void:
+	if doc_store == null or doc_store.active_document == null:
+		return
+
+	var m_scale: float = 20.0 * zoom_level
+	for elem in doc_store.get_scoped_elements():
+		if elem.kind != "conveyor":
+			continue
+
+		var pts_m := ConveyorCurve3D.sample_2d_polyline(elem, doc_store, 36)
+		if pts_m.size() < 2:
+			continue
+
+		var pts_px := PackedVector2Array()
+		for pm in pts_m:
+			pts_px.append(pan_offset + pm * m_scale)
+
+		var dims := _get_elem_dims(elem)
+		var belt_w_px: float = clampf(dims.y * 12.0 * zoom_level, 10.0, 30.0)
+		var half_w: float = belt_w_px * 0.5
+		var is_sel: bool = (doc_store.selected_id == elem.id) or doc_store.is_element_selected(elem.id)
+
+		# Compute left & right rail polylines and local normals/tangents
+		var left_px := PackedVector2Array()
+		var right_px := PackedVector2Array()
+		var tangents := PackedVector2Array()
+		var n_pts: int = pts_px.size()
+
+		for i in range(n_pts):
+			var p_prev: Vector2 = pts_px[max(0, i - 1)]
+			var p_next: Vector2 = pts_px[min(n_pts - 1, i + 1)]
+			var d_vec: Vector2 = p_next - p_prev
+			var t_dir: Vector2 = d_vec.normalized() if d_vec.length_squared() > 1e-6 else Vector2(1.0, 0.0)
+			var n_dir := Vector2(-t_dir.y, t_dir.x)
+			tangents.append(t_dir)
+			left_px.append(pts_px[i] + n_dir * half_w)
+			right_px.append(pts_px[i] - n_dir * half_w)
+
+		# Selection halo
+		if is_sel:
+			draw_polyline(pts_px, Color(0.0, 0.82, 1.0, 0.25), belt_w_px + 8.0, true)
+
+		# Rubber belt bed quad-strip
+		var bed_col := Color("#172736") if is_sel else Color("#121b26")
+		for i in range(n_pts - 1):
+			var quad := PackedVector2Array([left_px[i], left_px[i + 1], right_px[i + 1], right_px[i]])
+			draw_colored_polygon(quad, bed_col)
+
+		# Roller crossbars along arc length
+		var roller_step: float = maxf(10.0, 14.0 * zoom_level)
+		var accum_px: float = 0.0
+		var next_roller: float = roller_step * 0.5
+		var roller_col := Color(0.22, 0.34, 0.45, 0.55)
+		for i in range(n_pts - 1):
+			var seg_len: float = pts_px[i].distance_to(pts_px[i + 1])
+			while accum_px + seg_len >= next_roller and seg_len > 0.1:
+				var f: float = clampf((next_roller - accum_px) / seg_len, 0.0, 1.0)
+				var lp: Vector2 = left_px[i].lerp(left_px[i + 1], f)
+				var rp: Vector2 = right_px[i].lerp(right_px[i + 1], f)
+				draw_line(lp, rp, roller_col, 1.0)
+				next_roller += roller_step
+			accum_px += seg_len
+
+		# Left & Right Steel Side Rails
+		var rail_col := Color("#52c7a5") if is_sel else Color("#2a9d8f")
+		var rail_w: float = clampf(2.0 * zoom_level, 1.4, 3.2)
+		draw_polyline(left_px, rail_col, rail_w, true)
+		draw_polyline(right_px, rail_col, rail_w, true)
+
+		# Directional Flow Chevrons (>>>) pointing strictly along curve tangent
+		var chev_step: float = maxf(22.0, 32.0 * zoom_level)
+		var chev_accum: float = 0.0
+		var next_chev: float = chev_step * 0.45
+		var chev_size: float = clampf(belt_w_px * 0.30, 3.5, 8.5)
+		var chev_col := Color(0.18, 0.85, 0.48, 0.90)
+		for i in range(n_pts - 1):
+			var seg_len: float = pts_px[i].distance_to(pts_px[i + 1])
+			while chev_accum + seg_len >= next_chev and seg_len > 0.1:
+				var f: float = clampf((next_chev - chev_accum) / seg_len, 0.0, 1.0)
+				var cp: Vector2 = pts_px[i].lerp(pts_px[i + 1], f)
+				var t_dir: Vector2 = tangents[i].lerp(tangents[i + 1], f).normalized()
+				var n_dir := Vector2(-t_dir.y, t_dir.x)
+				var tip: Vector2 = cp + t_dir * (chev_size * 0.7)
+				var wing_l: Vector2 = cp - t_dir * (chev_size * 0.6) + n_dir * chev_size
+				var wing_r: Vector2 = cp - t_dir * (chev_size * 0.6) - n_dir * chev_size
+				draw_polyline(PackedVector2Array([wing_l, tip, wing_r]), chev_col, clampf(1.8 * zoom_level, 1.2, 2.6), true)
+				next_chev += chev_step
+			chev_accum += seg_len
+
+		# Transfer Hub Coupler Rings at Inlet (pts_px[0]) and Outlet (pts_px[-1])
+		var hub_r: float = clampf(belt_w_px * 0.42, 4.5, 11.0)
+		for endpoint in [pts_px[0], pts_px[n_pts - 1]]:
+			draw_circle(endpoint, hub_r, Color("#0d1822"))
+			draw_arc(endpoint, hub_r, 0.0, TAU, 18, rail_col, 1.6)
+			draw_circle(endpoint, hub_r * 0.38, Color("#2ecc71"))
+
+		# Subtle leader line connecting curved track midpoint to its offset control badge
+		if _is_curved_or_joined_conveyor_elem(elem) and _block_nodes.has(elem.id):
+			var b_node: BlockNode = _block_nodes[elem.id]
+			if is_instance_valid(b_node):
+				var mid_px: Vector2 = pts_px[n_pts / 2]
+				var badge_center: Vector2 = b_node.position + (b_node.size * 0.5) * zoom_level
+				var leader_col := Color(0.32, 0.78, 0.65, 0.65) if is_sel else Color(0.25, 0.45, 0.55, 0.45)
+				draw_line(mid_px, badge_center, leader_col, 1.2)
+				draw_circle(mid_px, 3.0, rail_col)
+
+func _hit_test_conveyor_track(canvas_mouse: Vector2) -> String:
+	if doc_store == null or doc_store.active_document == null:
+		return ""
+	var m_scale: float = 20.0 * zoom_level
+	var best_id := ""
+	var best_dist := 1e9
+	for elem in doc_store.get_scoped_elements():
+		if not _is_curved_or_joined_conveyor_elem(elem):
+			continue
+		var pts_m := ConveyorCurve3D.sample_2d_polyline(elem, doc_store, 28)
+		if pts_m.size() < 2:
+			continue
+		var dims := _get_elem_dims(elem)
+		var hit_tol: float = clampf(dims.y * 12.0 * zoom_level * 0.6, 8.0, 20.0)
+		for i in range(pts_m.size() - 1):
+			var a := pan_offset + pts_m[i] * m_scale
+			var b := pan_offset + pts_m[i + 1] * m_scale
+			var d := _dist_to_segment(canvas_mouse, a, b)
+			if d <= hit_tol and d < best_dist:
+				best_dist = d
+				best_id = elem.id
+	return best_id
 
 func _on_agents_layer_draw() -> void:
 	if _agents_layer == null or _active_agents.is_empty():
@@ -902,6 +1109,19 @@ func _on_agents_layer_draw() -> void:
 			in_service = bool(props.get("in_service", false))
 			zone_kind = str(props.get("zone_kind", ""))
 
+		var vel = agent.get("velocity", [0.0, 0.0])
+		var vx: float = 0.0
+		var vy: float = 0.0
+		if agent.has("vx") and agent.has("vy"):
+			vx = float(agent["vx"])
+			vy = float(agent["vy"])
+		elif vel is Array and vel.size() >= 2:
+			vx = float(vel[0])
+			vy = float(vel[1])
+		elif vel is Vector2 or vel is Vector3:
+			vx = vel.x
+			vy = vel.y
+
 		# B-2/B-3: DES product entities — physical rect rendering ─────────────
 		if is_product:
 			# Product dimensions (sim-metres) clamped to pixel bounds
@@ -932,11 +1152,8 @@ func _on_agents_layer_draw() -> void:
 						poly.append(pan_offset + Vector2(pt.x, pt.y) * m_scale)
 					_agents_layer.draw_polyline(poly, Color(col.r, col.g, col.b, 0.35), 1.5, true)
 
-			# B-3: conveyor entities already have their position lerped by
-			# telemetry_adapter (t_frac applied before emitting x/y). The
-			# smoothed-position system handles the in-frame lerp automatically.
-
-			_draw_product_entity(_agents_layer, canvas_pos, w_px, h_px, col, in_service, zone_kind)
+			var heading_rad: float = atan2(vy, vx) if (vx * vx + vy * vy > 0.001) else 0.0
+			_draw_product_entity(_agents_layer, canvas_pos, w_px, h_px, col, in_service, zone_kind, heading_rad)
 
 			if aid == selected_agent_id and not aid.is_empty():
 				var r_sel: float = max(w_px, h_px) * 0.5 + 3.0
@@ -946,19 +1163,6 @@ func _on_agents_layer_draw() -> void:
 		# Legacy crowd-sim / ABM pedestrian rendering ─────────────────────────
 		var r_body: float = float(agent.get("r_body", agent.get("radius", 0.20)))
 		var r_px: float = max(r_body * m_scale, 4.0)
-
-		var vel = agent.get("velocity", [0.0, 0.0])
-		var vx: float = 0.0
-		var vy: float = 0.0
-		if agent.has("vx") and agent.has("vy"):
-			vx = float(agent["vx"])
-			vy = float(agent["vy"])
-		elif vel is Array and vel.size() >= 2:
-			vx = float(vel[0])
-			vy = float(vel[1])
-		elif vel is Vector2 or vel is Vector3:
-			vx = vel.x
-			vy = vel.y
 
 		var speed: float = sqrt(vx * vx + vy * vy)
 		var state: String = str(agent.get("state", "walking"))
@@ -1001,9 +1205,7 @@ func _on_agents_layer_draw() -> void:
 			_agents_layer.draw_arc(canvas_pos, r_px + 3.0, 0, TAU, 24, Color("00d2ff"), 2.0)
 
 ## B-2: Physical product entity renderer.
-## Draws a colored carton rectangle at [pos] (canvas space).
-## w_px / h_px are final pixel sizes already clamped by the caller.
-## zone_kind: "queue" | "server" | "conveyor" | ""
+## Draws a colored carton rectangle at [pos] (canvas space), oriented along [heading_rad].
 func _draw_product_entity(
 		layer: CanvasItem,
 		pos: Vector2,
@@ -1011,23 +1213,28 @@ func _draw_product_entity(
 		h_px: float,
 		col: Color,
 		in_service: bool,
-		zone_kind: String
+		zone_kind: String,
+		heading_rad: float = 0.0
 ) -> void:
 	var half_w := w_px * 0.5
 	var half_h := h_px * 0.5
-	var rect := Rect2(pos - Vector2(half_w, half_h), Vector2(w_px, h_px))
+	var local_rect := Rect2(Vector2(-half_w, -half_h), Vector2(w_px, h_px))
+
+	layer.draw_set_transform(pos, heading_rad, Vector2.ONE)
 
 	# Drop-shadow (1 px offset, semi-transparent)
-	layer.draw_rect(Rect2(rect.position + Vector2(1, 1), rect.size), Color(0, 0, 0, 0.35), true)
+	layer.draw_rect(Rect2(local_rect.position + Vector2(1, 1), local_rect.size), Color(0, 0, 0, 0.35), true)
 
 	# Filled body
-	layer.draw_rect(rect, col, true)
+	layer.draw_rect(local_rect, col, true)
 
 	# Top-edge highlight for 3-D carton depth
-	layer.draw_rect(Rect2(rect.position, Vector2(rect.size.x, 2.0)), Color(1.0, 1.0, 1.0, 0.25), true)
+	layer.draw_rect(Rect2(local_rect.position, Vector2(local_rect.size.x, 2.0)), Color(1.0, 1.0, 1.0, 0.25), true)
 
 	# Outline stroke
-	layer.draw_rect(rect, Color(0.05, 0.08, 0.12, 0.9), false, 1.0)
+	layer.draw_rect(local_rect, Color(0.05, 0.08, 0.12, 0.9), false, 1.0)
+
+	layer.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 	# Active-service animated glow ring (oscillates at ~1 Hz)
 	if in_service or zone_kind == "server":
@@ -1086,17 +1293,77 @@ func _draw_cad_background() -> void:
 	draw_rect(r2, CAD_WALL_COLOR, false, 2.0)
 	draw_string(ThemeDB.fallback_font, r2.position + Vector2(10, 20), "CAD ZONE: MAIN PROCESSING & INSPECTION", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, ROOM_LABEL_COLOR)
 
+func _resolve_conveyor_curve_anchor(conv_elem: SceneTypes.SceneElement, other_pos_px: Vector2, is_source_end: bool) -> Vector2:
+	var pts_m := ConveyorCurve3D.sample_2d_polyline(conv_elem, doc_store, 16)
+	if pts_m.is_empty():
+		return Vector2.ZERO
+	var m_scale: float = 20.0 * zoom_level
+	if other_pos_px != Vector2.ZERO:
+		var best_p := pan_offset + pts_m[0] * m_scale
+		var best_d2 := best_p.distance_squared_to(other_pos_px)
+		for i in range(1, pts_m.size()):
+			var cand_p := pan_offset + pts_m[i] * m_scale
+			var d2 := cand_p.distance_squared_to(other_pos_px)
+			if d2 < best_d2:
+				best_d2 = d2
+				best_p = cand_p
+		return best_p
+	return pan_offset + (pts_m[pts_m.size() - 1] if is_source_end else pts_m[0]) * m_scale
+
 func _draw_connections() -> void:
 	if doc_store == null or doc_store.active_document == null or _wires_layer == null:
 		return
 
 	var sel_conn_id := doc_store.selected_id if (doc_store != null and doc_store.selected_type == "connection") else ""
+	var m_scale: float = 20.0 * zoom_level
 
 	for conn in doc_store.active_document.connections:
+		var src_elem := doc_store.get_element(conn.source_element)
+		var tgt_elem := doc_store.get_element(conn.target_element)
+		var is_conn_sel: bool = (str(conn.id) == sel_conn_id)
+
+		if conn.link_type == "flow" and src_elem != null and tgt_elem != null:
+			var src_curved := _is_curved_or_joined_conveyor_elem(src_elem)
+			var tgt_curved := _is_curved_or_joined_conveyor_elem(tgt_elem)
+			if src_curved and tgt_curved:
+				var s_pts := ConveyorCurve3D.sample_2d_polyline(src_elem, doc_store, 8)
+				var t_pts := ConveyorCurve3D.sample_2d_polyline(tgt_elem, doc_store, 8)
+				if s_pts.size() >= 2 and t_pts.size() >= 2:
+					var p_out := pan_offset + s_pts[s_pts.size() - 1] * m_scale
+					var p_in := pan_offset + t_pts[0] * m_scale
+					if p_out.distance_to(p_in) <= 16.0 * zoom_level:
+						var j_pt := (p_out + p_in) * 0.5
+						if is_conn_sel:
+							_wires_layer.draw_arc(j_pt, 10.0 * zoom_level, 0.0, TAU, 20, Color("#00d2ff"), 2.5)
+						continue
+					else:
+						var c_col := Color("#00d2ff") if is_conn_sel else FLOW_WIRE_COLOR
+						_draw_spline(_wires_layer, p_out, p_in, c_col, 2.5 if is_conn_sel else 2.0, false)
+						continue
+			elif src_curved and not tgt_curved:
+				var p2_port := _resolve_port_position(conn.target_element, conn.target_port)
+				var p1_hub := _resolve_conveyor_curve_anchor(src_elem, p2_port, true)
+				if p1_hub != Vector2.ZERO and p2_port != Vector2.ZERO:
+					if is_conn_sel:
+						_draw_spline(_wires_layer, p1_hub, p2_port, Color(0.0, 0.82, 1.0, 0.45), 6.0, false)
+						_draw_spline(_wires_layer, p1_hub, p2_port, Color("#00d2ff"), 2.5, false)
+					else:
+						_draw_spline(_wires_layer, p1_hub, p2_port, FLOW_WIRE_COLOR, 2.0, false)
+					continue
+			elif tgt_curved and not src_curved:
+				var p1_port := _resolve_port_position(conn.source_element, conn.source_port)
+				var p2_hub := _resolve_conveyor_curve_anchor(tgt_elem, p1_port, false)
+				if p1_port != Vector2.ZERO and p2_hub != Vector2.ZERO:
+					if is_conn_sel:
+						_draw_spline(_wires_layer, p1_port, p2_hub, Color(0.0, 0.82, 1.0, 0.45), 6.0, false)
+						_draw_spline(_wires_layer, p1_port, p2_hub, Color("#00d2ff"), 2.5, false)
+					else:
+						_draw_spline(_wires_layer, p1_port, p2_hub, FLOW_WIRE_COLOR, 2.0, false)
+					continue
+
 		var p1 := _resolve_port_position(conn.source_element, conn.source_port)
 		var p2 := _resolve_port_position(conn.target_element, conn.target_port)
 		if p1 != Vector2.ZERO and p2 != Vector2.ZERO:
-			var is_conn_sel: bool = (str(conn.id) == sel_conn_id)
 			if is_conn_sel:
 				# Highlight selected connection with cyan glow and bright spline
 				_draw_spline(_wires_layer, p1, p2, Color(0.0, 0.82, 1.0, 0.45), 6.0, false)

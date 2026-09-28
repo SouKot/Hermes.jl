@@ -213,69 +213,30 @@ function build_snapshot(
                 dim = get(ir.spatial_dimensions, elem_id, (2.0, 2.0, 1.0))
 
                 if first_rec.role_in_zone == :conveyor_bed
-                    # Conveyor: interpolate along length based on transit progress
+                    # Conveyor: evaluate baked 3D parametric curve at transit progress `prog_val`
                     conv_node = get(ir.nodes, elem_id, nothing)
                     transit_tau = (conv_node isa IRConveyorNode) ? conv_node.transit_delay : 2.0
                     elapsed = agent.service_start_time < Inf ? max(0.0, curr_t - agent.service_start_time) : 0.0
                     prog_val = clamp(elapsed / max(0.001, transit_tau), 0.0, 1.0)
 
-                    # Determine orientation and direction from downstream connections
-                    downstreams = get(ir.downstream_conns, elem_id, Tuple{String, String, String, String}[])
-                    
-                    if dim[1] >= dim[2]
-                        # Horizontal conveyor along X
-                        reverse_dir = false
-                        if !isempty(downstreams)
-                            dst_id = first(downstreams)[1]
-                            if haskey(ir.spatial_positions, dst_id)
-                                dst_pos = ir.spatial_positions[dst_id]
-                                dst_dim = get(ir.spatial_dimensions, dst_id, (2.0, 2.0, 1.0))
-                                if (dst_pos[1] + dst_dim[1] * 0.5) < base_pos[1]
-                                    reverse_dir = true
-                                end
-                            end
-                        end
-
-                        if reverse_dir
-                            start_x = base_pos[1] + dim[1]
-                            end_x = base_pos[1]
-                        else
-                            start_x = base_pos[1]
-                            end_x = base_pos[1] + dim[1]
-                        end
+                    if haskey(ir.conveyor_curves, elem_id)
+                        curve = ir.conveyor_curves[elem_id]::BakedConveyorCurve
+                        pos_3d, tan_3d = sample_conveyor_curve(curve, prog_val)
+                        pos_x, pos_y, pos_z = pos_3d[1], pos_3d[2], pos_3d[3]
+                        spd_nom = (conv_node isa IRConveyorNode) ? conv_node.speed : (curve.total_length / max(0.001, transit_tau))
+                        vel_x = tan_3d[1] * spd_nom
+                        vel_y = tan_3d[2] * spd_nom
+                    else
+                        start_x = base_pos[1]
+                        end_x = base_pos[1] + dim[1]
                         start_y = base_pos[2] + dim[2] * 0.5
                         end_y = start_y
-                    else
-                        # Vertical conveyor along Y
-                        reverse_dir = false
-                        if !isempty(downstreams)
-                            dst_id = first(downstreams)[1]
-                            if haskey(ir.spatial_positions, dst_id)
-                                dst_pos = ir.spatial_positions[dst_id]
-                                dst_dim = get(ir.spatial_dimensions, dst_id, (2.0, 2.0, 1.0))
-                                if (dst_pos[2] + dst_dim[2] * 0.5) < base_pos[2]
-                                    reverse_dir = true
-                                end
-                            end
-                        end
-
-                        start_x = base_pos[1] + dim[1] * 0.5
-                        end_x = start_x
-                        if reverse_dir
-                            start_y = base_pos[2] + dim[2]
-                            end_y = base_pos[2]
-                        else
-                            start_y = base_pos[2]
-                            end_y = base_pos[2] + dim[2]
-                        end
+                        pos_x = start_x + prog_val * (end_x - start_x)
+                        pos_y = start_y + prog_val * (end_y - start_y)
+                        pos_z = base_pos[3]
+                        vel_x = (end_x - start_x) / max(0.001, transit_tau)
+                        vel_y = (end_y - start_y) / max(0.001, transit_tau)
                     end
-
-                    pos_x = start_x + prog_val * (end_x - start_x)
-                    pos_y = start_y + prog_val * (end_y - start_y)
-                    pos_z = base_pos[3]
-
-                    vel_x = (end_x - start_x) / max(0.001, transit_tau)
-                    vel_y = (end_y - start_y) / max(0.001, transit_tau)
                 else
                     pos_x = base_pos[1] + dim[1] * 0.5
                     pos_y = base_pos[2] + dim[2] * 0.5

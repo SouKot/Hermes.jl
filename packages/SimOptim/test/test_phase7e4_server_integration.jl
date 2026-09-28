@@ -23,14 +23,26 @@ using GodotBridge
     )))
     @test ack_run.payload.status == "accepted"
 
-    # Wait for async optimization task to complete
-    sleep(1.5)
+    # Wait for async optimization task to complete (up to 10s for cold JIT)
+    for _ in 1:100
+        sleep(0.1)
+        if manager.active_instance !== nothing
+            # Keep yielding so async task progresses
+        end
+    end
 
     # 2. Apply best solution to active simulation runtime
     ack_apply = cmd_handler(make_cmd_msg("apply_best_solution", Dict{String, Any}(
         "action" => "apply_best_solution",
         "rank" => 1
     )))
+    if ack_apply.payload.status != "accepted"
+        sleep(2.0)
+        ack_apply = cmd_handler(make_cmd_msg("apply_best_solution", Dict{String, Any}(
+            "action" => "apply_best_solution",
+            "rank" => 1
+        )))
+    end
     @test ack_apply.payload.status == "accepted"
     @test manager.active_instance !== nothing
 

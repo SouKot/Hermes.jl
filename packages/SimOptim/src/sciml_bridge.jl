@@ -898,7 +898,11 @@ end
 Serializes the current `OptimizationContext` into the canonical `optim_state` dictionary
 streamed to Godot Window 1 (Compact Progress HUD) and Window 2 (Live Feedback & Report).
 """
-function optim_state_to_dict(ctx::OptimizationContext; status::String = "running")::Dict{String, Any}
+function optim_state_to_dict(
+    ctx::OptimizationContext;
+    status::String = "running",
+    include_scenespecs::Bool = true
+)::Dict{String, Any}
     max_evals = max(1, ctx.spec.solver.max_evaluations)
     pct = clamp((Float64(ctx.eval_count) / Float64(max_evals)) * 100.0, 0.0, 100.0)
     return Dict{String, Any}(
@@ -916,7 +920,7 @@ function optim_state_to_dict(ctx::OptimizationContext; status::String = "running
         "best_label" => ctx.best_summary,
         "convergence_history" => ctx.convergence_history,
         "scatter_points" => ctx.scatter_points,
-        "top_k_solutions" => hall_of_fame_to_dicts(ctx.archive)
+        "top_k_solutions" => hall_of_fame_to_dicts(ctx.archive; include_scenespec=include_scenespecs)
     )
 end
 

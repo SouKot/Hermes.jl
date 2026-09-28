@@ -616,9 +616,11 @@ function optimize_spatial_coordinates!(cand::ConveyorNetworkGraph; d_min::Float6
 
     # Planar / Multi-Floor 3D optimization where z_i = target_z[i] is constrained (constant_z or preserve_node_z)
     # while true 3D Euclidean distances hypot(dx, dy, dz) are minimized over (x_i, y_i) in R^(2K):
+    is_loop_graph = is_strongly_connected_loop(cand.adj)
     spatial_loss = function (u::Vector{Float64})
         total_edge_len = 0.0
         edge_var_pen = 0.0
+        dir_pen = 0.0
         @inbounds for (s, d) in edges_list
             dx = u[2s - 1] - u[2d - 1]
             dy = u[2s]     - u[2d]
@@ -626,6 +628,12 @@ function optimize_spatial_coordinates!(cand::ConveyorNetworkGraph; d_min::Float6
             len = hypot(dx, dy, dz)
             total_edge_len += len
             edge_var_pen += (len - d_min)^2
+            if !is_loop_graph
+                dx_fwd = u[2d - 1] - u[2s - 1]
+                if dx_fwd < 0.5 * d_min
+                    dir_pen += (0.5 * d_min - dx_fwd)^2
+                end
+            end
         end
 
         sep_pen = 0.0
@@ -639,7 +647,7 @@ function optimize_spatial_coordinates!(cand::ConveyorNetworkGraph; d_min::Float6
             end
         end
 
-        return total_edge_len + 20.0 * edge_var_pen + 1200.0 * sep_pen
+        return total_edge_len + 20.0 * edge_var_pen + 1200.0 * sep_pen + 5.0 * dir_pen
     end
 
     # Seed 1: DFS-ordered polygon embedding
@@ -657,10 +665,33 @@ function optimize_spatial_coordinates!(cand::ConveyorNetworkGraph; d_min::Float6
         u_init_pert[2i]     = cand.coords[i][2] + (iseven(i) ? 0.5 * d_min : -0.5 * d_min)
     end
 
-    best_u = u_init_poly
+    # Seed 3: Flow-layered left-to-right tree/DAG embedding with exact d_min edge lengths
+    u_init_flow = zeros(Float64, 2 * K)
+    placed_flow = falses(K)
+    placed_flow[1] = true
+    for v in ord
+        outs = outneighbors(cand.adj, v)
+        m = length(outs)
+        xv, yv = u_init_flow[2v - 1], u_init_flow[2v]
+        for (j, dst_v) in enumerate(outs)
+            placed_flow[dst_v] && continue
+            placed_flow[dst_v] = true
+            if m == 1
+                u_init_flow[2dst_v - 1] = xv + d_min
+                u_init_flow[2dst_v]     = yv
+            else
+                ang = (pi / 6.0) * (1.0 - 2.0 * (j - 1) / max(1, m - 1))
+                u_init_flow[2dst_v - 1] = xv + d_min * cos(ang)
+                u_init_flow[2dst_v]     = yv + d_min * sin(ang)
+            end
+        end
+    end
+
+    seeds = is_loop_graph ? (u_init_poly, u_init_pert) : (u_init_flow, u_init_poly, u_init_pert)
+    best_u = first(seeds)
     best_val = Inf
 
-    for u0 in (u_init_poly, u_init_pert)
+    for u0 in seeds
         res = Optim.optimize(spatial_loss, u0, Optim.NelderMead(), Optim.Options(iterations = 300))
         u_cand = Optim.minimizer(res)
         val = spatial_loss(u_cand)
@@ -972,7 +1003,59 @@ function apply_topology_to_scenespec!(scenespec::Dict{String, Any}, cand::Convey
         elem_by_id[string(get(el, "id", ""))] = el
     end
 
-    # 1. Update Conveyor 3D coordinates `[px, py, pz]` & properties, and position Station Queues/Servers
+    # Precompute loop or spine/tree conveyor poses so connected conveyors join seamlessly (Γ_u(1) == Γ_v(0))
+    is_simple_cycle = is_strongly_connected_loop(cand.adj) && (ne(cand.adj) == K) && all(v -> outdegree(cand.adj, v) == 1, 1:K)
+    cycle_order = Int[]
+    loop_pose_map = Dict{Int, NamedTuple}()
+    if is_simple_cycle && cand.layout_mode != :collinear_1d
+        curr_v = 1
+        for _ in 1:K
+            push!(cycle_order, curr_v)
+            curr_v = first(outneighbors(cand.adj, curr_v))
+        end
+        if length(unique(cycle_order)) == K
+            lposes = GodotBridge.compute_loop_conveyor_poses([cand.coords[v] for v in cycle_order]; bend_radius=2.5)
+            for (idx, v) in enumerate(cycle_order)
+                loop_pose_map[v] = lposes[idx]
+            end
+        end
+    end
+
+    # Precompute primary flow tangent at each station node for acyclic / tree / DAG topologies
+    node_tan = Vector{NTuple{3, Float64}}(undef, K)
+    for v in 1:K
+        outs_v = outneighbors(cand.adj, v)
+        ins_v  = inneighbors(cand.adj, v)
+        if !isempty(outs_v)
+            sx, sy, sz = 0.0, 0.0, 0.0
+            for w in outs_v
+                dx = cand.coords[w][1] - cand.coords[v][1]
+                dy = cand.coords[w][2] - cand.coords[v][2]
+                dz = cand.coords[w][3] - cand.coords[v][3]
+                L  = max(1e-3, hypot(dx, dy, dz))
+                sx += dx / L
+                sy += dy / L
+                sz += dz / L
+            end
+            nL = hypot(sx, sy, sz)
+            node_tan[v] = nL > 1e-3 ? (sx / nL, sy / nL, sz / nL) : (1.0, 0.0, 0.0)
+        elseif !isempty(ins_v)
+            u = first(ins_v)
+            dx = cand.coords[v][1] - cand.coords[u][1]
+            dy = cand.coords[v][2] - cand.coords[u][2]
+            dz = cand.coords[v][3] - cand.coords[u][3]
+            L  = max(1e-3, hypot(dx, dy, dz))
+            node_tan[v] = (dx / L, dy / L, dz / L)
+        else
+            node_tan[v] = (1.0, 0.0, 0.0)
+        end
+    end
+
+    in1_pos = cand.coords[1]
+    in1_tan = (1.0, 0.0, 0.0)
+    max_conv_x = maximum(p[1] for p in cand.coords)
+
+    # 1. Update Conveyor 3D coordinates `[px, py, pz]`, curve geometry & properties, and position Station Queues/Servers
     for k in 1:K
         cid = cand.conveyor_ids[k]
         px, py, pz = cand.coords[k]
@@ -984,31 +1067,125 @@ function apply_topology_to_scenespec!(scenespec::Dict{String, Any}, cand::Convey
         seg_len == 0.0 && (seg_len = cand.d_min)
         spur_len = cand.spur_mode == :spurs_10m ? 10.0 : 0.0
 
+        # Compute inlet_pose, outlet_pose, and shape_preset for conveyor k
+        in_pos = (px, py, pz)
+        out_pos = (px + cand.d_min, py, pz)
+        in_tan = (1.0, 0.0, 0.0)
+        out_tan = (1.0, 0.0, 0.0)
+        preset_str = "straight"
+        s_params = Dict{String, Any}("bend_radius" => 2.5, "auto_join" => true)
+
+        if haskey(loop_pose_map, k)
+            lp = loop_pose_map[k]
+            in_pos  = lp.inlet.pos
+            in_tan  = lp.inlet.tangent
+            out_pos = lp.outlet.pos
+            out_tan = lp.outlet.tangent
+            preset_str = string(lp.preset)
+            s_params["corner_pos"] = Any[round(lp.corner[1]; digits=2), round(lp.corner[2]; digits=2), round(lp.corner[3]; digits=2)]
+        elseif is_simple_cycle && cand.layout_mode == :collinear_1d
+            nxt = first(outneighbors(cand.adj, k))
+            p_nxt = cand.coords[nxt]
+            in_pos  = (px, py, pz)
+            out_pos = p_nxt
+            if p_nxt[1] >= px
+                in_tan  = (1.0, 0.0, 0.0)
+                out_tan = (1.0, 0.0, 0.0)
+                preset_str = "straight"
+            else
+                in_tan  = (0.0, 1.0, 0.0)
+                out_tan = (0.0, -1.0, 0.0)
+                preset_str = "s_curve"
+                s_params["tangent_scale"] = 0.35
+            end
+        else
+            # Universal Segment-and-Hub Bijection for Trees, Spines, and DAGs:
+            # Each station hub `coords[k]` is the discharge outlet of Conveyor `k`,
+            # and every child Conveyor `k` starts at its parent `u`'s outlet hub `coords[u]`.
+            ins = inneighbors(cand.adj, k)
+            if isempty(ins)
+                out_pos = (px, py, pz)
+                out_tan = node_tan[k]
+                in_tan  = out_tan
+                in_pos  = (px - in_tan[1] * cand.d_min, py - in_tan[2] * cand.d_min, pz - in_tan[3] * cand.d_min)
+                preset_str = "straight"
+            else
+                u = first(ins)
+                in_pos  = cand.coords[u]
+                out_pos = (px, py, pz)
+                in_tan  = node_tan[u]
+                dx, dy, dz = px - in_pos[1], py - in_pos[2], pz - in_pos[3]
+                dist = max(1e-3, hypot(dx, dy, dz))
+                chord_tan = (dx / dist, dy / dist, dz / dist)
+                out_tan = !isempty(outneighbors(cand.adj, k)) ? node_tan[k] : in_tan
+                cross_in  = abs(chord_tan[1] * in_tan[2]  - chord_tan[2] * in_tan[1])
+                cross_out = abs(chord_tan[1] * out_tan[2] - chord_tan[2] * out_tan[1])
+                if cross_in > 0.08 || cross_out > 0.08
+                    preset_str = "s_curve"
+                else
+                    preset_str = "straight"
+                    in_tan  = chord_tan
+                    out_tan = chord_tan
+                end
+            end
+        end
+
+        if k == 1
+            in1_pos = in_pos
+            in1_tan = in_tan
+        end
+        max_conv_x = max(max_conv_x, in_pos[1], out_pos[1])
+
         if haskey(elem_by_id, cid)
             el = elem_by_id[cid]
             tr = get!(el, "transform", Dict{String, Any}())
             tr["position"] = Any[px, py, pz]
             ed = get!(el, "editor", Dict{String, Any}())
             ed["graph_position"] = Any[round(px * 20.0; digits=1), round(py * 20.0; digits=1)]
+            geom = get!(el, "geometry", Dict{String, Any}())
+            geom["shape_preset"] = preset_str
+            geom["inlet_pose"] = Dict{String, Any}(
+                "pos" => Any[round(in_pos[1]; digits=2), round(in_pos[2]; digits=2), round(in_pos[3]; digits=2)],
+                "tangent" => Any[round(in_tan[1]; digits=4), round(in_tan[2]; digits=4), round(in_tan[3]; digits=4)]
+            )
+            geom["outlet_pose"] = Dict{String, Any}(
+                "pos" => Any[round(out_pos[1]; digits=2), round(out_pos[2]; digits=2), round(out_pos[3]; digits=2)],
+                "tangent" => Any[round(out_tan[1]; digits=4), round(out_tan[2]; digits=4), round(out_tan[3]; digits=4)]
+            )
+            geom["shape_params"] = s_params
             props = get!(el, "properties", Dict{String, Any}())
             props["length"] = round(seg_len + spur_len; digits=2)
             props["spur_length"] = spur_len
             props["spur_mode"] = string(cand.spur_mode)
             props["layout_mode"] = string(cand.layout_mode)
             props["routing_rule"] = string(cand.routing_rule)
+            props["shape_preset"] = preset_str
         end
 
-        # Position station queue & sorter relative to conveyor segment `(px, py, pz)` preserving elevation `pz`
-        vx, vy = if abs(py) < 1.0 && cand.layout_mode == :collinear_1d
-            (0.0, 1.0)
+        # Position station queue & sorter parallel to Conveyor k's midpoint along its outward normal
+        mx = 0.5 * (in_pos[1] + out_pos[1])
+        my = 0.5 * (in_pos[2] + out_pos[2])
+        if haskey(loop_pose_map, k)
+            corn = loop_pose_map[k].corner
+            mx = 0.5 * mx + 0.5 * corn[1]
+            my = 0.5 * my + 0.5 * corn[2]
+        end
+        cdx, cdy = out_pos[1] - in_pos[1], out_pos[2] - in_pos[2]
+        cL = hypot(cdx, cdy)
+        tx, ty = cL > 1e-3 ? (cdx / cL, cdy / cL) : (in_tan[1], in_tan[2])
+        n1x, n1y = -ty, tx
+        n2x, n2y =  ty, -tx
+        dot_out = mx * n1x + my * n1y
+        nx, ny = if abs(dot_out) > 0.25
+            dot_out >= 0.0 ? (n1x, n1y) : (n2x, n2y)
         else
-            nrm = hypot(px, py)
-            nrm > 1e-3 ? (px / nrm, py / nrm) : (0.0, 1.0)
+            n1y >= n2y ? (n1x, n1y) : (n2x, n2y)
         end
 
         qid = cand.station_queue_ids[k]
         if !isempty(qid) && haskey(elem_by_id, qid)
-            qx, qy = round(px + vx * 4.8; digits=2), round(py + vy * 4.8; digits=2)
+            qx = round(mx + nx * 4.5 - tx * 2.2; digits=2)
+            qy = round(my + ny * 4.5 - ty * 2.2; digits=2)
             q_tr = get!(elem_by_id[qid], "transform", Dict{String, Any}())
             q_tr["position"] = Any[qx, qy, pz]
             q_ed = get!(elem_by_id[qid], "editor", Dict{String, Any}())
@@ -1017,7 +1194,8 @@ function apply_topology_to_scenespec!(scenespec::Dict{String, Any}, cand::Convey
 
         sid = cand.station_server_ids[k]
         if !isempty(sid) && haskey(elem_by_id, sid)
-            sx, sy = round(px + vx * 9.0; digits=2), round(py + vy * 9.0; digits=2)
+            sx = round(mx + nx * 4.5 + tx * 2.2; digits=2)
+            sy = round(my + ny * 4.5 + ty * 2.2; digits=2)
             s_tr = get!(elem_by_id[sid], "transform", Dict{String, Any}())
             s_tr["position"] = Any[sx, sy, pz]
             s_ed = get!(elem_by_id[sid], "editor", Dict{String, Any}())
@@ -1025,22 +1203,36 @@ function apply_topology_to_scenespec!(scenespec::Dict{String, Any}, cand::Convey
         end
     end
 
-    # Position Source_Inbound, Queue_Infeed near Conveyor 1 (preserving p1z), and Sink_Outbound
+    # Position Source_Inbound, Queue_Infeed upstream of Conveyor 1 inlet (preserving p1z), and Sink_Outbound
     if K >= 1
-        p1x, p1y, p1z = cand.coords[1]
+        p1z = cand.coords[1][3]
+        ux, uy = is_simple_cycle && cand.layout_mode != :collinear_1d ? (-1.0, 0.0) : (-in1_tan[1], -in1_tan[2])
+        if hypot(ux, uy) < 1e-3
+            ux, uy = -1.0, 0.0
+        end
         if !isempty(cand.infeed_id) && haskey(elem_by_id, cand.infeed_id)
+            ix = round(in1_pos[1] + ux * 5.5; digits=2)
+            iy = round(in1_pos[2] + uy * 5.5; digits=2)
             tr = get!(elem_by_id[cand.infeed_id], "transform", Dict{String, Any}())
-            tr["position"] = Any[round(p1x - 5.5; digits=2), round(p1y; digits=2), p1z]
+            tr["position"] = Any[ix, iy, p1z]
+            ed = get!(elem_by_id[cand.infeed_id], "editor", Dict{String, Any}())
+            ed["graph_position"] = Any[round(ix * 20.0; digits=1), round(iy * 20.0; digits=1)]
         end
         if !isempty(cand.source_id) && haskey(elem_by_id, cand.source_id)
+            sx0 = round(in1_pos[1] + ux * 11.0; digits=2)
+            sy0 = round(in1_pos[2] + uy * 11.0; digits=2)
             tr = get!(elem_by_id[cand.source_id], "transform", Dict{String, Any}())
-            tr["position"] = Any[round(p1x - 10.5; digits=2), round(p1y; digits=2), p1z]
+            tr["position"] = Any[sx0, sy0, p1z]
+            ed = get!(elem_by_id[cand.source_id], "editor", Dict{String, Any}())
+            ed["graph_position"] = Any[round(sx0 * 20.0; digits=1), round(sy0 * 20.0; digits=1)]
         end
         if !isempty(cand.sink_id) && haskey(elem_by_id, cand.sink_id)
+            snk_x = round(max_conv_x + 7.5; digits=2)
+            snk_y = 0.0
             tr = get!(elem_by_id[cand.sink_id], "transform", Dict{String, Any}())
-            tr["position"] = cand.layout_mode != :collinear_1d ?
-                Any[22.0, 0.0, p1z] :
-                Any[0.0, 15.0, p1z]
+            tr["position"] = Any[snk_x, snk_y, p1z]
+            ed = get!(elem_by_id[cand.sink_id], "editor", Dict{String, Any}())
+            ed["graph_position"] = Any[round(snk_x * 20.0; digits=1), round(snk_y * 20.0; digits=1)]
         end
     end
 

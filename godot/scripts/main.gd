@@ -88,9 +88,9 @@ func _build_authoring_shell() -> void:
                 connection_manager.send_message(msg)
         else:
             var cmd_type := str(msg.get("action", msg.get("type", "command")))
-            if cmd_type == "load_example":
+            if cmd_type in ["load_example", "run_optimization", "apply_best_solution"]:
                 running = false
-                is_sim_compiled = false
+                is_sim_compiled = (cmd_type == "apply_best_solution")
                 simulation_time = 0.0
                 if authoring_shell != null:
                     authoring_shell.is_sim_running = false

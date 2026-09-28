@@ -1362,10 +1362,11 @@ func _on_optimize_and_feedback_clicked() -> void:
 		start_optimization_requested.emit(spec_dict, true)
 	open_feedback_requested.emit()
 
+var _last_state_sig: String = ""
+
 func feed_optim_state(optim_state: Dictionary) -> void:
 	if optim_state.is_empty():
 		return
-	_latest_optim_state = optim_state
 
 	var status: String = str(optim_state.get("status", "idle")).to_lower()
 	var iter_n: int = int(optim_state.get("iteration", 0))
@@ -1376,6 +1377,15 @@ func feed_optim_state(optim_state: Dictionary) -> void:
 	var best_prim: float = float(optim_state.get("best_primary", 0.0))
 	var best_lbl: String = str(optim_state.get("best_label", "—"))
 	var top_k: Array = optim_state.get("top_k_solutions", []) if optim_state.get("top_k_solutions") is Array else []
+	var has_full_spec: bool = (not top_k.is_empty() and top_k[0] is Dictionary and top_k[0].get("scenespec") is Dictionary and not (top_k[0]["scenespec"] as Dictionary).is_empty())
+
+	var state_sig: String = "%s|%d|%d|%d|%.6f|%s|%d|%s|%s" % [
+		status, iter_n, max_n, feas_n, best_prim, best_lbl, top_k.size(), str(has_full_spec), str(optim_state.get("state_seq", -1))
+	]
+	if state_sig == _last_state_sig:
+		return
+	_last_state_sig = state_sig
+	_latest_optim_state = optim_state
 
 	if _lbl_prog_status != null:
 		_lbl_prog_status.text = "● " + status.to_upper()

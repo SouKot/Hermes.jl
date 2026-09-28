@@ -212,11 +212,14 @@ func rebuild_3d_scene() -> void:
 		var pz: float = float(elem.transform.position[2])
 		var dims: Vector3 = MeshFactory.get_dims(elem, Vector3(2.0, 1.5, 1.0))
 		anchor.position = Vector3(px, pz, -py)
-		anchor.rotation_degrees.y = -float(elem.transform.rotation.z)
+		if elem.kind == "conveyor":
+			anchor.rotation_degrees.y = 0.0
+		else:
+			anchor.rotation_degrees.y = -float(elem.transform.rotation.z)
 
-		var node_3d := MeshFactory.create_3d_node_for_element(elem)
+		var node_3d := MeshFactory.create_3d_node_for_element(elem, doc_store)
 		node_3d.name = "Elem3D_" + elem.id
-		node_3d.position = Vector3(0, 0, -dims.y * 0.5)
+		node_3d.position = Vector3.ZERO if elem.kind == "conveyor" else Vector3(0, 0, -dims.y * 0.5)
 		anchor.add_child(node_3d)
 
 		_entities_root.add_child(anchor)

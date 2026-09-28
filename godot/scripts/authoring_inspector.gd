@@ -7,6 +7,7 @@ const SceneTypes := preload("res://scripts/scenespec_types.gd")
 const DocumentStore := preload("res://scripts/authoring_document_store.gd")
 const Catalog := preload("res://scripts/authoring_catalog.gd")
 const RulePanel := preload("res://scripts/authoring_rule_panel.gd")
+const ConveyorCurve3D := preload("res://scripts/conveyor_curve_3d.gd")
 
 signal duplicate_requested(element_id: String)
 signal delete_requested(element_id: String)
@@ -410,6 +411,11 @@ func _render_single_element(elem_id: String) -> void:
 			_container.add_child(_rule_panel)
 		_rule_panel.configure(elem.id, elem.kind, elem.properties)
 		_rule_panel.visible = true
+
+	if elem.kind == "conveyor":
+		_build_conveyor_shape_section(elem)
+		_container.add_child(HSeparator.new())
+
 	# 3. Position Coordinates (Compact X, Y, Z glance)
 	var pos_lbl := Label.new()
 	pos_lbl.text = "POSITION (X, Y, Z)"
@@ -1559,3 +1565,146 @@ func _on_rule_changed(element_id: String, property_path: String, value) -> void:
 			var cond = target_conn.condition if target_conn.condition is Dictionary else {}
 			cond[property_path] = value
 			doc_store.update_connection_condition(element_id, cond)
+
+func set_conveyor_shape_preset(elem_id: String, preset_id: String) -> void:
+	if doc_store == null:
+		return
+	var elem := doc_store.get_element(elem_id)
+	if elem == null or elem.kind != "conveyor":
+		return
+	elem.geometry["shape_preset"] = preset_id.strip_edges().to_lower()
+	if not (elem.geometry.get("shape_params") is Dictionary):
+		elem.geometry["shape_params"] = {
+			"bend_radius": 2.0,
+			"bend_angle_deg": 90.0,
+			"sweep_angle_deg": 90.0,
+			"passes": 3,
+			"pitch": 2.4,
+			"helix_turns": 1.5
+		}
+	doc_store.is_dirty = true
+	doc_store.validate()
+	doc_store.document_modified.emit()
+	call_deferred("refresh")
+
+func _build_conveyor_shape_section(elem: SceneTypes.SceneElement) -> void:
+	var sec_lbl := Label.new()
+	sec_lbl.text = "CONVEYOR SHAPE & CURVE GEOMETRY"
+	sec_lbl.add_theme_font_size_override("font_size", 10)
+	sec_lbl.add_theme_color_override("font_color", ACCENT)
+	_container.add_child(sec_lbl)
+
+	if not (elem.geometry.get("shape_params") is Dictionary):
+		elem.geometry["shape_params"] = {
+			"bend_radius": 2.0,
+			"bend_angle_deg": 90.0,
+			"sweep_angle_deg": 90.0,
+			"passes": 3,
+			"pitch": 2.4,
+			"helix_turns": 1.5
+		}
+	var sp: Dictionary = elem.geometry["shape_params"]
+	var cur_preset: String = str(elem.geometry.get("shape_preset", "straight")).strip_edges().to_lower()
+
+	var p_row := HBoxContainer.new()
+	p_row.add_theme_constant_override("separation", 6)
+	var p_lbl := Label.new()
+	p_lbl.text = "Shape Preset:"
+	p_lbl.add_theme_font_size_override("font_size", 10)
+	p_lbl.add_theme_color_override("font_color", TEXT)
+	p_row.add_child(p_lbl)
+
+	var opt_preset := OptionButton.new()
+	opt_preset.name = "ConveyorPresetDropdown"
+	opt_preset.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	opt_preset.add_theme_font_size_override("font_size", 10)
+	var sel_idx := 0
+	for i in range(ConveyorCurve3D.PRESET_IDS.size()):
+		var pid: String = ConveyorCurve3D.PRESET_IDS[i]
+		var plabel: String = str(ConveyorCurve3D.PRESET_LABELS.get(pid, pid.capitalize()))
+		opt_preset.add_item(plabel, i)
+		if pid == cur_preset:
+			sel_idx = i
+	opt_preset.selected = sel_idx
+	opt_preset.item_selected.connect(func(idx: int):
+		if idx >= 0 and idx < ConveyorCurve3D.PRESET_IDS.size():
+			set_conveyor_shape_preset(elem.id, ConveyorCurve3D.PRESET_IDS[idx])
+	)
+	p_row.add_child(opt_preset)
+	_container.add_child(p_row)
+
+	# Auto-Join Connected Conveyors checkbox
+	var chk_join := CheckBox.new()
+	chk_join.text = "Auto-Join Connected Conveyors (C¹ Smooth)"
+	chk_join.button_pressed = bool(elem.geometry.get("auto_join", true))
+	chk_join.add_theme_font_size_override("font_size", 10)
+	chk_join.toggled.connect(func(on: bool):
+		elem.geometry["auto_join"] = on
+		doc_store.is_dirty = true
+		doc_store.validate()
+		doc_store.document_modified.emit()
+	)
+	_container.add_child(chk_join)
+
+	# Progressive disclosure of preset parameters
+	var param_row := HBoxContainer.new()
+	param_row.add_theme_constant_override("separation", 6)
+	var has_params := false
+
+	if cur_preset in ["l_bend", "u_turn", "circular_arc", "serpentine", "spiral_helix"]:
+		has_params = true
+		var r_val: float = float(sp.get("bend_radius", 2.0))
+		_create_dock_mini_spin(param_row, "Radius (m)", r_val, 0.3, 25.0, 0.1, func(v):
+			sp["bend_radius"] = v
+			doc_store.is_dirty = true
+			doc_store.document_modified.emit()
+		)
+
+	if cur_preset in ["l_bend", "circular_arc"]:
+		has_params = true
+		var a_val: float = float(sp.get("sweep_angle_deg", sp.get("bend_angle_deg", 90.0)))
+		_create_dock_mini_spin(param_row, "Angle (°)", a_val, -360.0, 360.0, 5.0, func(v):
+			sp["sweep_angle_deg"] = v
+			sp["bend_angle_deg"] = v
+			doc_store.is_dirty = true
+			doc_store.document_modified.emit()
+		)
+
+	if cur_preset == "s_curve":
+		has_params = true
+		var lat_val: float = float(sp.get("lateral_offset", 2.4))
+		_create_dock_mini_spin(param_row, "Offset (m)", lat_val, -20.0, 20.0, 0.2, func(v):
+			sp["lateral_offset"] = v
+			doc_store.is_dirty = true
+			doc_store.document_modified.emit()
+		)
+
+	if cur_preset == "serpentine":
+		has_params = true
+		var passes_val: float = float(sp.get("passes", 3))
+		_create_dock_mini_spin(param_row, "Passes", passes_val, 2.0, 12.0, 1.0, func(v):
+			sp["passes"] = int(round(v))
+			doc_store.is_dirty = true
+			doc_store.document_modified.emit()
+		)
+		var pitch_val: float = float(sp.get("pitch", 2.4))
+		_create_dock_mini_spin(param_row, "Pitch (m)", pitch_val, 0.8, 10.0, 0.2, func(v):
+			sp["pitch"] = v
+			doc_store.is_dirty = true
+			doc_store.document_modified.emit()
+		)
+
+	if cur_preset == "spiral_helix":
+		has_params = true
+		var turns_val: float = float(sp.get("helix_turns", 1.5))
+		_create_dock_mini_spin(param_row, "Turns", turns_val, 0.5, 8.0, 0.25, func(v):
+			sp["helix_turns"] = v
+			doc_store.is_dirty = true
+			doc_store.document_modified.emit()
+		)
+
+	if has_params:
+		_container.add_child(param_row)
+	else:
+		param_row.queue_free()
+

@@ -93,9 +93,17 @@ func get_node_id() -> String:
 		return element.id
 	return ""
 
+func _is_curved_or_joined_conveyor() -> bool:
+	if element == null or element.kind != "conveyor":
+		return false
+	if element.geometry.has("inlet_pose") or element.geometry.has("outlet_pose"):
+		return true
+	var preset: String = str(element.geometry.get("shape_preset", "straight")).to_lower()
+	return preset != "straight" and not preset.is_empty()
+
 func refresh_from_element() -> void:
 	if element != null and element.transform != null:
-		rotation_degrees = float(element.transform.rotation.z)
+		rotation_degrees = 0.0 if _is_curved_or_joined_conveyor() else float(element.transform.rotation.z)
 		pivot_offset = Vector2(0, 0)
 	elif subgraph != null and subgraph.transform != null:
 		rotation_degrees = float(subgraph.transform.rotation.z)
@@ -348,6 +356,10 @@ func _recalculate_size() -> void:
 	# Physical dimensions at 20px per meter (1m = 20px)
 	var target_w: float = dims.x * 20.0
 	var target_h: float = dims.y * 20.0
+	if _is_curved_or_joined_conveyor():
+		target_w = 110.0
+		target_h = 54.0
+		min_h = max(48.0, min_h * 0.72)
 
 	size = Vector2(max(target_w, min_w), max(target_h, min_h))
 
@@ -895,7 +907,10 @@ func _draw() -> void:
 		elif mid_w >= 70.0:
 			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 24.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 12, TEXT_COLOR)
 			var sub_str: String = element.kind.to_upper()
-			if not element.name.is_empty() and element.name != element.id:
+			if element.kind == "conveyor":
+				var preset_tag: String = str(element.geometry.get("shape_preset", "straight")).to_upper()
+				sub_str = "CONV · %s" % preset_tag
+			elif not element.name.is_empty() and element.name != element.id:
 				sub_str = "%s (%s)" % [element.kind.to_upper(), element.id]
 			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 40.0), sub_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 9, MUTED_COLOR)
 			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 56.0), dim_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 10, COLOR_FLOW)
@@ -911,8 +926,11 @@ func _draw() -> void:
 				draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 72.0), elev_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 8, Color("#e67e22"))
 		elif mid_w >= 28.0:
 			draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 22.0), title, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 10, TEXT_COLOR)
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 38.0), "%.1f×%.1f" % [dims.x, dims.y], HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 8, COLOR_FLOW)
-			if cur_rot > 0.05:
+			var sub_label := "%.1f×%.1f" % [dims.x, dims.y]
+			if element.kind == "conveyor" and _is_curved_or_joined_conveyor():
+				sub_label = str(element.geometry.get("shape_preset", "straight")).to_upper()
+			draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 38.0), sub_label, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 8, COLOR_FLOW)
+			if cur_rot > 0.05 and not _is_curved_or_joined_conveyor():
 				draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 50.0), "∡%.0f°" % cur_rot, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 8, Color("#f1c40f"))
 
 		# Live KPI Badge Display

@@ -197,5 +197,29 @@ using SimOptim
         )
         GodotBridge.step_until!(inst_snap, 200.0; fast_forward = true)
         @test inst_snap.world.zone_stats[0].total_departures > 0
+
+        # ── 4. Sub-Phase 7F-2: Verify Universal Junction Continuity across ALL Top-5 Archive Candidates ──
+        for cand_rec in ctx.archive.candidates
+            cspec = cand_rec.scenespec_snapshot
+            cg = extract_conveyor_graph(cspec)
+            comp_c = GodotBridge.compile_scenespec(cspec)
+            @test comp_c.success
+            curves = comp_c.execution_ir.conveyor_curves
+            for e in edges(cg.adj)
+                u_id = cg.conveyor_ids[src(e)]
+                v_id = cg.conveyor_ids[dst(e)]
+                @test haskey(curves, u_id)
+                @test haskey(curves, v_id)
+                cu = curves[u_id]
+                cv = curves[v_id]
+                # Every connected conveyor edge (u -> v) must have exact C0 endpoint coincidence (Γ_u(1) == Γ_v(0))
+                pos_gap = hypot(
+                    cu.outlet_pose.pos[1] - cv.inlet_pose.pos[1],
+                    cu.outlet_pose.pos[2] - cv.inlet_pose.pos[2],
+                    cu.outlet_pose.pos[3] - cv.inlet_pose.pos[3]
+                )
+                @test pos_gap < 0.05
+            end
+        end
     end
 end

@@ -77,6 +77,7 @@ include("server/websocket_server.jl")
 
 # Dynamic Compiler & Live Simulation Runtime (Phase 7D-12A)
 include("compiler/compiler_ir.jl")
+include("compiler/conveyor_curve.jl")
 include("compiler/source_map_diagnostics.jl")
 include("compiler/distribution_parser.jl")
 include("compiler/logic_catalog.jl")
@@ -177,6 +178,8 @@ export num_connected_clients, is_server_running
 # Dynamic Compiler & Live Simulation Exports (Phase 7D-12A)
 export CompilerDiagnostic, DiagnosticSeverity, SourceMap, SourceMapRecord, has_errors
 export ExecutionGraphIR, ProductDefinition, compile_scenespec, CompilationResult, CustomArrivalProcess, CompositeArrivalProcess
+export Pose3D, SplineControlPoint3D, BakedConveyorCurve, CONVEYOR_SHAPE_PRESETS, register_conveyor_shape_preset!
+export bake_conveyor_curve, sample_conveyor_curve, compute_loop_conveyor_poses, bake_all_conveyor_curves!
 export list_examples, get_example_scenespec
 export SimulationInstance, step_until!, set_speed!
 export RuntimeManager, stage_and_activate!, play!, pause!, step!

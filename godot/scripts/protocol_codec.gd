@@ -3,6 +3,12 @@ extends RefCounted
 
 const MAX_DEPTH := 64
 
+var _float_stream: StreamPeerBuffer = null
+
+func _init() -> void:
+    _float_stream = StreamPeerBuffer.new()
+    _float_stream.big_endian = true
+
 func decode(data: PackedByteArray) -> Variant:
     var cursor := {"index": 0}
     var value = _decode_value(data, cursor, 0)
@@ -105,11 +111,9 @@ func _read_uint(data: PackedByteArray, cursor: Dictionary, width: int) -> int:
     return value
 
 func _read_float(data: PackedByteArray, cursor: Dictionary, width: int) -> float:
-    var bytes := _read_bytes(data, cursor, width)
-    bytes.reverse()
-    var stream := StreamPeerBuffer.new()
-    stream.data_array = bytes
-    return stream.get_float() if width == 4 else stream.get_double()
+    _float_stream.data_array = _read_bytes(data, cursor, width)
+    _float_stream.seek(0)
+    return _float_stream.get_float() if width == 4 else _float_stream.get_double()
 
 func _signed(value: int, bits: int) -> int:
     var sign_bit := 1 << (bits - 1)

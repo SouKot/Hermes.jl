@@ -159,17 +159,22 @@ function start_live_server(; host::String="127.0.0.1", port::Int=LIVE_SERVER_POR
 
     step_counter = Ref{UInt64}(0)
     optim_state_ref = Ref{Dict{String, Any}}(_default_optim_state())
+    optim_dirty_ref = Ref{Bool}(true)
+    optim_seq_ref = Ref{Int}(0)
     optim_stop_ref = Ref{Bool}(false)
     optim_task_ref = Ref{Any}(nothing)
 
     # Broadcast callback for simulation ticks
-    function broadcast_current_snapshot(sim_t::Float64)
+    function broadcast_current_snapshot(sim_t::Float64; include_optim::Bool=false)
         if server.is_running && !isempty(server.clients)
             inst = manager.active_instance
             if inst !== nothing
                 step_counter[] += 1
                 snap = build_snapshot(inst; scene_id=inst.id, step_count=step_counter[])
-                snap.abm_state["optim_state"] = optim_state_ref[]
+                if include_optim || optim_dirty_ref[]
+                    optim_dirty_ref[] = false
+                    snap.abm_state["optim_state"] = optim_state_ref[]
+                end
                 # Broadcast DirectSnapshotPayload to clients
                 broadcast_snapshot(server, snap)
             end
@@ -202,6 +207,7 @@ function start_live_server(; host::String="127.0.0.1", port::Int=LIVE_SERVER_POR
         end
 
         if cmd_type == "compile_and_run" || action == "compile_and_run"
+            optim_stop_ref[] = true
             raw_spec = get(cmd_dict, "scenespec", cmd_dict)
             spd = Float64(get(cmd_dict, "speed", 1.0))
             success, diags = stage_and_activate!(manager, raw_spec; clock_speed=spd)
@@ -284,13 +290,17 @@ function start_live_server(; host::String="127.0.0.1", port::Int=LIVE_SERVER_POR
             try
                 GodotBridge.pause!(manager)
                 optim_stop_ref[] = true
-                optim_state_ref[] = _default_optim_state()
+                optim_seq_ref[] += 1
+                st_init = _default_optim_state()
+                st_init["state_seq"] = optim_seq_ref[]
+                optim_state_ref[] = st_init
+                optim_dirty_ref[] = true
                 ex_spec = haskey(cmd_dict, "scenespec") && cmd_dict["scenespec"] isa AbstractDict ?
                           _to_plain_dict(cmd_dict["scenespec"]) : get_example_scenespec(ex_id)
                 default_spec = ex_spec
                 success, diags = stage_and_activate!(manager, ex_spec)
                 if success
-                    broadcast_current_snapshot(0.0)
+                    broadcast_current_snapshot(0.0; include_optim=true)
                     return create_ack(message.envelope.message_id, status="accepted", details="Loaded example '$ex_id'")
                 else
                     diag_messages = join([d.message for d in diags], "; ")
@@ -320,15 +330,25 @@ function start_live_server(; host::String="127.0.0.1", port::Int=LIVE_SERVER_POR
                 end
 
                 optim_stop_ref[] = false
-                optim_state_ref[] = merge(_default_optim_state(), Dict{String, Any}("status" => "running"))
-                broadcast_current_snapshot(0.0)
+                optim_seq_ref[] += 1
+                optim_state_ref[] = merge(_default_optim_state(), Dict{String, Any}("status" => "running", "state_seq" => optim_seq_ref[]))
+                optim_dirty_ref[] = true
+                broadcast_current_snapshot(0.0; include_optim=true)
 
                 optim_task_ref[] = @async begin
                     try
+                        last_optim_bcast = Ref{Float64}(0.0)
                         progress_cb = function(ctx)
-                            st = Base.invokelatest(simoptim_mod.optim_state_to_dict, ctx; status="running")
-                            optim_state_ref[] = st
-                            broadcast_current_snapshot(0.0)
+                            now_t = time()
+                            if (now_t - last_optim_bcast[]) >= 0.08
+                                last_optim_bcast[] = now_t
+                                st = Base.invokelatest(simoptim_mod.optim_state_to_dict, ctx; status="running", include_scenespecs=true)
+                                optim_seq_ref[] += 1
+                                st["state_seq"] = optim_seq_ref[]
+                                optim_state_ref[] = st
+                                optim_dirty_ref[] = true
+                                broadcast_current_snapshot(0.0; include_optim=true)
+                            end
                             yield()
                         end
                         _, final_ctx = Base.invokelatest(
@@ -338,15 +358,22 @@ function start_live_server(; host::String="127.0.0.1", port::Int=LIVE_SERVER_POR
                             stop_requested = optim_stop_ref
                         )
                         final_status = optim_stop_ref[] ? "stopped" : "completed"
-                        optim_state_ref[] = Base.invokelatest(simoptim_mod.optim_state_to_dict, final_ctx; status=final_status)
-                        broadcast_current_snapshot(0.0)
+                        st_final = Base.invokelatest(simoptim_mod.optim_state_to_dict, final_ctx; status=final_status, include_scenespecs=true)
+                        optim_seq_ref[] += 1
+                        st_final["state_seq"] = optim_seq_ref[]
+                        optim_state_ref[] = st_final
+                        optim_dirty_ref[] = true
+                        broadcast_current_snapshot(0.0; include_optim=true)
                     catch err
                         @error "Async SimOptim task failed" exception=(err, catch_backtrace())
                         st_err = copy(optim_state_ref[])
                         st_err["status"] = "error"
                         st_err["error_message"] = sprint(showerror, err)
+                        optim_seq_ref[] += 1
+                        st_err["state_seq"] = optim_seq_ref[]
                         optim_state_ref[] = st_err
-                        broadcast_current_snapshot(0.0)
+                        optim_dirty_ref[] = true
+                        broadcast_current_snapshot(0.0; include_optim=true)
                     end
                 end
 
@@ -360,14 +387,18 @@ function start_live_server(; host::String="127.0.0.1", port::Int=LIVE_SERVER_POR
             st = copy(optim_state_ref[])
             if get(st, "status", "idle") == "running"
                 st["status"] = "stopped"
+                optim_seq_ref[] += 1
+                st["state_seq"] = optim_seq_ref[]
                 optim_state_ref[] = st
+                optim_dirty_ref[] = true
             end
-            broadcast_current_snapshot(0.0)
+            broadcast_current_snapshot(0.0; include_optim=true)
             return create_ack(message.envelope.message_id, status="accepted", details="Optimization stop requested")
 
         elseif cmd_type in ("apply_best_solution", "apply_solution") || action in ("apply_best_solution", "apply_solution")
             try
                 GodotBridge.pause!(manager)
+                optim_stop_ref[] = true
                 cand_spec = nothing
                 if haskey(cmd_dict, "scenespec") && cmd_dict["scenespec"] isa AbstractDict
                     cand_spec = _to_plain_dict(cmd_dict["scenespec"])

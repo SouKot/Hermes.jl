@@ -7,6 +7,7 @@ const SceneTypes := preload("res://scripts/scenespec_types.gd")
 const DocumentStore := preload("res://scripts/authoring_document_store.gd")
 const Catalog := preload("res://scripts/authoring_catalog.gd")
 const Inspector := preload("res://scripts/authoring_inspector.gd")
+const ConveyorCurve3D := preload("res://scripts/conveyor_curve_3d.gd")
 
 signal closed
 signal duplicate_requested(elem_id: String)
@@ -675,6 +676,125 @@ func _render_spatial_tab(elem: SceneTypes.SceneElement) -> void:
 	_spin_ze = _create_coord_spin(ori_row, "Elev Z2 (m)", ze, 0.0, 50.0, 0.1, func(v):
 		doc_store.update_element_geometry(elem.id, Vector3(cur_l, cur_w, cur_h), zs, v)
 	)
+
+	if elem.kind == "conveyor":
+		_pages_container.add_child(HSeparator.new())
+		var conv_lbl := Label.new()
+		conv_lbl.text = "CONVEYOR SHAPE PRESET & CURVE PARAMETERS"
+		conv_lbl.add_theme_font_size_override("font_size", 10)
+		conv_lbl.add_theme_color_override("font_color", ACCENT)
+		_pages_container.add_child(conv_lbl)
+
+		if not (elem.geometry.get("shape_params") is Dictionary):
+			elem.geometry["shape_params"] = {
+				"bend_radius": 2.0,
+				"bend_angle_deg": 90.0,
+				"sweep_angle_deg": 90.0,
+				"passes": 3,
+				"pitch": 2.4,
+				"helix_turns": 1.5
+			}
+		var sp: Dictionary = elem.geometry["shape_params"]
+		var cur_preset: String = str(elem.geometry.get("shape_preset", "straight")).strip_edges().to_lower()
+
+		var p_row := HBoxContainer.new()
+		p_row.add_theme_constant_override("separation", 8)
+		var p_lbl := Label.new()
+		p_lbl.text = "Shape Preset:"
+		p_lbl.add_theme_font_size_override("font_size", 10)
+		p_lbl.add_theme_color_override("font_color", TEXT)
+		p_row.add_child(p_lbl)
+
+		var opt_preset := OptionButton.new()
+		opt_preset.name = "FloatingConveyorPresetDropdown"
+		opt_preset.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		opt_preset.add_theme_font_size_override("font_size", 10)
+		var sel_idx := 0
+		for i in range(ConveyorCurve3D.PRESET_IDS.size()):
+			var pid: String = ConveyorCurve3D.PRESET_IDS[i]
+			var plabel: String = str(ConveyorCurve3D.PRESET_LABELS.get(pid, pid.capitalize()))
+			opt_preset.add_item(plabel, i)
+			if pid == cur_preset:
+				sel_idx = i
+		opt_preset.selected = sel_idx
+		opt_preset.item_selected.connect(func(idx: int):
+			if idx >= 0 and idx < ConveyorCurve3D.PRESET_IDS.size():
+				elem.geometry["shape_preset"] = ConveyorCurve3D.PRESET_IDS[idx]
+				doc_store.is_dirty = true
+				doc_store.validate()
+				doc_store.document_modified.emit()
+				call_deferred("refresh")
+		)
+		p_row.add_child(opt_preset)
+		_pages_container.add_child(p_row)
+
+		var chk_join := CheckBox.new()
+		chk_join.text = "Auto-Join Connected Conveyors (C¹ Smooth)"
+		chk_join.button_pressed = bool(elem.geometry.get("auto_join", true))
+		chk_join.add_theme_font_size_override("font_size", 10)
+		chk_join.toggled.connect(func(on: bool):
+			elem.geometry["auto_join"] = on
+			doc_store.is_dirty = true
+			doc_store.validate()
+			doc_store.document_modified.emit()
+		)
+		_pages_container.add_child(chk_join)
+
+		var param_row := HBoxContainer.new()
+		param_row.add_theme_constant_override("separation", 6)
+		var has_params := false
+
+		if cur_preset in ["l_bend", "u_turn", "circular_arc", "serpentine", "spiral_helix"]:
+			has_params = true
+			_create_coord_spin(param_row, "Radius (m)", float(sp.get("bend_radius", 2.0)), 0.3, 25.0, 0.1, func(v):
+				sp["bend_radius"] = v
+				doc_store.is_dirty = true
+				doc_store.document_modified.emit()
+			)
+
+		if cur_preset in ["l_bend", "circular_arc"]:
+			has_params = true
+			_create_coord_spin(param_row, "Angle (°)", float(sp.get("sweep_angle_deg", sp.get("bend_angle_deg", 90.0))), -360.0, 360.0, 5.0, func(v):
+				sp["sweep_angle_deg"] = v
+				sp["bend_angle_deg"] = v
+				doc_store.is_dirty = true
+				doc_store.document_modified.emit()
+			)
+
+		if cur_preset == "s_curve":
+			has_params = true
+			_create_coord_spin(param_row, "Offset (m)", float(sp.get("lateral_offset", 2.4)), -20.0, 20.0, 0.2, func(v):
+				sp["lateral_offset"] = v
+				doc_store.is_dirty = true
+				doc_store.document_modified.emit()
+			)
+
+		if cur_preset == "serpentine":
+			has_params = true
+			_create_coord_spin(param_row, "Passes", float(sp.get("passes", 3)), 2.0, 12.0, 1.0, func(v):
+				sp["passes"] = int(round(v))
+				doc_store.is_dirty = true
+				doc_store.document_modified.emit()
+			)
+			_create_coord_spin(param_row, "Pitch (m)", float(sp.get("pitch", 2.4)), 0.8, 10.0, 0.2, func(v):
+				sp["pitch"] = v
+				doc_store.is_dirty = true
+				doc_store.document_modified.emit()
+			)
+
+		if cur_preset == "spiral_helix":
+			has_params = true
+			_create_coord_spin(param_row, "Turns", float(sp.get("helix_turns", 1.5)), 0.5, 8.0, 0.25, func(v):
+				sp["helix_turns"] = v
+				doc_store.is_dirty = true
+				doc_store.document_modified.emit()
+			)
+
+		if has_params:
+			_pages_container.add_child(param_row)
+		else:
+			param_row.queue_free()
+
 
 # ============================================================================
 # Tab 2: Ports & Interfaces

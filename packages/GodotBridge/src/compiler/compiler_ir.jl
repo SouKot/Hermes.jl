@@ -137,6 +137,28 @@ struct ExecutionGraphIR
     spatial_positions::Dict{String, Tuple{Float64, Float64, Float64}}
     spatial_dimensions::Dict{String, Tuple{Float64, Float64, Float64}}
     product_def::ProductDefinition
+    conveyor_curves::Dict{String, Any}
+end
+
+function ExecutionGraphIR(
+    nodes::Dict{String, AbstractIRNode},
+    element_to_zone::Dict{String, Int},
+    zone_to_element::Dict{Int, String},
+    downstream_conns::Dict{String, Vector{Tuple{String, String, String, String}}},
+    spatial_positions::Dict{String, Tuple{Float64, Float64, Float64}},
+    spatial_dimensions::Dict{String, Tuple{Float64, Float64, Float64}},
+    product_def::ProductDefinition
+)
+    return ExecutionGraphIR(
+        nodes,
+        element_to_zone,
+        zone_to_element,
+        downstream_conns,
+        spatial_positions,
+        spatial_dimensions,
+        product_def,
+        Dict{String, Any}()
+    )
 end
 
 function ExecutionGraphIR()
@@ -147,6 +169,7 @@ function ExecutionGraphIR()
         Dict{String, Vector{Tuple{String, String, String, String}}}(),
         Dict{String, Tuple{Float64, Float64, Float64}}(),
         Dict{String, Tuple{Float64, Float64, Float64}}(),
-        ProductDefinition()
+        ProductDefinition(),
+        Dict{String, Any}()
     )
 end

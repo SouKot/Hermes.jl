@@ -225,8 +225,12 @@ function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationRe
         ir.downstream_conns,
         ir.spatial_positions,
         ir.spatial_dimensions,
-        product_def
+        product_def,
+        ir.conveyor_curves
     )
+
+    # 3c. Bake 3D/2D parametric conveyor curves & resolve C¹ junction poses
+    bake_all_conveyor_curves!(ir, flat_spec)
 
     # 4. Check for blocking compilation errors
     if has_errors(all_diagnostics)
