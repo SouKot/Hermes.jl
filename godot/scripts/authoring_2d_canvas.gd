@@ -1,9 +1,10 @@
 # authoring_2d_canvas.gd
-# Unified 2D Layout Canvas rendering CAD floorplan, entity blocks, and direct port connection splines.
+# Unified 2D Layout Canvas rendering CAD floorplan, entity blocks, conveyor tracks, and port connection splines (Phase 7G).
 class_name SimVizAuthoring2DCanvas
 extends Control
 
 const BlockNode := preload("res://scripts/authoring_block_node.gd")
+const ChannelPopup := preload("res://scripts/authoring_channel_popup.gd")
 const SceneTypes := preload("res://scripts/scenespec_types.gd")
 const DocumentStore := preload("res://scripts/authoring_document_store.gd")
 const ConveyorCurve3D := preload("res://scripts/conveyor_curve_3d.gd")
@@ -11,6 +12,13 @@ const ConveyorCurve3D := preload("res://scripts/conveyor_curve_3d.gd")
 signal element_selected(element_id: String)
 signal connection_created(conn: SceneTypes.SceneConnection)
 signal floating_properties_requested(elem_id: String, screen_pos: Vector2)
+signal wire_visibility_mode_changed(mode_int: int, mode_label: String)
+
+enum WireVisibilityMode {
+	ALL = 0,
+	FOCUS = 1,
+	OFF = 2
+}
 
 const BG_COLOR := Color("#0b1018")
 const GRID_MAJOR := Color("#1a2636")
@@ -23,6 +31,9 @@ const INCOMPATIBLE_WIRE_COLOR := Color("#e74c3c")
 
 var doc_store: DocumentStore
 var _block_nodes: Dictionary = {} # element_id -> SimVizAuthoringBlockNode
+var wire_visibility_mode: int = WireVisibilityMode.ALL
+var _channel_popup: ChannelPopup = null
+var _hovered_channel_conn_id: String = ""
 
 # Pan & Zoom transform
 var pan_offset: Vector2 = Vector2(80, 80)
@@ -72,8 +83,83 @@ func _ensure_layers() -> void:
 		_wires_layer.draw.connect(_on_wires_layer_draw)
 		add_child(_wires_layer)
 
+	if _channel_popup == null:
+		_channel_popup = ChannelPopup.new()
+		_channel_popup.name = "ChannelPopup"
+		_channel_popup.channel_hovered.connect(func(cid: String):
+			_hovered_channel_conn_id = cid
+			_redraw_all()
+		)
+		_channel_popup.channel_deleted.connect(func(_cid: String):
+			_sync_port_connection_counts()
+			_redraw_all()
+		)
+		_channel_popup.channel_reordered.connect(func(_cid: String, _nidx: int):
+			_sync_port_connection_counts()
+			_redraw_all()
+		)
+		_channel_popup.disconnect_all_requested.connect(func(_eid: String, _pid: String):
+			_sync_port_connection_counts()
+			_redraw_all()
+		)
+		add_child(_channel_popup)
+
 func _ensure_wires_layer() -> void:
 	_ensure_layers()
+
+func get_wire_visibility_label() -> String:
+	match wire_visibility_mode:
+		WireVisibilityMode.ALL: return "All"
+		WireVisibilityMode.FOCUS: return "Focus"
+		WireVisibilityMode.OFF: return "Off"
+		_: return "All"
+
+func set_wire_visibility_mode(mode_val: int) -> void:
+	wire_visibility_mode = posmod(mode_val, 3)
+	_sync_port_connection_counts()
+	wire_visibility_mode_changed.emit(wire_visibility_mode, get_wire_visibility_label())
+	_redraw_all()
+
+func cycle_wire_visibility_mode() -> int:
+	set_wire_visibility_mode((wire_visibility_mode + 1) % 3)
+	return wire_visibility_mode
+
+func open_channel_popup(elem_id: String, port_id: String, is_output: bool, screen_pos: Vector2 = Vector2(120, 120)) -> void:
+	_ensure_layers()
+	if _channel_popup != null and doc_store != null:
+		var local_pos := screen_pos
+		if is_inside_tree():
+			local_pos = get_global_transform().affine_inverse() * screen_pos
+		_channel_popup.open_for_port(doc_store, elem_id, port_id, is_output, local_pos)
+		move_child(_channel_popup, -1)
+
+func get_channel_popup() -> ChannelPopup:
+	_ensure_layers()
+	return _channel_popup
+
+func _sync_port_connection_counts() -> void:
+	if doc_store == null or doc_store.active_document == null:
+		for b in _block_nodes.values():
+			if is_instance_valid(b):
+				b.set_port_connection_counts({})
+				b.set_wire_context(_is_dragging_wire, wire_visibility_mode)
+		return
+
+	var counts_by_elem: Dictionary = {}
+	for conn in doc_store.active_document.connections:
+		if not counts_by_elem.has(conn.source_element):
+			counts_by_elem[conn.source_element] = {}
+		counts_by_elem[conn.source_element][conn.source_port] = int(counts_by_elem[conn.source_element].get(conn.source_port, 0)) + 1
+
+		if not counts_by_elem.has(conn.target_element):
+			counts_by_elem[conn.target_element] = {}
+		counts_by_elem[conn.target_element][conn.target_port] = int(counts_by_elem[conn.target_element].get(conn.target_port, 0)) + 1
+
+	for eid in _block_nodes.keys():
+		var b: BlockNode = _block_nodes[eid]
+		if is_instance_valid(b):
+			b.set_port_connection_counts(counts_by_elem.get(eid, {}))
+			b.set_wire_context(_is_dragging_wire, wire_visibility_mode)
 
 func _redraw_all() -> void:
 	queue_redraw()
@@ -85,7 +171,7 @@ func _redraw_all() -> void:
 func _process(delta: float) -> void:
 	if _active_agents.is_empty():
 		return
-	
+
 	var lerp_weight: float = clamp(delta * 25.0, 0.0, 1.0)
 	var needs_redraw: bool = false
 	for aid in _agent_target_positions.keys():
@@ -119,6 +205,18 @@ func update_agent_telemetry(agents: Array) -> void:
 				if a.has("position") and a["position"] is Array and a["position"].size() >= 2:
 					px = float(a["position"][0])
 					py = float(a["position"][1])
+
+				var elem_id_ag: String = str(a.get("zone", ""))
+				if elem_id_ag.is_empty() and a.has("properties") and a.properties is Dictionary:
+					elem_id_ag = str(a.properties.get("element_id", ""))
+				if not elem_id_ag.is_empty() and _block_nodes.has(elem_id_ag):
+					var b_conv: BlockNode = _block_nodes[elem_id_ag]
+					if is_instance_valid(b_conv) and b_conv.element != null and b_conv.element.kind == "conveyor" and not _is_curved_or_joined_conveyor_elem(b_conv.element):
+						if is_zero_approx(b_conv.rotation):
+							var base_y_m: float = float(b_conv.element.transform.position[1])
+							var half_h_m: float = (b_conv.size.y * 0.5) / 20.0
+							if absf(py - base_y_m) < 0.05 or absf(py - (base_y_m + half_h_m)) < half_h_m + 0.1:
+								py = base_y_m + half_h_m
 
 				var target_pt := Vector2(px, py)
 				_agent_target_positions[aid] = target_pt
@@ -205,7 +303,7 @@ func _ready() -> void:
 func rebuild_blocks() -> void:
 	_ensure_layers()
 	for child in get_children():
-		if child == _wires_layer or child == _agents_layer:
+		if child == _wires_layer or child == _agents_layer or child == _channel_popup:
 			continue
 		child.queue_free()
 	_block_nodes.clear()
@@ -234,6 +332,9 @@ func rebuild_blocks() -> void:
 		b.add_port_requested.connect(_on_add_port_requested)
 		b.remove_port_requested.connect(_on_remove_port_requested)
 		b.disconnect_port_requested.connect(_on_disconnect_port_requested)
+		b.port_channel_popup_requested.connect(func(eid: String, pid: String, is_out: bool, spos: Vector2):
+			open_channel_popup(eid, pid, is_out, spos)
+		)
 		b.floating_properties_requested.connect(func(eid: String, spos: Vector2):
 			floating_properties_requested.emit(eid, spos)
 		)
@@ -274,6 +375,9 @@ func rebuild_blocks() -> void:
 				doc_store.enter_subgraph_scope(sid)
 		)
 		b.disconnect_port_requested.connect(_on_disconnect_port_requested)
+		b.port_channel_popup_requested.connect(func(eid: String, pid: String, is_out: bool, spos: Vector2):
+			open_channel_popup(eid, pid, is_out, spos)
+		)
 		b.floating_properties_requested.connect(func(eid: String, spos: Vector2):
 			floating_properties_requested.emit(eid, spos)
 		)
@@ -292,6 +396,9 @@ func rebuild_blocks() -> void:
 		)
 
 	move_child(_wires_layer, -1)
+	if _channel_popup != null:
+		move_child(_channel_popup, -1)
+	_sync_port_connection_counts()
 	_redraw_all()
 
 func _is_curved_or_joined_conveyor_elem(elem: SceneTypes.SceneElement) -> bool:
@@ -308,16 +415,8 @@ func _compute_element_graph_position(elem: SceneTypes.SceneElement, b: BlockNode
 		if pts_m.size() >= 2:
 			var mid_idx: int = pts_m.size() / 2
 			var mid_m: Vector2 = pts_m[mid_idx]
-			var p_prev: Vector2 = pts_m[max(0, mid_idx - 1)]
-			var p_next: Vector2 = pts_m[min(pts_m.size() - 1, mid_idx + 1)]
-			var tan_v: Vector2 = (p_next - p_prev)
-			if tan_v.length_squared() > 1e-6:
-				tan_v = tan_v.normalized()
-			else:
-				tan_v = Vector2(1.0, 0.0)
-			var norm_v := Vector2(tan_v.y, -tan_v.x)
-			var offset_px: Vector2 = norm_v * 38.0 - (b.size * 0.5)
-			return (mid_m * 20.0) + offset_px
+			# Place Midpoint Spine Pill directly ON the conveyor centerline midpoint (zero lateral offset!)
+			return (mid_m * 20.0) - (b.size * 0.5)
 	var gx: float = elem.editor.graph_position.x if elem.editor.graph_position != Vector2.ZERO else float(elem.transform.position[0]) * 20.0
 	var gy: float = elem.editor.graph_position.y if elem.editor.graph_position != Vector2.ZERO else float(elem.transform.position[1]) * 20.0
 	return Vector2(gx, gy)
@@ -339,6 +438,7 @@ func _on_document_reloaded(_doc: SceneTypes.SceneDocument) -> void:
 func _on_document_modified() -> void:
 	for b in _block_nodes.values():
 		b.refresh_from_element()
+	_sync_port_connection_counts()
 	_update_blocks_transform()
 	_redraw_all()
 
@@ -360,6 +460,7 @@ func _on_selection_changed(sel_id: String, _sel_type: String) -> void:
 		var is_primary: bool = (id_val == sel_id)
 		var is_multi: bool = (doc_store != null and doc_store.is_element_selected(id_val))
 		_block_nodes[id_val].set_selected(is_primary, is_multi)
+	_sync_port_connection_counts()
 	_redraw_all()
 
 func _on_block_selected(elem_id: String) -> void:
@@ -475,11 +576,12 @@ func _on_port_drag_started(elem_id: String, port_id: String, port_kind: String, 
 	_wire_source_port = port_id
 	_wire_source_kind = port_kind
 	_wire_source_is_output = is_output
-	_wire_source_pos = start_pos
+	_wire_source_pos = _resolve_port_position(elem_id, port_id) if _resolve_port_position(elem_id, port_id) != Vector2.ZERO else start_pos
 	_wire_current_mouse = _wire_source_pos
 	_wire_hovered_elem = ""
 	_wire_hovered_port = ""
 	_wire_is_compatible = false
+	_sync_port_connection_counts()
 	_redraw_all()
 
 var _force_text_focus_for_test: bool = false
@@ -504,7 +606,11 @@ func _handle_key_input(ik: InputEventKey) -> void:
 		return
 
 	if ik.keycode == KEY_ESCAPE:
-		if _is_dragging_wire:
+		if _channel_popup != null and _channel_popup.visible:
+			_channel_popup.close_popup()
+			if is_inside_tree() and get_viewport() != null:
+				get_viewport().set_input_as_handled()
+		elif _is_dragging_wire:
 			_cancel_wire_drag()
 			if is_inside_tree() and get_viewport() != null:
 				get_viewport().set_input_as_handled()
@@ -514,10 +620,16 @@ func _handle_key_input(ik: InputEventKey) -> void:
 			if is_inside_tree() and get_viewport() != null:
 				get_viewport().set_input_as_handled()
 
+	elif ik.keycode == KEY_W and not (ik.ctrl_pressed or ik.meta_pressed or ik.alt_pressed):
+		cycle_wire_visibility_mode()
+		if is_inside_tree() and get_viewport() != null:
+			get_viewport().set_input_as_handled()
+
 	elif ik.keycode in [KEY_DELETE, KEY_BACKSPACE]:
 		if doc_store != null:
 			if doc_store.selected_type == "connection" and not doc_store.selected_id.is_empty():
 				doc_store.remove_connection(doc_store.selected_id)
+				_sync_port_connection_counts()
 				_redraw_all()
 				if is_inside_tree() and get_viewport() != null:
 					get_viewport().set_input_as_handled()
@@ -576,6 +688,57 @@ func _input(event: InputEvent) -> void:
 			if is_inside_tree() and get_viewport() != null:
 				get_viewport().set_input_as_handled()
 
+func _evaluate_port_compatibility(cand_elem: String, cand_port: String, tgt_kind: String, tgt_is_out: bool, tgt_card: String) -> void:
+	var s_kind := _wire_source_kind
+	var s_is_out := _wire_source_is_output
+	var t_kind := tgt_kind
+	var t_is_out := tgt_is_out
+
+	var emitter_kind: String = s_kind if s_is_out else t_kind
+	var receiver_kind: String = t_kind if s_is_out else s_kind
+	var emitter_elem: String = _wire_source_elem if s_is_out else cand_elem
+	var emitter_port: String = _wire_source_port if s_is_out else cand_port
+	var receiver_elem: String = cand_elem if s_is_out else _wire_source_elem
+	var receiver_port: String = cand_port if s_is_out else _wire_source_port
+	var receiver_card: String = tgt_card if s_is_out else "many"
+
+	if s_is_out == t_is_out:
+		_wire_is_compatible = false
+		_wire_rejection_reason = "Cannot connect %s" % ("output to output" if s_is_out else "input to input")
+		return
+
+	var is_kind_compatible := false
+	if emitter_kind == receiver_kind:
+		is_kind_compatible = true
+	elif emitter_kind == "metric" and receiver_kind in ["signal", "control"]:
+		is_kind_compatible = true
+	elif emitter_kind == "signal" and receiver_kind in ["signal", "control"]:
+		is_kind_compatible = true
+	elif emitter_kind == "event" and receiver_kind in ["event", "control"]:
+		is_kind_compatible = true
+	elif emitter_kind == "control" and receiver_kind == "control":
+		is_kind_compatible = true
+
+	if not is_kind_compatible:
+		_wire_is_compatible = false
+		_wire_rejection_reason = "Incompatible kinds: %s → %s" % [emitter_kind, receiver_kind]
+		return
+
+	if doc_store != null and doc_store.active_document != null:
+		var out_cnt := doc_store.get_port_connections(emitter_elem, emitter_port, true).size()
+		var in_cnt := doc_store.get_port_connections(receiver_elem, receiver_port, false).size()
+		if out_cnt >= 64 or in_cnt >= 64:
+			_wire_is_compatible = false
+			_wire_rejection_reason = "Max 64 connections per port reached"
+			return
+		if receiver_card == "one" and in_cnt >= 1:
+			_wire_is_compatible = false
+			_wire_rejection_reason = "Port already connected (cardinality: one)"
+			return
+
+	_wire_is_compatible = true
+	_wire_rejection_reason = ""
+
 func _update_wire_hover() -> void:
 	var canvas_mouse := get_local_mouse_position() if is_inside_tree() else _wire_current_mouse
 	var prev_hover_elem := _wire_hovered_elem
@@ -585,70 +748,35 @@ func _update_wire_hover() -> void:
 	_wire_hovered_port = ""
 	_wire_is_compatible = false
 
-	for eid in _block_nodes.keys():
-		if eid == _wire_source_elem:
-			continue
-		var b: BlockNode = _block_nodes[eid]
-		var lpos: Vector2 = b.get_transform().affine_inverse() * canvas_mouse
-		var hit_pid: String = b._hit_test_port(lpos)
-		if not hit_pid.is_empty():
-			var p_info: Dictionary = b.get_port_info(hit_pid)
-			var tgt_kind: String = str(p_info.get("kind", ""))
-			var tgt_is_out: bool = bool(p_info.get("is_output", false))
+	# 1. Check physical conveyor endpoint ports (flow_in at Γ(0), flow_out at Γ(1)) for curved conveyors first
+	var conv_ep := _hit_test_conveyor_endpoint_port(canvas_mouse)
+	if not conv_ep.is_empty() and str(conv_ep["elem_id"]) != _wire_source_elem:
+		var cid: String = str(conv_ep["elem_id"])
+		var cport: String = str(conv_ep["port_id"])
+		var cis_out: bool = bool(conv_ep["is_output"])
+		_evaluate_port_compatibility(cid, cport, "flow", cis_out, "many")
+		_wire_hovered_elem = cid
+		_wire_hovered_port = cport
+		_wire_current_mouse = conv_ep["pos"]
+	else:
+		# 2. Check block node perimeter sockets (including straight conveyors!)
+		for eid in _block_nodes.keys():
+			if eid == _wire_source_elem:
+				continue
+			var b: BlockNode = _block_nodes[eid]
+			var lpos: Vector2 = b.get_transform().affine_inverse() * canvas_mouse
+			var hit_pid: String = b._hit_test_port(lpos)
+			if not hit_pid.is_empty():
+				var p_info: Dictionary = b.get_port_info(hit_pid)
+				var tgt_kind: String = str(p_info.get("kind", ""))
+				var tgt_is_out: bool = bool(p_info.get("is_output", false))
+				var tgt_card: String = str(p_info.get("cardinality", "many"))
+				_evaluate_port_compatibility(eid, hit_pid, tgt_kind, tgt_is_out, tgt_card)
+				_wire_hovered_elem = eid
+				_wire_hovered_port = hit_pid
+				_wire_current_mouse = _resolve_port_position(eid, hit_pid)
+				break
 
-			var s_kind := _wire_source_kind
-			var s_is_out := _wire_source_is_output
-			var t_kind := tgt_kind
-			var t_is_out := tgt_is_out
-
-			# Normalize: emitter (out) -> receiver (in)
-			var emitter_kind: String = s_kind if s_is_out else t_kind
-			var receiver_kind: String = t_kind if s_is_out else s_kind
-			var receiver_elem: String = str(eid) if s_is_out else _wire_source_elem
-			var receiver_port: String = str(hit_pid) if s_is_out else _wire_source_port
-			var receiver_card: String = str(p_info.get("cardinality", "many"))
-
-			if s_is_out == t_is_out:
-				_wire_is_compatible = false
-				_wire_rejection_reason = "Cannot connect %s" % ("output to output" if s_is_out else "input to input")
-			else:
-				var is_kind_compatible := false
-				if emitter_kind == receiver_kind:
-					is_kind_compatible = true
-				elif emitter_kind == "metric" and receiver_kind in ["signal", "control"]:
-					is_kind_compatible = true
-				elif emitter_kind == "signal" and receiver_kind in ["signal", "control"]:
-					is_kind_compatible = true
-				elif emitter_kind == "event" and receiver_kind in ["event", "control"]:
-					is_kind_compatible = true
-				elif emitter_kind == "control" and receiver_kind == "control":
-					is_kind_compatible = true
-
-				if not is_kind_compatible:
-					_wire_is_compatible = false
-					_wire_rejection_reason = "Incompatible kinds: %s → %s" % [emitter_kind, receiver_kind]
-				else:
-					# Check cardinality="one"
-					var is_occupied := false
-					if receiver_card == "one" and doc_store != null and doc_store.active_document != null:
-						for c in doc_store.active_document.connections:
-							if c.target_element == receiver_elem and c.target_port == receiver_port:
-								is_occupied = true
-								break
-					if is_occupied:
-						_wire_is_compatible = false
-						_wire_rejection_reason = "Port already connected (cardinality: one)"
-					else:
-						_wire_is_compatible = true
-						_wire_rejection_reason = ""
-
-			_wire_hovered_elem = eid
-			_wire_hovered_port = hit_pid
-			# Snap endpoint to target socket center
-			_wire_current_mouse = b.get_port_canvas_position(hit_pid)
-			break
-
-	# Update visual port hover halo on block nodes
 	if prev_hover_elem != _wire_hovered_elem or prev_hover_port != _wire_hovered_port:
 		for b in _block_nodes.values():
 			b.set_hovered_port("")
@@ -681,6 +809,7 @@ func _cancel_wire_drag() -> void:
 	_wire_hovered_port = ""
 	_wire_is_compatible = false
 	_wire_rejection_reason = ""
+	_sync_port_connection_counts()
 	_redraw_all()
 
 func _create_connection(src_e: String, src_p: String, src_kind: String, src_is_out: bool, tgt_e: String, tgt_p: String) -> void:
@@ -689,7 +818,6 @@ func _create_connection(src_e: String, src_p: String, src_kind: String, src_is_o
 	var to_elem := tgt_e
 	var to_port := tgt_p
 
-	# Normalize direction: source is output, target is input
 	if not src_is_out:
 		from_elem = tgt_e
 		from_port = tgt_p
@@ -706,7 +834,6 @@ func _create_connection(src_e: String, src_p: String, src_kind: String, src_is_o
 	else:
 		link_type = "signal"
 
-	# Avoid duplicate connection
 	if doc_store != null and doc_store.active_document != null:
 		for c in doc_store.active_document.connections:
 			if c.source_element == from_elem and c.source_port == from_port and c.target_element == to_elem and c.target_port == to_port:
@@ -721,6 +848,7 @@ func _create_connection(src_e: String, src_p: String, src_kind: String, src_is_o
 		conn.link_type = link_type
 
 		doc_store.add_connection(conn)
+		_sync_port_connection_counts()
 		connection_created.emit(conn)
 
 	_redraw_all()
@@ -739,7 +867,7 @@ func _on_add_port_requested(elem_id: String, bay_action: String) -> void:
 			port.id = "flow_in_%d" % count
 			port.kind = "flow"
 			port.direction = "input"
-			port.cardinality = "one"
+			port.cardinality = "many"
 			port.name = "Flow In %d" % count
 			elem.input_ports.append(port)
 		"flow_out":
@@ -747,7 +875,7 @@ func _on_add_port_requested(elem_id: String, bay_action: String) -> void:
 			port.id = "flow_out_%d" % count
 			port.kind = "flow"
 			port.direction = "output"
-			port.cardinality = "one"
+			port.cardinality = "many"
 			port.name = "Flow Out %d" % count
 			elem.output_ports.append(port)
 		"signal_in":
@@ -783,6 +911,7 @@ func _on_disconnect_port_requested(elem_id: String, port_id: String) -> void:
 		return
 	var count := doc_store.disconnect_port(elem_id, port_id)
 	if count > 0:
+		_sync_port_connection_counts()
 		_redraw_all()
 
 func _count_ports(ports_arr: Array, kind: String) -> int:
@@ -792,10 +921,56 @@ func _count_ports(ports_arr: Array, kind: String) -> int:
 			c += 1
 	return c
 
+func _hit_test_conveyor_endpoint_port(canvas_mouse: Vector2) -> Dictionary:
+	if doc_store == null or doc_store.active_document == null:
+		return {}
+	var m_scale: float = 20.0 * zoom_level
+	var hit_r: float = clampf(9.0 * zoom_level, 7.0, 14.0)
+	for elem in doc_store.get_scoped_elements():
+		if not _is_curved_or_joined_conveyor_elem(elem):
+			continue
+		var pts_m := ConveyorCurve3D.sample_2d_polyline(elem, doc_store, 24)
+		if pts_m.size() < 2:
+			continue
+		var p_in := pan_offset + pts_m[0] * m_scale
+		var p_out := pan_offset + pts_m[pts_m.size() - 1] * m_scale
+		if canvas_mouse.distance_to(p_in) <= hit_r:
+			var pid_in := "flow_in"
+			for p in elem.input_ports:
+				if p.kind == "flow":
+					pid_in = p.id
+					break
+			return {"elem_id": elem.id, "port_id": pid_in, "is_output": false, "pos": p_in}
+		if canvas_mouse.distance_to(p_out) <= hit_r:
+			var pid_out := "flow_out"
+			for p in elem.output_ports:
+				if p.kind == "flow":
+					pid_out = p.id
+					break
+			return {"elem_id": elem.id, "port_id": pid_out, "is_output": true, "pos": p_out}
+	return {}
+
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
+			if _channel_popup != null and _channel_popup.visible:
+				var pop_rect := Rect2(_channel_popup.position, _channel_popup.size)
+				if not pop_rect.has_point(mb.position):
+					_channel_popup.close_popup()
+
+			# 1. Check physical curved conveyor endpoint port drag start
+			var hit_ep := _hit_test_conveyor_endpoint_port(mb.position)
+			if not hit_ep.is_empty():
+				var cid: String = str(hit_ep["elem_id"])
+				var cport: String = str(hit_ep["port_id"])
+				var cis_out: bool = bool(hit_ep["is_output"])
+				if doc_store != null:
+					doc_store.select_port(cid, cport)
+				_on_port_drag_started(cid, cport, "flow", cis_out, hit_ep["pos"])
+				accept_event()
+				return
+
 			var hit_track := _hit_test_conveyor_track(mb.position)
 			if not hit_track.is_empty():
 				if mb.double_click:
@@ -821,6 +996,22 @@ func _gui_input(event: InputEvent) -> void:
 					_redraw_all()
 
 		elif mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
+			var hit_ep := _hit_test_conveyor_endpoint_port(mb.position)
+			if not hit_ep.is_empty():
+				var cid: String = str(hit_ep["elem_id"])
+				var cport: String = str(hit_ep["port_id"])
+				var cis_out: bool = bool(hit_ep["is_output"])
+				var cnt := doc_store.get_port_connections(cid, cport, cis_out).size() if doc_store != null else 0
+				if cnt > 1:
+					var spos: Vector2 = mb.global_position if mb.global_position != Vector2.ZERO else mb.position
+					open_channel_popup(cid, cport, cis_out, spos)
+				elif doc_store != null:
+					doc_store.disconnect_port(cid, cport)
+					_sync_port_connection_counts()
+					_redraw_all()
+				accept_event()
+				return
+
 			var hit_track := _hit_test_conveyor_track(mb.position)
 			if not hit_track.is_empty():
 				_on_block_selected(hit_track)
@@ -834,6 +1025,7 @@ func _gui_input(event: InputEvent) -> void:
 			if not hit_conn.is_empty():
 				if doc_store != null:
 					doc_store.remove_connection(hit_conn)
+					_sync_port_connection_counts()
 				_redraw_all()
 				accept_event()
 				return
@@ -897,7 +1089,7 @@ func frame_all() -> void:
 		min_p.y = min(min_p.y, py)
 		max_p.x = max(max_p.x, px + pw)
 		max_p.y = max(max_p.y, py + ph)
-		if elem.kind == "conveyor":
+		if elem.kind == "conveyor" and _is_curved_or_joined_conveyor_elem(elem):
 			var pts_m := ConveyorCurve3D.sample_2d_polyline(elem, doc_store, 16)
 			for pt_m in pts_m:
 				var c_px := pt_m * 20.0
@@ -936,7 +1128,7 @@ func _draw() -> void:
 	# 2. CAD Floorplan Grid & Architectural Walls
 	_draw_cad_background()
 
-	# 3. Joined & Curved Conveyor Belt Tracks
+	# 3. Joined & Curved Conveyor Belt Tracks (Straight conveyors render inside their own BlockNode!)
 	_draw_conveyor_tracks()
 
 func _draw_conveyor_tracks() -> void:
@@ -945,7 +1137,8 @@ func _draw_conveyor_tracks() -> void:
 
 	var m_scale: float = 20.0 * zoom_level
 	for elem in doc_store.get_scoped_elements():
-		if elem.kind != "conveyor":
+		# Straight conveyors render directly inside their BlockNode — only draw curved/joined tracks here!
+		if not _is_curved_or_joined_conveyor_elem(elem):
 			continue
 
 		var pts_m := ConveyorCurve3D.sample_2d_polyline(elem, doc_store, 36)
@@ -961,7 +1154,6 @@ func _draw_conveyor_tracks() -> void:
 		var half_w: float = belt_w_px * 0.5
 		var is_sel: bool = (doc_store.selected_id == elem.id) or doc_store.is_element_selected(elem.id)
 
-		# Compute left & right rail polylines and local normals/tangents
 		var left_px := PackedVector2Array()
 		var right_px := PackedVector2Array()
 		var tangents := PackedVector2Array()
@@ -977,17 +1169,14 @@ func _draw_conveyor_tracks() -> void:
 			left_px.append(pts_px[i] + n_dir * half_w)
 			right_px.append(pts_px[i] - n_dir * half_w)
 
-		# Selection halo
 		if is_sel:
 			draw_polyline(pts_px, Color(0.0, 0.82, 1.0, 0.25), belt_w_px + 8.0, true)
 
-		# Rubber belt bed quad-strip
 		var bed_col := Color("#172736") if is_sel else Color("#121b26")
 		for i in range(n_pts - 1):
 			var quad := PackedVector2Array([left_px[i], left_px[i + 1], right_px[i + 1], right_px[i]])
 			draw_colored_polygon(quad, bed_col)
 
-		# Roller crossbars along arc length
 		var roller_step: float = maxf(10.0, 14.0 * zoom_level)
 		var accum_px: float = 0.0
 		var next_roller: float = roller_step * 0.5
@@ -1002,13 +1191,11 @@ func _draw_conveyor_tracks() -> void:
 				next_roller += roller_step
 			accum_px += seg_len
 
-		# Left & Right Steel Side Rails
 		var rail_col := Color("#52c7a5") if is_sel else Color("#2a9d8f")
 		var rail_w: float = clampf(2.0 * zoom_level, 1.4, 3.2)
 		draw_polyline(left_px, rail_col, rail_w, true)
 		draw_polyline(right_px, rail_col, rail_w, true)
 
-		# Directional Flow Chevrons (>>>) pointing strictly along curve tangent
 		var chev_step: float = maxf(22.0, 32.0 * zoom_level)
 		var chev_accum: float = 0.0
 		var next_chev: float = chev_step * 0.45
@@ -1028,22 +1215,17 @@ func _draw_conveyor_tracks() -> void:
 				next_chev += chev_step
 			chev_accum += seg_len
 
-		# Transfer Hub Coupler Rings at Inlet (pts_px[0]) and Outlet (pts_px[-1])
-		var hub_r: float = clampf(belt_w_px * 0.42, 4.5, 11.0)
-		for endpoint in [pts_px[0], pts_px[n_pts - 1]]:
+		# Physical Endpoint Flow Ports at Inlet Γ(0) and Outlet Γ(1)
+		var hub_r: float = clampf(belt_w_px * 0.42, 5.0, 9.5)
+		var p_in_pos: Vector2 = pts_px[0]
+		var p_out_pos: Vector2 = pts_px[n_pts - 1]
+		for idx_ep in range(2):
+			var endpoint: Vector2 = p_in_pos if idx_ep == 0 else p_out_pos
+			var is_out_ep: bool = (idx_ep == 1)
 			draw_circle(endpoint, hub_r, Color("#0d1822"))
-			draw_arc(endpoint, hub_r, 0.0, TAU, 18, rail_col, 1.6)
-			draw_circle(endpoint, hub_r * 0.38, Color("#2ecc71"))
-
-		# Subtle leader line connecting curved track midpoint to its offset control badge
-		if _is_curved_or_joined_conveyor_elem(elem) and _block_nodes.has(elem.id):
-			var b_node: BlockNode = _block_nodes[elem.id]
-			if is_instance_valid(b_node):
-				var mid_px: Vector2 = pts_px[n_pts / 2]
-				var badge_center: Vector2 = b_node.position + (b_node.size * 0.5) * zoom_level
-				var leader_col := Color(0.32, 0.78, 0.65, 0.65) if is_sel else Color(0.25, 0.45, 0.55, 0.45)
-				draw_line(mid_px, badge_center, leader_col, 1.2)
-				draw_circle(mid_px, 3.0, rail_col)
+			draw_arc(endpoint, hub_r, 0.0, TAU, 18, Color("#2ecc71"), 1.6)
+			var sq := hub_r * 0.42
+			draw_rect(Rect2(endpoint.x - sq, endpoint.y - sq, sq * 2.0, sq * 2.0), Color.WHITE if is_out_ep else Color("#2ecc71"), true)
 
 func _hit_test_conveyor_track(canvas_mouse: Vector2) -> String:
 	if doc_store == null or doc_store.active_document == null:
@@ -1122,28 +1304,24 @@ func _on_agents_layer_draw() -> void:
 			vx = vel.x
 			vy = vel.y
 
-		# B-2/B-3: DES product entities — physical rect rendering ─────────────
 		if is_product:
-			# Product dimensions (sim-metres) clamped to pixel bounds
 			var prod_w_m: float = float(props.get("prod_w", 0.4))
 			var prod_h_m: float = float(props.get("prod_h", 0.4))
 			var w_px: float = clamp(prod_w_m * m_scale, 6.0, 20.0)
 			var h_px: float = clamp(prod_h_m * m_scale, 6.0, 20.0)
 
-			# Product color: snapshot → zone-state heuristic
 			var col: Color
 			if props.has("color_r"):
 				col = Color(float(props.get("color_r", 0.3)),
 							float(props.get("color_g", 0.75)),
 							float(props.get("color_b", 1.0)), 1.0)
 			elif in_service:
-				col = Color("2ecc71")   # emerald — in service
+				col = Color("2ecc71")
 			elif zone_kind == "queue":
-				col = Color("00d2ff")   # cyan — waiting
+				col = Color("00d2ff")
 			else:
-				col = Color("f39c12")   # amber — conveyor / transit
+				col = Color("f39c12")
 
-			# Trajectory ribbon
 			if show_trajectories and not aid.is_empty() and _agent_trajectories.has(aid):
 				var t_pts: Array = _agent_trajectories[aid]
 				if t_pts.size() > 1:
@@ -1158,9 +1336,8 @@ func _on_agents_layer_draw() -> void:
 			if aid == selected_agent_id and not aid.is_empty():
 				var r_sel: float = max(w_px, h_px) * 0.5 + 3.0
 				_agents_layer.draw_arc(canvas_pos, r_sel, 0.0, TAU, 24, Color("00d2ff"), 2.0)
-			continue  # skip legacy crowd-sim path
+			continue
 
-		# Legacy crowd-sim / ABM pedestrian rendering ─────────────────────────
 		var r_body: float = float(agent.get("r_body", agent.get("radius", 0.20)))
 		var r_px: float = max(r_body * m_scale, 4.0)
 
@@ -1204,8 +1381,6 @@ func _on_agents_layer_draw() -> void:
 		if aid == selected_agent_id and not aid.is_empty():
 			_agents_layer.draw_arc(canvas_pos, r_px + 3.0, 0, TAU, 24, Color("00d2ff"), 2.0)
 
-## B-2: Physical product entity renderer.
-## Draws a colored carton rectangle at [pos] (canvas space), oriented along [heading_rad].
 func _draw_product_entity(
 		layer: CanvasItem,
 		pos: Vector2,
@@ -1221,22 +1396,12 @@ func _draw_product_entity(
 	var local_rect := Rect2(Vector2(-half_w, -half_h), Vector2(w_px, h_px))
 
 	layer.draw_set_transform(pos, heading_rad, Vector2.ONE)
-
-	# Drop-shadow (1 px offset, semi-transparent)
 	layer.draw_rect(Rect2(local_rect.position + Vector2(1, 1), local_rect.size), Color(0, 0, 0, 0.35), true)
-
-	# Filled body
 	layer.draw_rect(local_rect, col, true)
-
-	# Top-edge highlight for 3-D carton depth
 	layer.draw_rect(Rect2(local_rect.position, Vector2(local_rect.size.x, 2.0)), Color(1.0, 1.0, 1.0, 0.25), true)
-
-	# Outline stroke
 	layer.draw_rect(local_rect, Color(0.05, 0.08, 0.12, 0.9), false, 1.0)
-
 	layer.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
-	# Active-service animated glow ring (oscillates at ~1 Hz)
 	if in_service or zone_kind == "server":
 		var ring_alpha: float = 0.5 + 0.5 * sin(Time.get_ticks_msec() * 0.001 * TAU)
 		var r_glow: float = max(half_w, half_h) + 3.0
@@ -1246,10 +1411,8 @@ func _on_wires_layer_draw() -> void:
 	if _wires_layer == null:
 		return
 
-	# 1. Connection Splines between Ports (Rendered on top of all blocks)
 	_draw_connections()
 
-	# 2. Live Drag Wire (Rendered on top of all blocks)
 	if _is_dragging_wire:
 		var wire_col := FLOW_WIRE_COLOR
 		if not _wire_hovered_elem.is_empty():
@@ -1284,7 +1447,6 @@ func _draw_cad_background() -> void:
 			draw_line(Vector2(0, cur_y), Vector2(size.x, cur_y), GRID_MINOR, 1.0)
 			cur_y += grid_size
 
-	# Architectural Rooms & Perimeter lines
 	var r1 := Rect2(pan_offset + Vector2(20, 20) * zoom_level, Vector2(400, 300) * zoom_level)
 	draw_rect(r1, CAD_WALL_COLOR, false, 2.0)
 	draw_string(ThemeDB.fallback_font, r1.position + Vector2(10, 20), "CAD ZONE: INFEED & RECEIVING", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, ROOM_LABEL_COLOR)
@@ -1293,79 +1455,42 @@ func _draw_cad_background() -> void:
 	draw_rect(r2, CAD_WALL_COLOR, false, 2.0)
 	draw_string(ThemeDB.fallback_font, r2.position + Vector2(10, 20), "CAD ZONE: MAIN PROCESSING & INSPECTION", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, ROOM_LABEL_COLOR)
 
-func _resolve_conveyor_curve_anchor(conv_elem: SceneTypes.SceneElement, other_pos_px: Vector2, is_source_end: bool) -> Vector2:
-	var pts_m := ConveyorCurve3D.sample_2d_polyline(conv_elem, doc_store, 16)
-	if pts_m.is_empty():
-		return Vector2.ZERO
-	var m_scale: float = 20.0 * zoom_level
-	if other_pos_px != Vector2.ZERO:
-		var best_p := pan_offset + pts_m[0] * m_scale
-		var best_d2 := best_p.distance_squared_to(other_pos_px)
-		for i in range(1, pts_m.size()):
-			var cand_p := pan_offset + pts_m[i] * m_scale
-			var d2 := cand_p.distance_squared_to(other_pos_px)
-			if d2 < best_d2:
-				best_d2 = d2
-				best_p = cand_p
-		return best_p
-	return pan_offset + (pts_m[pts_m.size() - 1] if is_source_end else pts_m[0]) * m_scale
+func _should_draw_connection(conn: SceneTypes.SceneConnection) -> bool:
+	if _is_dragging_wire:
+		return true
+	if str(conn.id) == _hovered_channel_conn_id and not _hovered_channel_conn_id.is_empty():
+		return true
+	if wire_visibility_mode == WireVisibilityMode.ALL:
+		return true
+	if wire_visibility_mode == WireVisibilityMode.OFF:
+		return false
+	# FOCUS mode: show wires connected to selected or hovered block/connection
+	if doc_store != null:
+		if doc_store.selected_type == "connection" and doc_store.selected_id == conn.id:
+			return true
+		if doc_store.selected_id in [conn.source_element, conn.target_element]:
+			return true
+		if doc_store.is_element_selected(conn.source_element) or doc_store.is_element_selected(conn.target_element):
+			return true
+	for eid in [conn.source_element, conn.target_element]:
+		if _block_nodes.has(eid) and _block_nodes[eid].is_block_hovered:
+			return true
+	return false
 
 func _draw_connections() -> void:
 	if doc_store == null or doc_store.active_document == null or _wires_layer == null:
 		return
 
 	var sel_conn_id := doc_store.selected_id if (doc_store != null and doc_store.selected_type == "connection") else ""
-	var m_scale: float = 20.0 * zoom_level
 
 	for conn in doc_store.active_document.connections:
-		var src_elem := doc_store.get_element(conn.source_element)
-		var tgt_elem := doc_store.get_element(conn.target_element)
-		var is_conn_sel: bool = (str(conn.id) == sel_conn_id)
-
-		if conn.link_type == "flow" and src_elem != null and tgt_elem != null:
-			var src_curved := _is_curved_or_joined_conveyor_elem(src_elem)
-			var tgt_curved := _is_curved_or_joined_conveyor_elem(tgt_elem)
-			if src_curved and tgt_curved:
-				var s_pts := ConveyorCurve3D.sample_2d_polyline(src_elem, doc_store, 8)
-				var t_pts := ConveyorCurve3D.sample_2d_polyline(tgt_elem, doc_store, 8)
-				if s_pts.size() >= 2 and t_pts.size() >= 2:
-					var p_out := pan_offset + s_pts[s_pts.size() - 1] * m_scale
-					var p_in := pan_offset + t_pts[0] * m_scale
-					if p_out.distance_to(p_in) <= 16.0 * zoom_level:
-						var j_pt := (p_out + p_in) * 0.5
-						if is_conn_sel:
-							_wires_layer.draw_arc(j_pt, 10.0 * zoom_level, 0.0, TAU, 20, Color("#00d2ff"), 2.5)
-						continue
-					else:
-						var c_col := Color("#00d2ff") if is_conn_sel else FLOW_WIRE_COLOR
-						_draw_spline(_wires_layer, p_out, p_in, c_col, 2.5 if is_conn_sel else 2.0, false)
-						continue
-			elif src_curved and not tgt_curved:
-				var p2_port := _resolve_port_position(conn.target_element, conn.target_port)
-				var p1_hub := _resolve_conveyor_curve_anchor(src_elem, p2_port, true)
-				if p1_hub != Vector2.ZERO and p2_port != Vector2.ZERO:
-					if is_conn_sel:
-						_draw_spline(_wires_layer, p1_hub, p2_port, Color(0.0, 0.82, 1.0, 0.45), 6.0, false)
-						_draw_spline(_wires_layer, p1_hub, p2_port, Color("#00d2ff"), 2.5, false)
-					else:
-						_draw_spline(_wires_layer, p1_hub, p2_port, FLOW_WIRE_COLOR, 2.0, false)
-					continue
-			elif tgt_curved and not src_curved:
-				var p1_port := _resolve_port_position(conn.source_element, conn.source_port)
-				var p2_hub := _resolve_conveyor_curve_anchor(tgt_elem, p1_port, false)
-				if p1_port != Vector2.ZERO and p2_hub != Vector2.ZERO:
-					if is_conn_sel:
-						_draw_spline(_wires_layer, p1_port, p2_hub, Color(0.0, 0.82, 1.0, 0.45), 6.0, false)
-						_draw_spline(_wires_layer, p1_port, p2_hub, Color("#00d2ff"), 2.5, false)
-					else:
-						_draw_spline(_wires_layer, p1_port, p2_hub, FLOW_WIRE_COLOR, 2.0, false)
-					continue
-
+		if not _should_draw_connection(conn):
+			continue
+		var is_conn_sel: bool = (str(conn.id) == sel_conn_id) or (str(conn.id) == _hovered_channel_conn_id and not _hovered_channel_conn_id.is_empty())
 		var p1 := _resolve_port_position(conn.source_element, conn.source_port)
 		var p2 := _resolve_port_position(conn.target_element, conn.target_port)
 		if p1 != Vector2.ZERO and p2 != Vector2.ZERO:
 			if is_conn_sel:
-				# Highlight selected connection with cyan glow and bright spline
 				_draw_spline(_wires_layer, p1, p2, Color(0.0, 0.82, 1.0, 0.45), 6.0, false)
 				_draw_spline(_wires_layer, p1, p2, Color("#00d2ff"), 2.5, false)
 			else:
@@ -1376,11 +1501,15 @@ func _draw_connections() -> void:
 func _hit_test_connection(canvas_mouse: Vector2) -> String:
 	if doc_store == null or doc_store.active_document == null:
 		return ""
+	if wire_visibility_mode == WireVisibilityMode.OFF:
+		return ""
 
 	var best_conn_id := ""
 	var best_dist := 10.0
 
 	for conn in doc_store.active_document.connections:
+		if not _should_draw_connection(conn):
+			continue
 		var p1 := _resolve_port_position(conn.source_element, conn.source_port)
 		var p2 := _resolve_port_position(conn.target_element, conn.target_port)
 		if p1 == Vector2.ZERO or p2 == Vector2.ZERO:
@@ -1412,6 +1541,19 @@ func _dist_to_segment(p: Vector2, a: Vector2, b: Vector2) -> float:
 	return p.distance_to(proj)
 
 func _resolve_port_position(elem_id: String, port_id: String) -> Vector2:
+	if doc_store != null:
+		var elem := doc_store.get_element(elem_id)
+		# Only curved/joined conveyors resolve flow_in/flow_out via sampled curve endpoints;
+		# straight conveyors resolve flow_in/flow_out directly via their BlockNode perimeter!
+		if elem != null and _is_curved_or_joined_conveyor_elem(elem):
+			var is_flow_in := (port_id == "flow_in" or port_id == "in" or port_id.begins_with("flow_in"))
+			var is_flow_out := (port_id == "flow_out" or port_id == "out" or port_id.begins_with("flow_out"))
+			if is_flow_in or is_flow_out:
+				var pts_m := ConveyorCurve3D.sample_2d_polyline(elem, doc_store, 20)
+				if pts_m.size() >= 2:
+					var m_scale: float = 20.0 * zoom_level
+					var ep_m: Vector2 = pts_m[0] if is_flow_in else pts_m[pts_m.size() - 1]
+					return pan_offset + ep_m * m_scale
 	if _block_nodes.has(elem_id):
 		var b: BlockNode = _block_nodes[elem_id]
 		return b.get_port_canvas_position(port_id)
@@ -1440,7 +1582,6 @@ func _draw_spline(target: CanvasItem, from: Vector2, to: Vector2, col: Color, wi
 	else:
 		target.draw_polyline(points, col, width, true)
 
-	# Draw arrowhead at target
 	if points.size() >= 2:
 		var seg_vec := to - points[points.size() - 2]
 		if seg_vec.length_squared() < 1e-4:
@@ -1452,3 +1593,4 @@ func _draw_spline(target: CanvasItem, from: Vector2, to: Vector2, col: Color, wi
 			var a2 := to - (dir * 10.0) - perp
 			if abs((a1 - to).cross(a2 - to)) > 1.0:
 				target.draw_colored_polygon(PackedVector2Array([to, a1, a2]), col)
+

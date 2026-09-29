@@ -17,7 +17,15 @@ var _discipline_option: OptionButton = null
 var _routing_row: HBoxContainer = null
 var _routing_option: OptionButton = null
 
+func _init() -> void:
+	_ensure_ui()
+
 func _ready() -> void:
+	_ensure_ui()
+
+func _ensure_ui() -> void:
+	if _discipline_row != null:
+		return
 	add_theme_constant_override("separation", 4)
 
 	# ── Discipline row (for Queue blocks) ────────────────────────────────
@@ -55,6 +63,7 @@ func _ready() -> void:
 	add_child(_routing_row)
 
 func configure(element_id: String, kind: String, props: Dictionary) -> void:
+	_ensure_ui()
 	_element_id = element_id
 	_kind = kind
 

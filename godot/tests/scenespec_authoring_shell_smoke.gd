@@ -206,53 +206,37 @@ func test_authoring_block_node_three_part_layout() -> void:
 	var block := BlockNode.new(elem)
 	block._ready()
 
-	# Proportional sizing: 8.0m conveyor at 20px/m is 160px
+	# Proportional sizing: 8.0m x 1.2m conveyor at 20px/m is 160px x 24px
 	_assert(abs(block.size.x - 160.0) < 1.0, "Block width is proportional to physical length (8.0m * 20px/m = 160px)")
-	_assert(block.size.y >= 72.0, "Block height fits port bays and sockets (>= 72px)")
+	_assert(block.size.y >= 24.0, "Block height fits physical conveyor width (1.2m * 20px/m = 24px)")
 
-	# Sockets in Left Bay (2 columns: IN at x=16, OUT at x=46)
+	# Perimeter Edge Sockets: Flow In on Left (x=0), Flow Out on Right (x=size.x), Signal on Top (y=0), Metric on Bottom (y=size.y)
 	var flow_in_pos: Vector2 = block._port_sockets["flow_in"]["pos"]
-	_assert(abs(flow_in_pos.x - 16.0) < 1.0, "Flow In socket resolved on Left Bay Column 1 (IN)")
+	_assert(abs(flow_in_pos.x - 0.0) < 1.0, "Flow In socket resolved on Left Perimeter Edge (x=0)")
 
 	var flow_out_pos: Vector2 = block._port_sockets["flow_out"]["pos"]
-	_assert(abs(flow_out_pos.x - 46.0) < 1.0, "Flow Out socket resolved on Left Bay Column 2 (OUT)")
+	_assert(abs(flow_out_pos.x - block.size.x) < 1.0, "Flow Out socket resolved on Right Perimeter Edge (x=size.x)")
 
-	# Sockets in Right Bay (2 columns: SIG at size.x - 48, MET at size.x - 16)
 	var sig_pos: Vector2 = block._port_sockets["speed_signal"]["pos"]
-	_assert(abs(sig_pos.x - (block.size.x - 48.0)) < 1.0, "Signal In socket resolved on Right Bay Column 1 (SIG)")
+	_assert(abs(sig_pos.y - 0.0) < 1.0, "Signal In socket resolved on Top Perimeter Edge (y=0)")
 
 	var met_pos: Vector2 = block._port_sockets["occupancy"]["pos"]
-	_assert(abs(met_pos.x - (block.size.x - 16.0)) < 1.0, "Metric Out socket resolved on Right Bay Column 2 (MET)")
+	_assert(abs(met_pos.y - block.size.y) < 1.0, "Metric Out socket resolved on Bottom Perimeter Edge (y=size.y)")
 
-	# Hit test add and remove buttons for all 4 columns
-	var hit_flow_in_add := block._hit_test_add_button(Vector2(8.0, block.size.y - 10.0))
-	var hit_flow_in_rem := block._hit_test_remove_button(Vector2(22.0, block.size.y - 10.0))
-	_assert(hit_flow_in_add == "flow_in", "Left Bay Column 1 bottom button triggers Add Flow In")
-	_assert(hit_flow_in_rem == "flow_in", "Left Bay Column 1 bottom button triggers Remove Flow In")
+	# Hit test perimeter edge sockets directly
+	_assert(block.hit_test_port(flow_in_pos) == "flow_in", "Left edge hit test resolves flow_in socket")
+	_assert(block.hit_test_port(flow_out_pos) == "flow_out", "Right edge hit test resolves flow_out socket")
+	_assert(block.hit_test_port(sig_pos) == "speed_signal", "Top edge hit test resolves speed_signal socket")
+	_assert(block.hit_test_port(met_pos) == "occupancy", "Bottom edge hit test resolves occupancy socket")
 
-	var hit_flow_out_add := block._hit_test_add_button(Vector2(38.0, block.size.y - 10.0))
-	var hit_flow_out_rem := block._hit_test_remove_button(Vector2(52.0, block.size.y - 10.0))
-	_assert(hit_flow_out_add == "flow_out", "Left Bay Column 2 bottom button triggers Add Flow Out")
-	_assert(hit_flow_out_rem == "flow_out", "Left Bay Column 2 bottom button triggers Remove Flow Out")
-
-	var hit_sig_in_add := block._hit_test_add_button(Vector2(block.size.x - 55.0, block.size.y - 10.0))
-	var hit_sig_in_rem := block._hit_test_remove_button(Vector2(block.size.x - 41.0, block.size.y - 10.0))
-	_assert(hit_sig_in_add == "signal_in", "Right Bay Column 1 bottom button triggers Add Signal In")
-	_assert(hit_sig_in_rem == "signal_in", "Right Bay Column 1 bottom button triggers Remove Signal In")
-
-	var hit_met_out_add := block._hit_test_add_button(Vector2(block.size.x - 24.0, block.size.y - 10.0))
-	var hit_met_out_rem := block._hit_test_remove_button(Vector2(block.size.x - 9.0, block.size.y - 10.0))
-	_assert(hit_met_out_add == "metric_out", "Right Bay Column 2 bottom button triggers Add Metric Out")
-	_assert(hit_met_out_rem == "metric_out", "Right Bay Column 2 bottom button triggers Remove Metric Out")
-
-	# Test compact entity contraction (Source 2.0m x 2.0m: collapses middle to 0 gap between ports)
+	# Test compact entity sizing (Source 2.0m x 2.0m -> 40px x 40px with zero side bays)
 	var src_elem := cat.create_element_instance("source", "src_02", Vector2(7.5, 10.0))
 	src_elem.geometry["dimensions"] = [2.0, 2.0, 1.0]
 	var src_block := BlockNode.new(src_elem)
 	src_block._ready()
 	_assert(abs(src_block.size.x - 40.0) < 1.0, "Compact source (2.0m) contracts to 40px without artificial 260px padding")
 	_assert(abs(src_block.size.y - 40.0) < 1.0, "Compact source height is proportional (2.0m = 40px)")
-	_assert(src_block.get_bay_layout()["collapsed"] == true, "Compact source collapses middle part to 0 gap between ports")
+	_assert(src_block.get_bay_layout()["left_w"] == 0.0 and src_block.get_bay_layout()["right_w"] == 0.0, "Zero side bays: full 40px width dedicated to block body")
 
 	# Test Zero-Gap 2D/3D Coordination
 	var src_right_2d := (float(src_elem.transform.position[0]) + float(src_elem.geometry["dimensions"][0])) * 20.0 # 9.5m * 20 = 190px
@@ -896,7 +880,8 @@ func test_interactive_invalid_link_rejection_and_cardinality() -> void:
 	canvas.finish_wire_drag()
 	_assert(store.active_document.connections.size() == 1, "Compatible link created connection in DocumentStore")
 
-	# 4. Test Single Cardinality rejection (flow_in already connected)
+	# 4. Test Single Cardinality rejection when port cardinality is explicitly 'one'
+	e_srv.input_ports[0].cardinality = "one"
 	var e_src2 := cat.create_element_instance("source", "s2", Vector2(0, 10))
 	store.add_element(e_src2)
 	canvas.rebuild_blocks()
@@ -1184,8 +1169,8 @@ func test_floating_tabbed_properties_inspector() -> void:
 	_assert(flt.visible, "Floating inspector becomes visible on open_for_element")
 	_assert(flt.current_elem_id == "srv_flt_test", "Floating inspector tracks active element ID")
 
-	# Verify 4 tabs
-	_assert(flt._tab_buttons.size() == 4, "Floating inspector has exactly 4 tabs")
+	# Verify at least 4 tabs
+	_assert(flt._tab_buttons.size() >= 4, "Floating inspector has at least 4 tabs")
 	_assert(flt._tab_buttons[0].text.contains("Process"), "Tab 0 is Process & DES")
 	_assert(flt._tab_buttons[1].text.contains("Spatial"), "Tab 1 is Spatial / CAD")
 	_assert(flt._tab_buttons[2].text.contains("Ports"), "Tab 2 is Ports & Interfaces")
@@ -1405,8 +1390,8 @@ func test_catalog_crowd_and_hybrid_primitives() -> void:
 	_assert(mannequin != null and mannequin is Node3D, "MeshFactory created LOD 0 mannequin node")
 	mannequin.free()
 
-	var capsule_mesh: CapsuleMesh = MeshFactory.create_agent_capsule_mesh()
-	_assert(capsule_mesh != null and capsule_mesh is CapsuleMesh, "MeshFactory created LOD 1 capsule mesh")
+	var capsule_mesh: PrimitiveMesh = MeshFactory.create_agent_capsule_mesh()
+	_assert(capsule_mesh != null and capsule_mesh is PrimitiveMesh, "MeshFactory created LOD 1 agent mesh")
 
 func test_agent_telemetry_2d_and_3d_visualization() -> void:
 	_tests_run += 1

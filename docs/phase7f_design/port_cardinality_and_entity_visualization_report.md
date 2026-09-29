@@ -36,22 +36,31 @@ Instead of reserving `128 px` of internal columns for port bays, ports are mount
 * **Bottom Perimeter Edge (`y = height`):** **`Metric Out`** — Compact purple pin on the bottom border (auto-hidden unless a Chart Station or metric wire is active).
 * **Benefit:** **100% of the block's interior width** is liberated for the entity's name, icon, dimensions, and live status badge, and material flow wires enter from the left and exit from the right without ever crossing over the block body.
 
-#### B. Parametric Conveyors (Straight, L-Bend, S-Curve, Closed Loop) — **Physical Geometry-Anchored Ports**
+#### B. Parametric Conveyors (Straight, L-Bend, S-Curve, Closed Loop) — **Physical Endpoint Flow Ports + Spine Pill Signal/Metric Ports**
 For conveyors, **the 2D physical belt ribbon itself is the interactive node** (eliminating the separate floating rectangular proxy card):
-* **Inlet Port (`flow_in`):** Anchored directly at the **physical Tail end-cap** of the belt centerline $\Gamma(0)$, oriented along the entry tangent $\mathbf{t}(0)$.
-* **Outlet Port (`flow_out`):** Anchored directly at the **physical Head end-cap** of the belt centerline $\Gamma(1)$, oriented along the exit tangent $\mathbf{t}(1)$.
-* **Optional Side-Transfer / Diverter Port (`s ∈ (0, 1)`):** When a conveyor diverts items to (or receives items from) a side workstation (`Queue` or `Server`), an amber side-rail transfer socket attaches at arc-length fraction $s$ (default $s = 0.5$) along the belt edge, keeping workstation connections short, orthogonal, and physically realistic.
+* **Inlet Port (`flow_in`, `cardinality = "many"`):** Anchored strictly at the **physical Tail end-cap** of the belt centerline $\Gamma(0)$, oriented along the entry tangent $\mathbf{t}(0)$.
+* **Outlet Port (`flow_out`, `cardinality = "many"`):** Anchored strictly at the **physical Head end-cap** of the belt centerline $\Gamma(1)$, oriented along the exit tangent $\mathbf{t}(1)$.
+* **No Mid-Belt "Side-Transfer" Ports Needed (Break Conveyor into Two at Branch Points):**
+  * In `SimDES` ([`dispatch.jl`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/packages/SimDES/src/dispatch.jl)), a conveyor is a continuous transport zone of length $L$ and speed $v$ where routing and blocking decisions occur **strictly when an item reaches the end of the belt ($s = 1$)**.
+  * If a product needs to divert to a `Queue` midway along a path, breaking the path into two joined conveyors (`Conveyor_1` $\rightarrow$ `Conveyor_2`, with `Conveyor_1`'s `flow_out` at the junction also branching to `Queue_1`) is **100% faithful to DES physics** (travel time $\Delta t = L_1 / v$, accurate upstream blocking at the split point, and zero special-case mid-belt port math).
+  * This also matches how `SimOptim` ([`graph_search.jl`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/packages/SimOptim/src/graph_search.jl)) models closed-loop conveyors with workstation spurs.
+* **Where Conveyor `Signal In` and `Metric Out` Ports Live — On the Midpoint Spine Pill ($\Gamma(0.5 L)$):**
+  * Because the physical belt endpoints $\Gamma(0)$ and $\Gamma(1)$ often join directly to adjacent conveyors (`Conveyor_1` $\leftrightarrow$ `Conveyor_2`), placing `Signal`/`Metric` pins at the belt ends would collide with the material flow couplers.
+  * Instead, the conveyor's **Midpoint Spine Pill Badge** at $\Gamma(0.5 L)$ acts as the conveyor's instrumentation collar—following the exact same **Top = Signal In (blue)** / **Bottom = Metric Out (purple)** rule as standard entity blocks!
+
+![Workstation Branching via Conveyor Split & Midpoint Spine Pill Signal/Metric Ports](/home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/conveyor_junction_and_signal_ports_concept_1790615515544.jpg)
 
 ```mermaid
 flowchart LR
     subgraph StandardBlock["Standard Entity Block (Perimeter Edge Ports)"]
         direction LR
-        FI["▶ FLOW IN (Left Edge)"] --> BODY["Unobstructed Center Body\nServer_1 (CNC Mill)\n3.0m × 2.0m | BUSY 84%"] --> FO["▶ FLOW OUT (Right Edge)"]
+        FI["▶ FLOW IN (Left Edge)"] --> BODY["Unobstructed Center Body\nTop: 🔵 SIGNAL IN | Bottom: 🟣 METRIC OUT"] --> FO["▶ FLOW OUT (Right Edge)"]
     end
-    subgraph ConveyorRibbon["Parametric Conveyor (Geometry-Anchored Ports)"]
+    subgraph ConveyorSplit["Conveyor Split at Junction + Spine Pill Instrumentation"]
         direction LR
-        TAIL["▶ INLET PORT at Γ(0)"] --> SPINE["Curved Belt Centerline Γ(s)\n[Conveyor_1 · 14.5m · 1.5 m/s]"] --> HEAD["▶ OUTLET PORT at Γ(1)"]
-        SPINE -. "Side Diverter at Γ(0.5)" .-> Q["Queue_1"]
+        TAIL["▶ FLOW IN at Γ₁(0)"] --> SPINE["Conveyor_1 Spine Pill at Γ₁(0.5)\nTop: 🔵 SIGNAL IN | Bottom: 🟣 METRIC OUT"] --> JUNC(("🟢FLOW OUT at Γ₁(1)\nShared Junction Hub"))
+        JUNC -- "Channel ①" --> C2["Conveyor_2 (Γ₂(0))"]
+        JUNC -- "Channel ②" --> Q["Queue_1"]
     end
 ```
 
@@ -94,40 +103,124 @@ We audited both the Godot authoring layer and the Julia simulation compiler to v
 
 ---
 
-## 3. Visualizing Entity Names, Dimensions & Live Telemetry
+### 2.3 Concrete Walkthrough: 5 Inputs & 4 Outputs — Deleting the 3rd Input/Output & Re-Sorting
 
-![Complete Canvas Telemetry & Adaptive Nameplates Concept](/home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/complete_canvas_telemetry_concept_1790576992150.jpg)
+![5 Inputs & 4 Outputs: Delete 3rd Channel, Auto-Renumber & Re-Sort Workflow](/home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/bus_port_5in_4out_delete_resort_workflow_1790617041430.jpg)
 
-### 3.1 Three-Tier Adaptive Labeling Architecture (Shown in Diagram 3 Above)
+#### Clarifying "Ports" vs. "Channels on a Single Bus Port"
+Under Option B (`cardinality = "many"`), an entity connected to **5 upstream inputs** and **4 downstream outputs** does **not** spawn 5 separate left port sockets and 4 separate right port sockets. Instead:
+* The block has **1 `Flow In` Bus Socket (`IN [5]`)** on its left edge and **1 `Flow Out` Bus Socket (`OUT [4]`)** on its right edge.
+* Inside `IN [5]` are **5 ordered Input Channels (`①..⑤`)**, and inside `OUT [4]` are **4 ordered Output Channels (`①..④`)**, each stored as a `SceneConnection` with `conn.ordering = 1, 2, ...`.
 
-To guarantee that entity names, dimensions, and live simulation KPIs are always readable—whether on a $15\text{ m}$ curved conveyor or a compact $2\text{ m} \times 2\text{ m}$ machine—we propose three coordinated visual layers:
+#### Step 1: How 5 Inputs & 4 Outputs Look on the Canvas (Stage 1 in Diagram Above)
+* **Subtle Micro-Spread at the Bus Socket:** So the 5 incoming wires (and 4 outgoing wires) don't visually stack into a single overlapping line right at the socket, the renderer spaces their attachment offsets by $\Delta y = 3\text{ px}$ inside the pill socket (`IN [5]` / `OUT [4]`) and fans out their Bezier control tangents.
+* **Numbered Inline Wire Pills:** Each wire displays its deterministic **Channel Number (`①..⑤` / `①..④`)** at $\sim 25\%$ arc-length from the block:
+  * **Left (`IN [5]`):** `① Src_1`, `② Src_2`, `③ Conv_A`, `④ Conv_B`, `⑤ Rework`
+  * **Right (`OUT [4]`):** `① 40% → Q1`, `② 30% → Q2`, `③ 20% → Q3`, `④ 10% → Scrap`
 
-1. **Conveyor Spine Pill Badge (On-Belt Centerline Tag):**
-   * Positioned directly at the conveyor's arc-length midpoint $\Gamma(0.5 L)$ and aligned with the tangent $\mathbf{t}(0.5 L)$ (automatically flipped upright if the tangent points left so text is never upside-down).
-   * Displays a high-contrast semi-transparent pill:
-     $$\texttt{Conveyor\_1} \;\vert\; \texttt{15.0 m} \;\vert\; \texttt{1.5 m/s} \;\vert\; \texttt{WIP: 3}$$
-   * **Seamless Junction Rings:** Where `Conveyor_1` joins `Conveyor_2` in a closed loop, a subtle glowing junction collar marks the exact boundary between the two conveyors while products transition smoothly across.
+#### Step 2: How the User Deletes the 3rd Input (`③ Conv_A`) and 3rd Output (`③ Q3`) (Stage 2 in Diagram Above)
+Since you are deleting the **3rd connection channel** (rather than removing a structural port from the block), there are two effortless ways to do it:
+1. **Direct Canvas Right-Click on Wire `③` (or its `③` Badge):** Right-clicking the wire `③ Conv_A` (or `③ 20% → Q3`) on the canvas immediately deletes that connection.
+2. **Click the `IN [5]` or `OUT [4]` Bus Socket (or Open Inspector) $\rightarrow$ Click `[✕]` on Row `③`:**
+   * Clicking the `IN [5]` or `OUT [4]` bus socket opens a compact **Bus Channel Popover** right beside the port listing all attached channels in order (`①` through `⑤` / `④`), each with a drag/move handle (`☰` / `↑↓`) and a red delete button `[✕]`.
+   * Clicking `[✕]` on row `③ Conv_A` (in `IN [5]`) and row `③ 20% → Q3` (in `OUT [4]`) removes those exact channels without touching any other wire.
 
-2. **Adaptive Floating Nameplates for Compact Blocks (`Queue`, `Server`, `Source`, `Sink`):**
-   * **Standard/Large Footprints ($\ge 90\text{ px}$ wide):** The unobstructed block interior displays the **Entity Name** (`Server_1`), **Subtitle / Dimensions** (`3.0m × 2.0m | Cap: 1`), and **Live Status Pill** (`BUSY · 84% Util`).
-   * **Compact Footprints ($< 90\text{ px}$ wide, e.g. $2\text{m} \times 2\text{m}$):** A crisp **Floating Header Nameplate** (`Queue_1 (Buffer)` / `Server_1 (Assembly)`) floats $6\text{ px}$ above the top edge of the block so the title is never truncated, while the block interior shows pure visual telemetry:
-     * **Queue Interior:** Mini capacity progress bar (`[████░░░░] 4/10`) + average wait badge.
-     * **Server Interior:** Circular/pill utilization meter (`85% Util | BUSY`).
-
-3. **Inline Wire Channel & Routing Badges:**
-   * Whenever a port has multiple outgoing connections (`cardinality > 1`), each wire renders a compact pill badge at $25\%$ arc-length from the source port showing its **Channel Index (`①`, `②`)** and **Routing Split / Rule** (e.g., `(1) 30% -> Queue_1`), making multi-branch topology self-documenting on the canvas.
+#### Step 3: Automatic Gapless Renumbering & Re-Sorting (Stage 3 in Diagram Above)
+Whenever any connection is deleted (or reordered), `DocumentStore` runs `_normalize_port_channel_ordering(element_id, port_id)`:
+1. **Gapless Auto-Renumbering (`1..N`):**
+   * **Inputs (`IN [5]` $\rightarrow$ `IN [4]`):**
+     * `① Src_1` $\rightarrow$ stays **`① Src_1`**
+     * `② Src_2` $\rightarrow$ stays **`② Src_2`**
+     * *(Old `③ Conv_A` deleted)*
+     * `④ Conv_B` $\rightarrow$ automatically renumbers to **`③ Conv_B`** (`conn.ordering = 3`)
+     * `⑤ Rework` $\rightarrow$ automatically renumbers to **`④ Rework`** (`conn.ordering = 4`)
+   * **Outputs (`OUT [4]` $\rightarrow$ `OUT [3]`):**
+     * `① Q1` $\rightarrow$ stays **`① Q1`**
+     * `② Q2` $\rightarrow$ stays **`② Q2`**
+     * *(Old `③ Q3` deleted)*
+     * `④ Scrap` $\rightarrow$ automatically renumbers to **`③ Scrap`** (`conn.ordering = 3`)
+2. **Interactive Re-Sorting (`↑` / `↓` or Drag in Bus Popover / Inspector):**
+   * If the user wants `③ Scrap` to become Channel `②` (e.g., higher priority in Priority/Round-Robin routing), they simply drag row `③ Scrap` above `② Q2` (or click `[↑]`) in the Bus Popover or Inspector.
+   * `conn.ordering` is updated to `1, 2, 3`, the canvas wire badges immediately update to `① Q1`, `② Scrap`, `③ Q2`, and the Julia compiler ([`scenespec_compiler.jl:181`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/packages/GodotBridge/src/compiler/scenespec_compiler.jl#L181)) sorts `downstream_conns` by the new `ordering` automatically.
 
 ---
 
-### 3.2 Context: Earlier Conveyor Continuity & Layout Progression
-For completeness, here is how this port and labeling redesign builds directly on our General Parametric Conveyor Geometry & Universal Topology Solver from earlier in the conversation:
+### 2.4 Scaling to High Fan-Out ($30+$ Connections) & Maximum Allowed Connections
+
+![Scaling to 30+ Connections & Contextual Socket Visibility](/home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/high_density_30_connections_and_contextual_sockets_1790618980064.jpg)
+
+#### 1. What Should Be the Maximum Allowed Connections per Port (`MAX_PORT_CONNECTIONS`)?
+* **Recommended Hard Limit:** **`64` connections per port** (with a soft validator advisory above `32`).
+  * In large industrial layouts (e.g., a central cross-belt sorter feeding 24–36 shipping lanes, or a master `Sink` collecting from 30+ exit queues), a single port genuinely needs up to 30–64 branches.
+* **Should the User Be Expected to Zoom In to Manage 30 Connections?**
+  * **No.** Forcing the user to zoom in to 400% to click or read 30 individual wires is poor UX because the 30 target machines may be spread across a $100\text{ m} \times 100\text{ m}$ floorplan—zooming into the socket hides where the wires go, while zooming out causes 30 inline canvas labels to collide.
+
+#### 2. How the Visualization Scales Gracefully from $N = 1$ to $N = 30+$ (Left Panel in Diagram Above)
+To keep the canvas readable at any zoom level when $N$ grows large, we use **Two-Regime Adaptive Rendering + a Screen-Space Scrollable Pill Pop-up**:
+* **Regime A ($N \le 5$ Connections):**
+  * Wires exit with a subtle clamped micro-spread (capped at $\pm 12\text{ px}$ total height so wires never exceed the block's edge).
+  * Inline wire badges (`① → Q1`) are shown when the block is selected/hovered.
+* **Regime B ($N > 5$ Connections, e.g., $N = 30$):**
+  * **Canvas Wire Dimming & Spotlight:** All 30 wires exit from the `OUT [30]` socket, but **non-focused wires render as faint translucent threads (`20%` opacity)** and **inline canvas pill badges are suppressed** so 30 labels never pile up on the floorplan.
+  * **Screen-Space Scrollable & Filterable Pill Pop-up (Zero Zooming Required):**
+    * Clicking (or hovering) the `OUT [30]` socket opens the **Channel Pill Pop-up** in **fixed screen space** (always crisp `11pt` text regardless of whether the 2D canvas is zoomed to `0.25x` or `2.0x`).
+    * Shows a **compact scrollable list (8 rows visible at a time)** + a quick **Filter / Jump box (`Filter or #...`)**.
+    * **Interactive Spotlight:** As you move your mouse over Row `(17) -> Queue_17` in the pop-up, **Wire `#17` and `Queue_17` immediately light up in `100%` glowing cyan on the canvas** with its `#17 -> Queue_17` pill badge, while the other 29 wires stay dimmed at `20%`!
+    * Each row has `[↑]`, `[↓]` (or drag), and `[✕]` so deleting or re-sorting Channel `#17` out of 30 takes a single click without ever zooming in.
+
+---
+
+### 2.5 Contextual Port Sockets, User Gestures & 3-Mode Wire Visibility (Right Panel in Diagram Above)
+
+#### 1. Ability to Hide/Disappear Connection Lines on the 2D Canvas
+* **Yes — Essential for Clean Floorplans:** We add a **3-Mode Wire Visibility Toggle** in the top/bottom canvas toolbar (`[🔗 Wires: All | Focus | Off]`, shortcut key **`W`**):
+  1. **`Wires: All`:** Shows all connection splines (with high-fan-out ports dimmed to `20%` until hovered).
+  2. **`Wires: Focus` (Recommended Default for Complex Models):** Connection lines are **hidden across the canvas by default**, and **only appear for the currently hovered or selected entity** (revealing its immediate upstream inputs and downstream outputs).
+  3. **`Wires: Off`:** Hides all logical connection lines so the 2D canvas is a pure, unobstructed CAD floorplan with moving products. *(Starting a wire drag temporarily reveals compatible wires/ports until the drag completes).*
+
+#### 2. Are Port Sockets Visible All the Time? What User Gesture Reveals Them?
+* **No — Port Sockets Are Hidden by Default on Unselected Blocks:**
+  * When a block or conveyor is **neither hovered nor selected**, its perimeter port sockets (`IN`, `OUT`, `SIG`, `MET`) are **not drawn**—leaving a clean, uncluttered CAD machine silhouette (if wires are visible, they terminate flush against the block's border).
+* **Three User Gestures That Reveal Port Sockets & the Pill Pop-up:**
+  1. **Hover Over / Near the Entity (`Mouse Hover`):** Moving the cursor over an entity (or within `16 px` of its perimeter) smoothly reveals its perimeter port sockets (`IN [N]`, `OUT [M]`, `SIG`, `MET`) and subtle micro-spread.
+  2. **Select the Entity (`Left-Click`):** Selecting an entity keeps its perimeter port sockets and `[N]` count badges visible; **clicking a port socket (`IN [N]` / `OUT [M]`)** opens the interactive **Channel Pill Pop-up** to inspect, highlight, re-sort, or delete individual channels.
+  3. **Drag a Wire (`Press & Drag from Any Port`):** While dragging a new wire, **only compatible target sockets** across all other blocks on the canvas automatically light up with a green pulse, guiding the user to valid drop targets.
+
+---
+
+## 3. Visualizing Entity Names, Dimensions & Live Telemetry
+
+![Finalized Complete Canvas Architecture: Shared Junction Hubs, Spine Pill Metric Pin, Adaptive Nameplates & Focus Wire Mode](/home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/updated_complete_canvas_architecture_1790622078921.jpg)
+
+### 3.1 Three-Tier Adaptive Labeling Architecture (Shown in Diagram Above)
+
+To guarantee that entity names, dimensions, and live simulation KPIs are always readable—whether on a $15\text{ m}$ curved conveyor or a compact $2\text{ m} \times 2\text{ m}$ machine—we use three coordinated visual layers:
+
+1. **Conveyor Spine Pill Badge & Midpoint `SIG`/`MET` Pins (On-Belt Centerline Tag):**
+   * Positioned directly at the conveyor's arc-length midpoint $\Gamma(0.5 L)$ and aligned with the tangent $\mathbf{t}(0.5 L)$ (automatically flipped upright if the tangent points left so text is never upside-down).
+   * Displays a high-contrast semi-transparent pill:
+     $$\texttt{Conveyor\_1} \;\vert\; \texttt{15.0 m} \;\vert\; \texttt{1.5 m/s} \;\vert\; \texttt{WIP: 3}$$
+   * **Top `SIG` / Bottom `MET` Pins:** Anchored on the top and bottom edges of the Spine Pill so telemetry wires to a `Chart Station` never collide with the belt's physical material-flow endpoints.
+   * **Shared Junction Hubs:** Where `Conveyor_1` joins `Conveyor_2` in a closed loop, the shared junction hub cleanly branches Channel `① (70%)` into `Conveyor_2` and Channel `② (30%)` into `Queue_1` $\rightarrow$ `Server_1`.
+
+2. **Adaptive Floating Nameplates for Compact Blocks (`Queue`, `Server`, `Source`, `Sink`):**
+   * **Standard/Large Footprints ($\ge 90\text{ px}$ wide):** The unobstructed block interior displays the **Entity Name** (`Server_1`), **Subtitle / Dimensions** (`3.0m × 2.0m | Cap: 1`), and **Live Status Pill** (`BUSY · 85% Util`).
+   * **Compact Footprints ($< 90\text{ px}$ wide, e.g. $2\text{m} \times 2\text{m}$):** A crisp **Floating Header Nameplate** (`Queue_1 (Buffer)` / `Server_1 (Assembly)`) floats $6\text{ px}$ above the top edge of the block so the title is never truncated, while the block interior shows pure visual telemetry:
+     * **Queue Interior:** Mini capacity progress bar (`[████░░░░] 4/10`) + average wait badge.
+     * **Server Interior:** Utilization status pill (`85% Util | BUSY`).
+
+3. **Contextual Wire Channel Badges (`All | Focus | Off`):**
+   * Whenever a port has $2..5$ outgoing connections and its wires are visible (`Focus` or `All` mode), each wire renders a compact pill badge showing its **Channel Index (`①`, `②`)** and **Routing Split / Rule** (e.g., `(1) 70%`, `(2) 30%`). For $>5$ connections (up to `64`), labels and individual wire highlights are inspected via the **Screen-Space Scrollable Channel Pill Pop-up**.
+
+---
+
+### 3.2 Context: Earlier Phase 7F Conveyor Continuity Comparison
+For historical reference, here is the Phase 7F conveyor continuity comparison that motivated this port and junction architecture:
 
 ````carousel
 ![Initial Jarring Disconnected Conveyor Layout](/home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/conveyor_problem_initial_1790283613690.jpg)
 <!-- slide -->
 ![Joined Continuous Stadium Loop Conveyor Solution](/home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/conveyor_solution_1790283674508.jpg)
-<!-- slide -->
-![Complete Canvas with Geometry-Anchored Ports, Multi-Wire Bus Badges & Adaptive Nameplates](/home/sourabh/.gemini/antigravity/brain/b190f1d8-e577-4d2d-9386-35c84a7dd33a/complete_canvas_telemetry_concept_1790576992150.jpg)
 ````
 
 ---
@@ -136,7 +229,9 @@ For completeness, here is how this port and labeling redesign builds directly on
 
 | Layer | File | Planned Enhancement |
 | :--- | :--- | :--- |
-| **Catalog & Cardinality** | [`authoring_catalog.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_catalog.gd) | Set `"cardinality": "many"` on `flow_in` and `flow_out` for `Conveyor`, `Queue`, and `Server`; retain backward compatibility with indexed port names. |
-| **2D Block Node UI** | [`authoring_block_node.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_block_node.gd) | Replace the `128 px` internal Left/Right port bays with **Perimeter Edge-Aligned Sockets** (`Flow In` on left border, `Flow Out` on right border, `Signal`/`Metric` on top/bottom borders), freeing 100% of the center body and adding **Adaptive Floating Nameplates** for compact blocks. |
-| **2D Canvas & Conveyors** | [`authoring_2d_canvas.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_2d_canvas.gd) | Anchor conveyor `flow_in` / `flow_out` ports directly at the physical belt endpoints $\Gamma(0)$ and $\Gamma(1)$ (plus optional mid-belt side transfer port at $\Gamma(0.5)$), hide redundant rectangular conveyor proxy boxes when curve geometry is active, and render **Conveyor Spine Pill Badges** + **Inline Wire Channel Badges (`①`, `②`)**. |
-| **Validator** | [`scenespec_validator.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/scenespec_validator.gd) | Allow multi-wire fan-in/fan-out on `flow_in` and `flow_out` with automatic deterministic `ordering` (`1, 2, ...`). |
+| **Catalog & Cardinality** | [`authoring_catalog.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_catalog.gd) | Set `"cardinality": "many"` on `flow_in` and `flow_out` for `Conveyor`, `Queue`, `Server`, and `Source`; retain backward compatibility with indexed port names. |
+| **Document Store & Ordering** | [`authoring_document_store.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_document_store.gd) | Add `_normalize_port_channel_ordering(elem_id, port_id)` for automatic gapless `1..N` renumbering on connection add/remove, plus `reorder_port_channel(conn_id, new_order)` for `[↑]`/`[↓]` re-sorting. |
+| **2D Block Node UI** | [`authoring_block_node.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_block_node.gd) | Replace the `128 px` internal Left/Right port bays with **Contextual Perimeter Edge Sockets** (`Flow In` on left, `Flow Out` on right, `Signal` on top, `Metric` on bottom—hidden when unselected/unhovered), freeing 100% of the center body and adding **Adaptive Floating Nameplates** + interior progress bars. |
+| **2D Canvas, Conveyors & Pill Pop-up** | [`authoring_2d_canvas.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/authoring_2d_canvas.gd) | Anchor conveyor `flow_in`/`flow_out` at physical belt ends $\Gamma(0), \Gamma(1)$ and `SIG`/`MET` on the **Midpoint Spine Pill** $\Gamma(0.5 L)$; add `[🔗 Wires: All \| Focus \| Off (W)]` toggle; add **Screen-Space Scrollable Channel Pill Pop-up** (supporting up to `64` connections with hover spotlight, `[↑]`/`[↓]` re-sort, and `[✕]` delete). |
+| **Validator** | [`scenespec_validator.gd`](file:///run/media/sourabh/SANDISK-2TB/antigravity/ABM/godot/scripts/scenespec_validator.gd) | Enforce `MAX_PORT_CONNECTIONS = 64` (soft warning above `32`) and validate deterministic `conn.ordering`. |
+

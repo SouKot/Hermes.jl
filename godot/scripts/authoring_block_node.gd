@@ -1,5 +1,12 @@
 # authoring_block_node.gd
-# 3-part interactive entity block (Left Flow Bay, Center Body, Right Control Bay) for SceneSpec authoring.
+# Perimeter-edge interactive entity block for SceneSpec 2D authoring (Phase 7G).
+# - Zero internal side-bay columns (left_w = 0, right_w = 0): 100% of block area is physical footprint.
+# - Flow In on Left edge (x = 0), Flow Out on Right edge (x = size.x),
+#   Signal/Control In on Top edge (y = 0), Metric Out on Bottom edge (y = size.y).
+# - Straight conveyors render directly as a physical roller belt inside Rect2(0, 0, size.x, size.y)
+#   with ports on their ends/rails and an inline spine label (never a separate block).
+# - Curved conveyors render a compact Midpoint Spine Pill directly on the curve midpoint for
+#   top/bottom Signal/Metric ports while Flow In/Out sit at the physical curve endpoints.
 class_name SimVizAuthoringBlockNode
 extends Control
 
@@ -13,6 +20,7 @@ signal port_drag_ended(element_id: String, port_id: String)
 signal add_port_requested(element_id: String, bay_action: String) # "flow_in", "flow_out", "signal_in", "metric_out"
 signal remove_port_requested(element_id: String, bay_action: String) # "flow_in", "flow_out", "signal_in", "metric_out"
 signal disconnect_port_requested(element_id: String, port_id: String)
+signal port_channel_popup_requested(element_id: String, port_id: String, is_output: bool, screen_pos: Vector2)
 signal element_resized(element_id: String, new_dims: Vector3)
 signal element_resize_committed(element_id: String, new_dims: Vector3)
 signal floating_properties_requested(element_id: String, screen_pos: Vector2)
@@ -41,13 +49,27 @@ static func get_port_kind_color(p_kind: String) -> Color:
 		"event": return COLOR_EVENT
 		_: return Color("#95a5a6")
 
-const LEFT_BAY_WIDTH := 64.0
-const RIGHT_BAY_WIDTH := 64.0
+static func get_element_kind_accent(e_kind: String) -> Color:
+	match e_kind:
+		"source": return Color("#f39c12")
+		"queue": return Color("#3498db")
+		"server": return Color("#2ecc71")
+		"conveyor": return Color("#2a9d8f")
+		"sink": return Color("#e74c3c")
+		_: return Color("#52c7a5")
+
+const LEFT_BAY_WIDTH := 0.0
+const RIGHT_BAY_WIDTH := 0.0
+const PORT_HIT_MARGIN := 10.0
 
 var element: SceneTypes.SceneElement
 var subgraph: SceneTypes.SceneSubgraph
 var is_selected: bool = false
 var is_multi_selected: bool = false
+var is_block_hovered: bool = false
+var is_wire_drag_active: bool = false
+var wires_visible_mode: int = 0 # 0=ALL, 1=FOCUS, 2=OFF
+var port_connection_counts: Dictionary = {} # port_id -> int
 var live_metrics: Dictionary = {}
 var signal_values: Dictionary = {}
 var signal_history: Array = []
@@ -73,18 +95,31 @@ var _resize_start_dims: Vector3 = Vector3.ZERO
 var _resize_start_node_pos: Vector2 = Vector2.ZERO
 var _resize_start_elem_pos: Vector3 = Vector3.ZERO
 
-var _port_sockets: Dictionary = {} # port_id -> { "pos": Vector2, "kind": String, "is_output": bool, "dir": String, "name": String }
+var _port_sockets: Dictionary = {} # port_id -> { "pos": Vector2, "kind": String, "is_output": bool, "dir": String, "name": String, "edge": String }
 
 func _init(p_elem: SceneTypes.SceneElement = null, p_sub: SceneTypes.SceneSubgraph = null) -> void:
 	element = p_elem
 	subgraph = p_sub
 	mouse_filter = Control.MOUSE_FILTER_STOP
-	custom_minimum_size = Vector2(36, 36)
+	custom_minimum_size = Vector2(36, 24)
+	mouse_entered.connect(func():
+		is_block_hovered = true
+		queue_redraw()
+	)
+	mouse_exited.connect(func():
+		is_block_hovered = false
+		if not hovered_port_id.is_empty():
+			hovered_port_id = ""
+		queue_redraw()
+	)
 	if element != null or subgraph != null:
 		refresh_from_element()
 
 func _ready() -> void:
 	refresh_from_element()
+
+func _has_point(point: Vector2) -> bool:
+	return Rect2(-PORT_HIT_MARGIN, -PORT_HIT_MARGIN, size.x + PORT_HIT_MARGIN * 2.0, size.y + PORT_HIT_MARGIN * 2.0).has_point(point)
 
 func get_node_id() -> String:
 	if subgraph != null:
@@ -100,6 +135,31 @@ func _is_curved_or_joined_conveyor() -> bool:
 		return true
 	var preset: String = str(element.geometry.get("shape_preset", "straight")).to_lower()
 	return preset != "straight" and not preset.is_empty()
+
+func uses_floating_nameplate() -> bool:
+	if element != null and element.kind == "conveyor":
+		return true
+	if element != null and element.kind in ["chart_station", "scope_2d", "digital_meter", "histogram_sink", "state_space_3d", "xy_scatter"]:
+		return false
+	return size.x < 68.0
+
+func should_show_port_socket(port_id: String) -> bool:
+	if is_selected or is_multi_selected or is_block_hovered or is_wire_drag_active or hovered_port_id == port_id:
+		return true
+	var conn_count: int = int(port_connection_counts.get(port_id, 0))
+	if conn_count > 0 and wires_visible_mode == 0:
+		return true
+	return false
+
+func set_port_connection_counts(counts: Dictionary) -> void:
+	port_connection_counts = counts.duplicate()
+	queue_redraw()
+
+func set_wire_context(drag_active: bool, vis_mode: int) -> void:
+	if is_wire_drag_active != drag_active or wires_visible_mode != vis_mode:
+		is_wire_drag_active = drag_active
+		wires_visible_mode = vis_mode
+		queue_redraw()
 
 func refresh_from_element() -> void:
 	if element != null and element.transform != null:
@@ -169,86 +229,18 @@ func get_bay_layout() -> Dictionary:
 	var sig_in := _get_signal_ports()
 	var met_out := _get_metric_ports()
 
-	var has_flow_in := flow_in.size() > 0
-	var has_flow_out := flow_out.size() > 0
-	var has_sig_in := sig_in.size() > 0
-	var has_met_out := met_out.size() > 0
-
-	# Specialized layout for instrumentation and scope sink blocks:
-	# Dedicated signal input bay on left, no right bay, collapsed buttons
-	if element != null and element.kind in ["chart_station", "scope_2d", "digital_meter", "histogram_sink", "state_space_3d", "xy_scatter"]:
-		return {
-			"left_w": 24.0,
-			"right_w": 0.0,
-			"col_in_x": -999.0,
-			"col_out_x": -999.0,
-			"col_sig_x": 12.0,
-			"col_met_x": -999.0,
-			"has_flow_in": false,
-			"has_flow_out": false,
-			"has_sig_in": true,
-			"has_met_out": false,
-			"collapsed": true
-		}
-
-	# When wide enough (size.x >= 128.0), provide full 2-column bays (64px each)
-	# with canonical positions (IN at 16, OUT at 46, SIG at size.x-48, MET at size.x-16).
-	if size.x >= 128.0:
-		return {
-			"left_w": 64.0,
-			"right_w": 64.0,
-			"col_in_x": 16.0,
-			"col_out_x": 46.0,
-			"col_sig_x": size.x - 48.0,
-			"col_met_x": size.x - 16.0,
-			"has_flow_in": true,
-			"has_flow_out": true,
-			"has_sig_in": true,
-			"has_met_out": true,
-			"collapsed": false
-		}
-
-	# When compact (size.x < 128.0), collapse empty columns and contract active columns
-	var left_cols: int = (1 if has_flow_in else 0) + (1 if has_flow_out else 0)
-	var right_cols: int = (1 if has_sig_in else 0) + (1 if has_met_out else 0)
-	var total_cols: int = max(1, left_cols + right_cols)
-
-	var cw: float = clamp(size.x / float(total_cols), 16.0, 32.0)
-	var left_w: float = float(left_cols) * cw
-	var right_w: float = float(right_cols) * cw
-
-	var col_in_x: float = -999.0
-	var col_out_x: float = -999.0
-	if has_flow_in and has_flow_out:
-		col_in_x = cw * 0.5
-		col_out_x = cw + (cw * 0.5)
-	elif has_flow_in:
-		col_in_x = cw * 0.5
-	elif has_flow_out:
-		col_out_x = cw * 0.5
-
-	var col_sig_x: float = -999.0
-	var col_met_x: float = -999.0
-	if has_sig_in and has_met_out:
-		col_sig_x = size.x - (cw * 1.5)
-		col_met_x = size.x - (cw * 0.5)
-	elif has_sig_in:
-		col_sig_x = size.x - (cw * 0.5)
-	elif has_met_out:
-		col_met_x = size.x - (cw * 0.5)
-
 	return {
-		"left_w": left_w,
-		"right_w": right_w,
-		"col_in_x": col_in_x,
-		"col_out_x": col_out_x,
-		"col_sig_x": col_sig_x,
-		"col_met_x": col_met_x,
-		"has_flow_in": has_flow_in,
-		"has_flow_out": has_flow_out,
-		"has_sig_in": has_sig_in,
-		"has_met_out": has_met_out,
-		"collapsed": true
+		"left_w": 0.0,
+		"right_w": 0.0,
+		"col_in_x": 0.0,
+		"col_out_x": size.x,
+		"col_sig_x": size.x * 0.5,
+		"col_met_x": size.x * 0.5,
+		"has_flow_in": flow_in.size() > 0,
+		"has_flow_out": flow_out.size() > 0,
+		"has_sig_in": sig_in.size() > 0,
+		"has_met_out": met_out.size() > 0,
+		"collapsed": false
 	}
 
 func rebuild_ports() -> void:
@@ -258,95 +250,90 @@ func rebuild_ports() -> void:
 
 func calculate_sockets() -> void:
 	_port_sockets.clear()
-	var layout := get_bay_layout()
 	var flow_in := _get_flow_in_ports()
 	var flow_out := _get_flow_out_ports()
 	var sig_in := _get_signal_ports()
 	var met_out := _get_metric_ports()
 
-	var max_ports: int = max(
-		max(flow_in.size(), flow_out.size()),
-		max(sig_in.size(), met_out.size())
-	)
-	var y_step: float = 22.0
-	var y_start: float = 28.0
-	if size.y < 70.0:
-		y_step = clamp((size.y - 20.0) / float(max(1, max_ports)), 14.0, 22.0)
-		y_start = 12.0 + (y_step * 0.5)
+	var is_curved_conv := _is_curved_or_joined_conveyor()
+	var is_instrument: bool = (element != null and element.kind in ["chart_station", "scope_2d", "digital_meter", "histogram_sink", "state_space_3d", "xy_scatter"])
 
-	# 1. Left Bay Column 1: Flow In
-	if layout["has_flow_in"] and layout["col_in_x"] > 0:
-		for i in range(flow_in.size()):
-			var p = flow_in[i]
-			var p_pos := Vector2(layout["col_in_x"], y_start + (i * y_step))
-			_port_sockets[p.id] = {
-				"pos": p_pos, "kind": p.kind, "is_output": false,
-				"dir": "input", "name": p.name if not p.name.is_empty() else p.id,
-				"cardinality": p.cardinality
-			}
-
-	# 2. Left Bay Column 2: Flow Out
-	if layout["has_flow_out"] and layout["col_out_x"] > 0:
-		for i in range(flow_out.size()):
-			var p = flow_out[i]
-			var p_pos := Vector2(layout["col_out_x"], y_start + (i * y_step))
-			_port_sockets[p.id] = {
-				"pos": p_pos, "kind": p.kind, "is_output": true,
-				"dir": "output", "name": p.name if not p.name.is_empty() else p.id,
-				"cardinality": p.cardinality
-			}
-
-	# 3. Right Bay Column 1: Signal In
-	if layout["has_sig_in"] and layout["col_sig_x"] > 0:
-		for i in range(sig_in.size()):
+	# 1. Left Perimeter Edge (x = 0): Flow In (or Signal In for dedicated instrument panels)
+	if is_instrument:
+		var n_sig := sig_in.size()
+		for i in range(n_sig):
 			var p = sig_in[i]
-			var p_pos := Vector2(layout["col_sig_x"], y_start + (i * y_step))
+			var py: float = size.y * float(i + 1) / float(n_sig + 1)
 			_port_sockets[p.id] = {
-				"pos": p_pos, "kind": p.kind, "is_output": false,
+				"pos": Vector2(0.0, py), "kind": p.kind, "is_output": false,
 				"dir": "input", "name": p.name if not p.name.is_empty() else p.id,
-				"cardinality": p.cardinality
+				"cardinality": p.cardinality, "edge": "left"
+			}
+		return
+
+	if not is_curved_conv:
+		var n_in := flow_in.size()
+		for i in range(n_in):
+			var p = flow_in[i]
+			var py: float = size.y * float(i + 1) / float(n_in + 1)
+			_port_sockets[p.id] = {
+				"pos": Vector2(0.0, py), "kind": p.kind, "is_output": false,
+				"dir": "input", "name": p.name if not p.name.is_empty() else p.id,
+				"cardinality": p.cardinality, "edge": "left"
 			}
 
-	# 4. Right Bay Column 2: Metric Out
-	if layout["has_met_out"] and layout["col_met_x"] > 0:
-		for i in range(met_out.size()):
-			var p = met_out[i]
-			var p_pos := Vector2(layout["col_met_x"], y_start + (i * y_step))
+		# 2. Right Perimeter Edge (x = size.x): Flow Out
+		var n_out := flow_out.size()
+		for i in range(n_out):
+			var p = flow_out[i]
+			var py: float = size.y * float(i + 1) / float(n_out + 1)
 			_port_sockets[p.id] = {
-				"pos": p_pos, "kind": p.kind, "is_output": true,
+				"pos": Vector2(size.x, py), "kind": p.kind, "is_output": true,
 				"dir": "output", "name": p.name if not p.name.is_empty() else p.id,
-				"cardinality": p.cardinality
+				"cardinality": p.cardinality, "edge": "right"
 			}
+
+	# 3. Top Perimeter Edge (y = 0): Signal / Control In
+	var n_sig := sig_in.size()
+	for i in range(n_sig):
+		var p = sig_in[i]
+		var px: float = size.x * float(i + 1) / float(n_sig + 1)
+		_port_sockets[p.id] = {
+			"pos": Vector2(px, 0.0), "kind": p.kind, "is_output": false,
+			"dir": "input", "name": p.name if not p.name.is_empty() else p.id,
+			"cardinality": p.cardinality, "edge": "top"
+		}
+
+	# 4. Bottom Perimeter Edge (y = size.y): Metric Out
+	var n_met := met_out.size()
+	for i in range(n_met):
+		var p = met_out[i]
+		var px: float = size.x * float(i + 1) / float(n_met + 1)
+		_port_sockets[p.id] = {
+			"pos": Vector2(px, size.y), "kind": p.kind, "is_output": true,
+			"dir": "output", "name": p.name if not p.name.is_empty() else p.id,
+			"cardinality": p.cardinality, "edge": "bottom"
+		}
 
 func _recalculate_size() -> void:
 	if element == null and subgraph == null:
 		size = custom_minimum_size
 		return
 
+	if _is_curved_or_joined_conveyor():
+		# Compact Midpoint Spine Pill for curved/joined conveyors (sits directly on belt midpoint)
+		custom_minimum_size = Vector2(88.0, 24.0)
+		size = Vector2(88.0, 24.0)
+		return
+
 	var dims := _get_physical_dimensions()
-	var flow_in := _get_flow_in_ports()
-	var flow_out := _get_flow_out_ports()
-	var sig_in := _get_signal_ports()
-	var met_out := _get_metric_ports()
+	var min_w: float = 36.0
+	var min_h: float = 36.0
 
-	var left_cols: int = (1 if flow_in.size() > 0 else 0) + (1 if flow_out.size() > 0 else 0)
-	var right_cols: int = (1 if sig_in.size() > 0 else 0) + (1 if met_out.size() > 0 else 0)
-	var total_cols: int = left_cols + right_cols
-
-	# Dynamic minimum width when middle gap is completely collapsed
-	var min_w: float = max(36.0, float(total_cols) * 18.0)
-	if total_cols >= 4:
-		min_w = 72.0
-
-	var max_ports: int = max(
-		max(flow_in.size(), flow_out.size()),
-		max(sig_in.size(), met_out.size())
-	)
-	var min_h: float = max(36.0, float(max_ports) * 18.0 + 18.0)
-	if total_cols >= 4:
-		min_h = max(min_h, 72.0)
-
-	if element != null and element.kind in ["chart_station", "scope_2d", "digital_meter", "histogram_sink", "state_space_3d", "xy_scatter"]:
+	if element != null and element.kind == "conveyor":
+		min_w = 40.0
+		min_h = 24.0
+	elif element != null and element.kind in ["chart_station", "scope_2d", "digital_meter", "histogram_sink", "state_space_3d", "xy_scatter"]:
 		var n_sub: int = element.properties.get("subplots", []).size() if element.properties.has("subplots") else 1
 		min_w = max(min_w, 180.0)
 		min_h = max(min_h, 42.0 + float(max(1, n_sub)) * 32.0)
@@ -356,11 +343,6 @@ func _recalculate_size() -> void:
 	# Physical dimensions at 20px per meter (1m = 20px)
 	var target_w: float = dims.x * 20.0
 	var target_h: float = dims.y * 20.0
-	if _is_curved_or_joined_conveyor():
-		target_w = 110.0
-		target_h = 54.0
-		min_h = max(48.0, min_h * 0.72)
-
 	size = Vector2(max(target_w, min_w), max(target_h, min_h))
 
 func _get_physical_dimensions() -> Vector3:
@@ -473,7 +455,16 @@ func _gui_input(event: InputEvent) -> void:
 						accept_event()
 						return
 
-				# 1. Check if clicked on a port socket
+				# 1. Check if clicked on a port badge (×N) -> open Channel Pop-Up Pill
+				var hit_badge := _hit_test_port_badge(mb.position)
+				if not hit_badge.is_empty():
+					var p_info_b: Dictionary = _port_sockets[hit_badge]
+					var spos_b: Vector2 = mb.global_position if mb.global_position != Vector2.ZERO else get_port_canvas_position(hit_badge)
+					port_channel_popup_requested.emit(nid, hit_badge, bool(p_info_b.get("is_output", true)), spos_b)
+					accept_event()
+					return
+
+				# 2. Check if clicked on a port socket
 				var hit_port := _hit_test_port(mb.position)
 				if not hit_port.is_empty():
 					var p_info: Dictionary = _port_sockets[hit_port]
@@ -485,35 +476,26 @@ func _gui_input(event: InputEvent) -> void:
 					accept_event()
 					return
 
-				# 2. Check if clicked on a [+] or [-] button
-				var hit_btn := _hit_test_port_button(mb.position)
-				if not hit_btn.is_empty():
-					if hit_btn["action"] == "add":
-						add_port_requested.emit(nid, hit_btn["bay"])
-					else:
-						remove_port_requested.emit(nid, hit_btn["bay"])
-					accept_event()
-					return
-
-				# 3. Check if clicked on any of the 4 resize corners
-				var hit_corner := _hit_test_resize_corner(mb.position)
-				if hit_corner != ResizeCorner.NONE:
-					_resizing = true
-					_active_resize_corner = hit_corner
-					_resize_start_mouse = mb.position
-					_resize_start_global_mouse = mb.global_position if mb.global_position != Vector2.ZERO else (position + mb.position)
-					_resize_start_dims = _get_physical_dimensions()
-					_resize_start_node_pos = position
-					if element != null and element.transform != null:
-						_resize_start_elem_pos = Vector3(float(element.transform.position[0]), float(element.transform.position[1]), float(element.transform.position[2]))
-					elif subgraph != null and subgraph.transform != null:
-						_resize_start_elem_pos = Vector3(float(subgraph.transform.position[0]), float(subgraph.transform.position[1]), float(subgraph.transform.position[2]))
-					else:
-						_resize_start_elem_pos = Vector3.ZERO
-					if not is_selected:
-						block_selected.emit(nid)
-					accept_event()
-					return
+				# 3. Check if clicked on any of the 4 resize corners (not on curved conveyor spine pill)
+				if not _is_curved_or_joined_conveyor():
+					var hit_corner := _hit_test_resize_corner(mb.position)
+					if hit_corner != ResizeCorner.NONE:
+						_resizing = true
+						_active_resize_corner = hit_corner
+						_resize_start_mouse = mb.position
+						_resize_start_global_mouse = mb.global_position if mb.global_position != Vector2.ZERO else (position + mb.position)
+						_resize_start_dims = _get_physical_dimensions()
+						_resize_start_node_pos = position
+						if element != null and element.transform != null:
+							_resize_start_elem_pos = Vector3(float(element.transform.position[0]), float(element.transform.position[1]), float(element.transform.position[2]))
+						elif subgraph != null and subgraph.transform != null:
+							_resize_start_elem_pos = Vector3(float(subgraph.transform.position[0]), float(subgraph.transform.position[1]), float(subgraph.transform.position[2]))
+						else:
+							_resize_start_elem_pos = Vector3.ZERO
+						if not is_selected:
+							block_selected.emit(nid)
+						accept_event()
+						return
 
 				# 4. Center body clicked -> drag block
 				_dragging = true
@@ -533,14 +515,18 @@ func _gui_input(event: InputEvent) -> void:
 					accept_event()
 
 		elif mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
-			# Right-click on a port socket -> Disconnect attached wire(s)
 			var hit_port := _hit_test_port(mb.position)
 			if not hit_port.is_empty():
-				disconnect_port_requested.emit(nid, hit_port)
+				var p_info: Dictionary = _port_sockets[hit_port]
+				var conn_cnt: int = int(port_connection_counts.get(hit_port, 0))
+				if conn_cnt > 1:
+					var spos: Vector2 = mb.global_position if mb.global_position != Vector2.ZERO else get_port_canvas_position(hit_port)
+					port_channel_popup_requested.emit(nid, hit_port, bool(p_info.get("is_output", true)), spos)
+				else:
+					disconnect_port_requested.emit(nid, hit_port)
 				accept_event()
 				return
 			else:
-				# Right-click on block body -> Open Floating Tabbed Properties Inspector!
 				block_selected.emit(nid)
 				var mouse_pos: Vector2 = mb.global_position if mb.global_position != Vector2.ZERO else (get_global_mouse_position() if is_inside_tree() else mb.position)
 				floating_properties_requested.emit(nid, mouse_pos)
@@ -625,20 +611,30 @@ func _gui_input(event: InputEvent) -> void:
 				block_moved.emit(nid, position)
 			accept_event()
 		else:
-			var corner := _hit_test_resize_corner(mm.position)
-			if corner == ResizeCorner.TOP_LEFT or corner == ResizeCorner.BOTTOM_RIGHT:
-				mouse_default_cursor_shape = Control.CURSOR_FDIAGSIZE
-			elif corner == ResizeCorner.TOP_RIGHT or corner == ResizeCorner.BOTTOM_LEFT:
-				mouse_default_cursor_shape = Control.CURSOR_BDIAGSIZE
-			elif not _hit_test_port(mm.position).is_empty():
+			var hit_p := _hit_test_port(mm.position)
+			set_hovered_port(hit_p)
+			if not hit_p.is_empty() or not _hit_test_port_badge(mm.position).is_empty():
 				mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 			else:
-				mouse_default_cursor_shape = Control.CURSOR_ARROW
+				var corner := _hit_test_resize_corner(mm.position)
+				if corner == ResizeCorner.TOP_LEFT or corner == ResizeCorner.BOTTOM_RIGHT:
+					mouse_default_cursor_shape = Control.CURSOR_FDIAGSIZE
+				elif corner == ResizeCorner.TOP_RIGHT or corner == ResizeCorner.BOTTOM_LEFT:
+					mouse_default_cursor_shape = Control.CURSOR_BDIAGSIZE
+				else:
+					mouse_default_cursor_shape = Control.CURSOR_ARROW
 
 func _get_corner_size() -> float:
-	return clamp(min(size.x, size.y) * 0.25, 10.0, 16.0)
+	return clamp(min(size.x, size.y) * 0.22, 8.0, 14.0)
 
 func _hit_test_resize_corner(local_pos: Vector2) -> ResizeCorner:
+	if _is_curved_or_joined_conveyor():
+		return ResizeCorner.NONE
+	var hit_p := _hit_test_port(local_pos)
+	if not hit_p.is_empty() and _port_sockets.has(hit_p):
+		var p_pos: Vector2 = _port_sockets[hit_p]["pos"]
+		if local_pos.distance_to(p_pos) <= 6.5:
+			return ResizeCorner.NONE
 	var c := _get_corner_size()
 	if local_pos.x < 0.0 or local_pos.y < 0.0 or local_pos.x > size.x or local_pos.y > size.y:
 		return ResizeCorner.NONE
@@ -665,8 +661,10 @@ func hit_test_port(local_pos: Vector2) -> String:
 	return _hit_test_port(local_pos)
 
 func _hit_test_port(local_pos: Vector2) -> String:
-	var socket_r: float = 6.5 if size.y >= 70.0 else clamp(size.y * 0.12, 4.0, 6.0)
-	var max_dist: float = socket_r + 2.5
+	if _port_sockets.is_empty():
+		calculate_sockets()
+	var socket_r: float = 6.0
+	var max_dist: float = socket_r + 4.0
 	var best_id := ""
 	var best_dist := max_dist
 	for port_id in _port_sockets.keys():
@@ -677,62 +675,48 @@ func _hit_test_port(local_pos: Vector2) -> String:
 			best_id = port_id
 	return best_id
 
-func _hit_test_port_button(local_pos: Vector2) -> Dictionary:
-	if element == null:
-		return {}
-	var layout := get_bay_layout()
-	if layout["collapsed"] or size.y < 50.0:
-		return {}
+func _get_port_badge_rect(port_id: String) -> Rect2:
+	if not _port_sockets.has(port_id):
+		return Rect2()
+	var cnt: int = int(port_connection_counts.get(port_id, 0))
+	if cnt <= 1:
+		return Rect2()
+	var p_info: Dictionary = _port_sockets[port_id]
+	var p_pos: Vector2 = p_info["pos"]
+	var edge: String = str(p_info.get("edge", "right"))
+	var bw := 22.0
+	var bh := 13.0
+	match edge:
+		"left":
+			return Rect2(p_pos.x - bw - 6.0, p_pos.y - bh * 0.5, bw, bh)
+		"right":
+			return Rect2(p_pos.x + 6.0, p_pos.y - bh * 0.5, bw, bh)
+		"top":
+			return Rect2(p_pos.x - bw * 0.5, p_pos.y - bh - 6.0, bw, bh)
+		_:
+			return Rect2(p_pos.x - bw * 0.5, p_pos.y + 6.0, bw, bh)
 
-	var btn_h := 16.0
-	var btn_y := size.y - btn_h - 4.0
-	if local_pos.y < btn_y or local_pos.y > btn_y + btn_h:
-		return {}
-
-	# Left Bay Col 1: Flow In ([+] and [-])
-	if Rect2(2.0, btn_y, 13.0, btn_h).has_point(local_pos):
-		return {"action": "add", "bay": "flow_in"}
-	if Rect2(16.0, btn_y, 13.0, btn_h).has_point(local_pos):
-		return {"action": "remove", "bay": "flow_in"}
-
-	# Left Bay Col 2: Flow Out ([+] and [-])
-	if Rect2(32.0, btn_y, 13.0, btn_h).has_point(local_pos):
-		return {"action": "add", "bay": "flow_out"}
-	if Rect2(46.0, btn_y, 13.0, btn_h).has_point(local_pos):
-		return {"action": "remove", "bay": "flow_out"}
-
-	# Right Bay Col 1: Signal In ([+] and [-])
-	if Rect2(size.x - 62.0, btn_y, 13.0, btn_h).has_point(local_pos):
-		return {"action": "add", "bay": "signal_in"}
-	if Rect2(size.x - 48.0, btn_y, 13.0, btn_h).has_point(local_pos):
-		return {"action": "remove", "bay": "signal_in"}
-
-	# Right Bay Col 2: Metric Out ([+] and [-])
-	if Rect2(size.x - 30.0, btn_y, 13.0, btn_h).has_point(local_pos):
-		return {"action": "add", "bay": "metric_out"}
-	if Rect2(size.x - 16.0, btn_y, 13.0, btn_h).has_point(local_pos):
-		return {"action": "remove", "bay": "metric_out"}
-
-	return {}
-
-func _hit_test_add_button(local_pos: Vector2) -> String:
-	var hit := _hit_test_port_button(local_pos)
-	if hit.get("action", "") == "add":
-		return hit.get("bay", "")
+func _hit_test_port_badge(local_pos: Vector2) -> String:
+	for port_id in _port_sockets.keys():
+		var r := _get_port_badge_rect(port_id)
+		if r.size != Vector2.ZERO and r.grow(2.0).has_point(local_pos):
+			return port_id
 	return ""
 
-func _hit_test_remove_button(local_pos: Vector2) -> String:
-	var hit := _hit_test_port_button(local_pos)
-	if hit.get("action", "") == "remove":
-		return hit.get("bay", "")
+func _hit_test_port_button(_local_pos: Vector2) -> Dictionary:
+	return {}
+
+func _hit_test_add_button(_local_pos: Vector2) -> String:
+	return ""
+
+func _hit_test_remove_button(_local_pos: Vector2) -> String:
 	return ""
 
 func _get_tooltip(at_position: Vector2) -> String:
-	var hit_btn := _hit_test_port_button(at_position)
-	if not hit_btn.is_empty():
-		var action_str := "Add" if hit_btn["action"] == "add" else "Remove last"
-		var bay_str := str(hit_btn["bay"]).replace("_", " ").capitalize()
-		return "%s %s port" % [action_str, bay_str]
+	var hit_badge := _hit_test_port_badge(at_position)
+	if not hit_badge.is_empty():
+		var cnt: int = int(port_connection_counts.get(hit_badge, 0))
+		return "Bus Port '%s' (%d channels)\nClick to inspect, reorder, or delete channels" % [hit_badge, cnt]
 
 	var hit_port := _hit_test_port(at_position)
 	if not hit_port.is_empty():
@@ -740,16 +724,11 @@ func _get_tooltip(at_position: Vector2) -> String:
 		var dir_str: String = "Output" if p_info.get("is_output", false) else "Input"
 		var kind_str: String = str(p_info.get("kind", "")).capitalize()
 		var p_name: String = str(p_info.get("name", hit_port))
-		var base_tip := ""
-		if p_info.get("kind", "") == "flow":
-			base_tip = "Flow %s: %s\nID: %s\n(Drag to connect to %s)" % [dir_str, p_name, hit_port, "Flow In" if p_info.get("is_output", false) else "Flow Out"]
-		elif p_info.get("kind", "") == "metric":
-			base_tip = "Metric Output: %s\nID: %s\n(Connect to Signal In)" % [p_name, hit_port]
-		elif p_info.get("kind", "") == "signal":
-			base_tip = "Signal Input: %s\nID: %s\n(Receives Metric Signal)" % [p_name, hit_port]
-		else:
-			base_tip = "%s %s: %s\nID: %s" % [kind_str, dir_str, p_name, hit_port]
-		return base_tip + "\n(Right-click to disconnect wires)"
+		var cnt: int = int(port_connection_counts.get(hit_port, 0))
+		var base_tip := "%s %s: %s (ID: %s)" % [kind_str, dir_str, p_name, hit_port]
+		if cnt > 0:
+			base_tip += "\nConnected channels: %d" % cnt
+		return base_tip + "\n(Drag to wire · Right-click to manage/disconnect)"
 
 	if element != null:
 		var name_str := element.name if not element.name.is_empty() else element.id
@@ -765,262 +744,207 @@ func _get_tooltip(at_position: Vector2) -> String:
 func _draw() -> void:
 	calculate_sockets()
 	var rect := Rect2(Vector2.ZERO, size)
-	var layout := get_bay_layout()
-
-	# 1. Main Block Background & Outer Border
 	var is_highlighted := is_selected or is_multi_selected
+
+	# Special Case A: Curved/Joined Conveyor Midpoint Spine Pill (sits directly on the curve midpoint)
+	if _is_curved_or_joined_conveyor():
+		_draw_conveyor_midpoint_pill(rect, is_highlighted)
+		_draw_perimeter_port_sockets()
+		return
+
+	# Special Case B: Straight Conveyor — draw the physical roller belt directly inside Rect2(0, 0, size.x, size.y)!
+	if element != null and element.kind == "conveyor":
+		_draw_straight_conveyor_belt(rect, is_highlighted)
+		_draw_perimeter_port_sockets()
+		return
+
+	# 1. Main Block Background & Outer Border (100% full footprint — zero side bays)
+	var accent_col := get_element_kind_accent(element.kind) if element != null else Color("#1abc9c")
 	draw_rect(rect, BG_SELECTED if is_highlighted else BG_NORMAL, true)
-	draw_rect(rect, BORDER_SELECTED if is_highlighted else BORDER_NORMAL, false, 2.0 if is_highlighted else 1.0)
+	draw_rect(Rect2(0, 0, size.x, 3.0), Color(accent_col.r, accent_col.g, accent_col.b, 0.75), true)
+	draw_rect(rect, BORDER_SELECTED if is_highlighted else BORDER_NORMAL, false, 2.0 if is_highlighted else 1.2)
 
-	var left_w: float = float(layout["left_w"])
-	var right_w: float = float(layout["right_w"])
-	var mid_w: float = max(0.0, size.x - left_w - right_w)
-
-	# 2. Left Bay
-	if left_w > 0.0:
-		var left_rect := Rect2(0, 0, left_w, size.y)
-		draw_rect(left_rect, BAY_BG, true)
-		draw_line(Vector2(left_w, 0), Vector2(left_w, size.y), BORDER_NORMAL, 1.0)
-		if not layout["collapsed"] and left_w >= 60.0:
-			draw_line(Vector2(30.0, 0), Vector2(30.0, size.y), Color(0.12, 0.18, 0.25, 0.5), 1.0)
-			draw_string(ThemeDB.fallback_font, Vector2(10.0, 14.0), "IN", HORIZONTAL_ALIGNMENT_CENTER, -1, 9, Color("#2ecc71"))
-			draw_string(ThemeDB.fallback_font, Vector2(38.0, 14.0), "OUT", HORIZONTAL_ALIGNMENT_CENTER, -1, 9, Color("#a8d5ba"))
-		elif layout.get("has_sig_in", false) and not layout.get("has_flow_in", false):
-			draw_string(ThemeDB.fallback_font, Vector2(0.0, 14.0), "SIG", HORIZONTAL_ALIGNMENT_CENTER, int(left_w), 8, COLOR_SIGNAL)
-
-	# 3. Right Bay
-	if right_w > 0.0:
-		var right_rect := Rect2(size.x - right_w, 0, right_w, size.y)
-		draw_rect(right_rect, BAY_BG, true)
-		draw_line(Vector2(size.x - right_w, 0), Vector2(size.x - right_w, size.y), BORDER_NORMAL, 1.0)
-		if not layout["collapsed"] and right_w >= 60.0:
-			draw_line(Vector2(size.x - 34.0, 0), Vector2(size.x - 34.0, size.y), Color(0.12, 0.18, 0.25, 0.5), 1.0)
-			draw_string(ThemeDB.fallback_font, Vector2(size.x - 56.0, 14.0), "SIG", HORIZONTAL_ALIGNMENT_CENTER, -1, 9, COLOR_SIGNAL)
-			draw_string(ThemeDB.fallback_font, Vector2(size.x - 24.0, 14.0), "MET", HORIZONTAL_ALIGNMENT_CENTER, -1, 9, COLOR_METRIC)
-
-	# 4. Center Body (Adaptive Display)
+	# 2. Body Content & Adaptive Nameplate
 	if element != null:
 		var dims := _get_physical_dimensions()
-		var dim_str := "%.1fm × %.1fm" % [dims.x, dims.y]
+		var dim_str := "%.0f×%.0fm" % [dims.x, dims.y] if (is_equal_approx(dims.x, round(dims.x)) and is_equal_approx(dims.y, round(dims.y))) else "%.1f×%.1fm" % [dims.x, dims.y]
 		var title: String = element.name if not element.name.is_empty() else element.id
 		var cur_rot: float = fposmod(float(element.transform.rotation.z), 360.0) if element.transform != null else 0.0
 
 		if element.kind == "chart_station":
-			# Clean Patchbay Instrument Terminal Card
-			var subplots: Array = element.properties.get("subplots", [])
-			var header_str: String = title
-			var badge_str: String = "[%d Subplots]" % subplots.size()
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 6.0, 18.0), header_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 75.0), 10, TEXT_COLOR)
-			draw_string(ThemeDB.fallback_font, Vector2(size.x - 70.0, 18.0), badge_str, HORIZONTAL_ALIGNMENT_RIGHT, 65, 9, COLOR_SIGNAL)
-
-			# Subplot rows
-			var y_cursor: float = 34.0
-			for i in range(subplots.size()):
-				var sp = subplots[i]
-				var sp_port: String = str(sp.get("port_id", "P%d" % (i + 1)))
-				var sp_type: String = str(sp.get("type", "time_series"))
-				var sp_title: String = str(sp.get("title", "Subplot %d" % (i + 1)))
-
-				var row_rect := Rect2(left_w + 4.0, y_cursor - 10.0, mid_w - 8.0, 24.0)
-				draw_rect(row_rect, Color("#0d131a"), true)
-				draw_rect(row_rect, Color("#222d3d"), false, 1.0)
-
-				var type_short: String = "SCOPE"
-				if sp_type == "digital_gauge": type_short = "GAUGE"
-				elif sp_type == "histogram": type_short = "HIST"
-				elif sp_type == "xy_scatter": type_short = "SCATTER"
-				elif sp_type == "state_space_3d": type_short = "3D"
-
-				# Draw port and label
-				var line_txt := "%s [%s] %s" % [sp_port, type_short, sp_title]
-				draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, y_cursor + 5.0), line_txt, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 20.0), 9, Color("#8b949e"))
-				y_cursor += 28.0
-
-			# Hint at bottom
-			if size.y >= y_cursor + 10.0:
-				draw_string(ThemeDB.fallback_font, Vector2(left_w + 6.0, size.y - 6.0), "Double-click for Plot Studio ⤢", HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 12.0), 8, Color(0.4, 0.6, 0.8, 0.6))
-
+			_draw_chart_station_body(title)
 		elif element.kind == "scope_2d":
-			var screen_rect := Rect2(left_w + 6.0, 24.0, max(10.0, mid_w - 12.0), max(10.0, size.y - 32.0))
-			draw_rect(screen_rect, Color("#071018"), true)
-			draw_rect(screen_rect, Color("#1f6feb80"), false, 1.5)
-			# Grid lines
-			var mid_y := screen_rect.position.y + screen_rect.size.y * 0.5
-			draw_line(Vector2(screen_rect.position.x, mid_y), Vector2(screen_rect.position.x + screen_rect.size.x, mid_y), Color(0.12, 0.3, 0.5, 0.3), 1.0)
-			var quarter_y1 := screen_rect.position.y + screen_rect.size.y * 0.25
-			var quarter_y2 := screen_rect.position.y + screen_rect.size.y * 0.75
-			draw_line(Vector2(screen_rect.position.x, quarter_y1), Vector2(screen_rect.position.x + screen_rect.size.x, quarter_y1), Color(0.12, 0.3, 0.5, 0.15), 1.0)
-			draw_line(Vector2(screen_rect.position.x, quarter_y2), Vector2(screen_rect.position.x + screen_rect.size.x, quarter_y2), Color(0.12, 0.3, 0.5, 0.15), 1.0)
-			# Sparkline
-			var s_max: float = 1.0
-			for v in signal_history:
-				s_max = max(s_max, float(v))
-			if signal_history.size() >= 2:
-				var s_pts := PackedVector2Array()
-				var s_step: float = screen_rect.size.x / max(1.0, float(signal_history.size() - 1))
-				for i in range(signal_history.size()):
-					var sx: float = screen_rect.position.x + float(i) * s_step
-					var sy: float = screen_rect.position.y + screen_rect.size.y - (clamp(float(signal_history[i]) / max(0.001, s_max), 0.0, 1.0) * (screen_rect.size.y - 8.0)) - 4.0
-					s_pts.append(Vector2(sx, sy))
-				draw_polyline(s_pts, Color("#00d2ff"), 2.0, true)
-				draw_circle(s_pts[-1], 3.0, Color("#58a6ff"))
-			var latest_val: float = float(signal_history.back()) if not signal_history.is_empty() else 0.0
-			var y_label: String = str(element.properties.get("y_label", "Signal"))
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 6.0, 18.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 75.0), 10, TEXT_COLOR)
-			draw_string(ThemeDB.fallback_font, Vector2(screen_rect.position.x + screen_rect.size.x - 70.0, 18.0), "%.1f %s" % [latest_val, y_label], HORIZONTAL_ALIGNMENT_RIGHT, 70, 10, Color("#00d2ff"))
-			draw_string(ThemeDB.fallback_font, Vector2(screen_rect.position.x + 4.0, screen_rect.position.y + 12.0), "max: %.1f" % s_max, HORIZONTAL_ALIGNMENT_LEFT, 50, 8, Color(0.35, 0.6, 0.8, 0.5))
-
+			_draw_scope_2d_body(title)
 		elif element.kind == "digital_meter":
-			var screen_rect := Rect2(left_w + 6.0, 24.0, max(10.0, mid_w - 12.0), max(10.0, size.y - 32.0))
-			draw_rect(screen_rect, Color("#07120b"), true)
-			draw_rect(screen_rect, Color("#238636a0"), false, 1.5)
-			var latest_val: float = float(signal_history.back()) if not signal_history.is_empty() else 0.0
-			var meter_unit: String = str(element.properties.get("unit", ""))
-			var disp_str := "%.1f %s" % [latest_val, meter_unit]
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 6.0, 18.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 10, TEXT_COLOR)
-			draw_string(ThemeDB.fallback_font, Vector2(screen_rect.position.x, screen_rect.position.y + screen_rect.size.y * 0.68), disp_str.strip_edges(), HORIZONTAL_ALIGNMENT_CENTER, int(screen_rect.size.x), 16, Color("#3fb950"))
-
+			_draw_digital_meter_body(title)
 		elif element.kind == "histogram_sink":
-			var screen_rect := Rect2(left_w + 6.0, 24.0, max(10.0, mid_w - 12.0), max(10.0, size.y - 32.0))
-			draw_rect(screen_rect, Color("#0e0818"), true)
-			draw_rect(screen_rect, Color("#8957e580"), false, 1.2)
-			var n_bars := 9
-			var b_width: float = (screen_rect.size.x - 4.0) / float(n_bars)
-			for b_idx in range(n_bars):
-				var bar_h: float = (sin(float(b_idx) * 0.7 + 0.4) * 0.5 + 0.5) * (screen_rect.size.y - 10.0)
-				var bx: float = screen_rect.position.x + 2.0 + float(b_idx) * b_width
-				var by: float = screen_rect.position.y + screen_rect.size.y - bar_h - 2.0
-				draw_rect(Rect2(bx, by, max(1.0, b_width - 2.0), bar_h), Color("#bc8cffaa"), true)
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 6.0, 18.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 10, TEXT_COLOR)
-
+			_draw_histogram_sink_body(title)
 		elif element.kind in ["state_space_3d", "xy_scatter"]:
-			var screen_rect := Rect2(left_w + 6.0, 24.0, max(10.0, mid_w - 12.0), max(10.0, size.y - 32.0))
-			draw_rect(screen_rect, Color("#151107"), true)
-			draw_rect(screen_rect, Color("#d2992280"), false, 1.2)
-			var cx := screen_rect.position.x + screen_rect.size.x * 0.5
-			var cy := screen_rect.position.y + screen_rect.size.y * 0.5
-			draw_line(Vector2(cx, screen_rect.position.y), Vector2(cx, screen_rect.position.y + screen_rect.size.y), Color(0.4, 0.35, 0.1, 0.4), 1.0)
-			draw_line(Vector2(screen_rect.position.x, cy), Vector2(screen_rect.position.x + screen_rect.size.x, cy), Color(0.4, 0.35, 0.1, 0.4), 1.0)
-			draw_circle(Vector2(cx + 10.0, cy - 8.0), 3.5, Color("#d29922"))
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 6.0, 18.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 10, TEXT_COLOR)
-
-		elif mid_w >= 70.0:
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 24.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 12, TEXT_COLOR)
-			var sub_str: String = element.kind.to_upper()
-			if element.kind == "conveyor":
-				var preset_tag: String = str(element.geometry.get("shape_preset", "straight")).to_upper()
-				sub_str = "CONV · %s" % preset_tag
-			elif not element.name.is_empty() and element.name != element.id:
-				sub_str = "%s (%s)" % [element.kind.to_upper(), element.id]
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 40.0), sub_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 9, MUTED_COLOR)
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 56.0), dim_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 10, COLOR_FLOW)
-
-			if cur_rot > 0.05:
-				var rot_str := "∡ %.1f°" % cur_rot
-				draw_string(ThemeDB.fallback_font, Vector2(left_w + mid_w - 52.0, 24.0), rot_str, HORIZONTAL_ALIGNMENT_RIGHT, 50, 9, Color("#f1c40f"))
-
-			var z_start: float = float(element.geometry.get("elevation_start", 0.8))
-			var z_end: float = float(element.geometry.get("elevation_end", z_start))
-			if abs(z_start - z_end) > 0.05 or z_start > 0.85:
-				var elev_str := "Z: %.1f→%.1f" % [z_start, z_end]
-				draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 72.0), elev_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 8, Color("#e67e22"))
-		elif mid_w >= 28.0:
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 22.0), title, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 10, TEXT_COLOR)
-			var sub_label := "%.1f×%.1f" % [dims.x, dims.y]
-			if element.kind == "conveyor" and _is_curved_or_joined_conveyor():
-				sub_label = str(element.geometry.get("shape_preset", "straight")).to_upper()
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 38.0), sub_label, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 8, COLOR_FLOW)
-			if cur_rot > 0.05 and not _is_curved_or_joined_conveyor():
-				draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 50.0), "∡%.0f°" % cur_rot, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 8, Color("#f1c40f"))
-
-		# Live KPI Badge Display
-		if not live_metrics.is_empty():
-			var badge_str: String = str(live_metrics.get("badge", ""))
-			if not badge_str.is_empty():
-				var badge_col := Color("#2ecc71")
-				var s_state: String = str(live_metrics.get("state", ""))
-				if s_state == "BUSY": badge_col = Color("#e74c3c")
-				elif s_state == "DOWN": badge_col = Color("#e67e22")
-				elif s_state == "IDLE": badge_col = Color("#95a5a6")
-				elif s_state == "PARTIAL": badge_col = Color("#f1c40f")
-
-				if mid_w >= 70.0:
-					draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, size.y - 8.0), badge_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 10, badge_col)
-				elif mid_w >= 28.0:
-					draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, size.y - 6.0), badge_str, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 8, badge_col)
-		elif mid_w < 28.0:
-			# Fully collapsed center: Left and right bays touch with 0 gap.
-			# Render compact top badge pill so machine ID is always clearly identifiable.
-			var badge_rect := Rect2(2.0, 2.0, size.x - 4.0, 13.0)
-			draw_rect(badge_rect, Color("#09111be0"), true)
-			draw_rect(badge_rect, BORDER_NORMAL, false, 1.0)
-			var badge_title := "%s %s" % [title, ("∡%.0f°" % cur_rot) if cur_rot > 0.05 else ""]
-			draw_string(ThemeDB.fallback_font, Vector2(4.0, 12.0), badge_title.strip_edges(), HORIZONTAL_ALIGNMENT_CENTER, int(size.x - 8.0), 8, TEXT_COLOR)
-	elif subgraph != null:
-		var dims := _get_physical_dimensions()
-		var title: String = subgraph.name if not subgraph.name.is_empty() else subgraph.id
-		var role_str: String = "[%s]" % ("SUBSYSTEM" if subgraph.role in ["group", "compound"] else subgraph.role.to_upper())
-		var sub_col := Color("#1abc9c") if subgraph.role == "compound" else Color("#9b59b6")
-
-		# Draw subtle inner outline for subsystem
-		var inset_rect := rect.grow(-3.0)
-		draw_rect(inset_rect, Color(sub_col.r, sub_col.g, sub_col.b, 0.08), true)
-		draw_rect(inset_rect, sub_col, false, 1.2)
-
-		if mid_w >= 70.0:
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 22.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 12, TEXT_COLOR)
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 36.0), role_str, HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 9, sub_col)
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, 50.0), "%.1fm × %.1fm" % [dims.x, dims.y], HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 9, COLOR_FLOW)
-
-			# Internal members manifest preview card
-			var card_y := 58.0
-			var avail_h := size.y - card_y - 20.0
-			if avail_h >= 24.0:
-				var card_rect := Rect2(left_w + 6.0, card_y, mid_w - 12.0, avail_h)
-				draw_rect(card_rect, Color(0.06, 0.1, 0.16, 0.75), true)
-				draw_rect(card_rect, Color(sub_col.r, sub_col.g, sub_col.b, 0.35), false, 1.0)
-
-				var n_elems: int = subgraph.elements.size()
-				var n_conns: int = subgraph.connections.size()
-				var header_text := "INSIDE: %d ENTIT%s" % [n_elems, "IES" if n_elems != 1 else "Y"]
-				if n_conns > 0:
-					header_text += " · %d WIRE%s" % [n_conns, "S" if n_conns != 1 else ""]
-				draw_string(ThemeDB.fallback_font, Vector2(card_rect.position.x + 6.0, card_rect.position.y + 13.0), header_text, HORIZONTAL_ALIGNMENT_LEFT, int(card_rect.size.x - 12.0), 8, Color("#a8d5ba"))
-
-				var line_y := card_rect.position.y + 26.0
-				var max_lines: int = int((avail_h - 18.0) / 13.0)
-				var shown := 0
-				for eid in subgraph.elements:
-					if shown >= max_lines:
-						var remaining := n_elems - shown
-						draw_string(ThemeDB.fallback_font, Vector2(card_rect.position.x + 8.0, line_y), "+ %d more..." % remaining, HORIZONTAL_ALIGNMENT_LEFT, int(card_rect.size.x - 16.0), 8, MUTED_COLOR)
-						break
-					draw_string(ThemeDB.fallback_font, Vector2(card_rect.position.x + 8.0, line_y), "• %s" % str(eid), HORIZONTAL_ALIGNMENT_LEFT, int(card_rect.size.x - 16.0), 8, TEXT_COLOR)
-					line_y += 13.0
-					shown += 1
-
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 8.0, size.y - 6.0), "⤢ Double-click to open", HORIZONTAL_ALIGNMENT_LEFT, int(mid_w - 12.0), 8, Color("#3498db"))
-		elif mid_w >= 28.0:
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 20.0), title, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 10, TEXT_COLOR)
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 34.0), role_str, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 8, sub_col)
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 48.0), "%.1f×%.1f" % [dims.x, dims.y], HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 8, COLOR_FLOW)
-			var n_elems: int = subgraph.elements.size()
-			draw_string(ThemeDB.fallback_font, Vector2(left_w + 4.0, 62.0), "%d items" % n_elems, HORIZONTAL_ALIGNMENT_CENTER, int(mid_w - 8.0), 8, MUTED_COLOR)
+			_draw_scatter_body(title)
 		else:
-			var badge_rect := Rect2(2.0, 2.0, size.x - 4.0, 13.0)
-			draw_rect(badge_rect, Color("#09111be0"), true)
-			draw_rect(badge_rect, sub_col, false, 1.0)
-			var badge_title := "%s [%d]" % [title, subgraph.elements.size()]
-			draw_string(ThemeDB.fallback_font, Vector2(4.0, 12.0), badge_title.strip_edges(), HORIZONTAL_ALIGNMENT_CENTER, int(size.x - 8.0), 8, TEXT_COLOR)
+			if uses_floating_nameplate():
+				# Compact block (e.g. 40×40px Source/Sink): unboxed floating caption above + clean icon/KPI inside
+				_draw_floating_nameplate_caption(title, accent_col)
+				var short_kind := _short_kind_tag(element.kind)
+				draw_string(ThemeDB.fallback_font, Vector2(2.0, 16.0), short_kind, HORIZONTAL_ALIGNMENT_CENTER, int(size.x - 4.0), 9, accent_col)
+				var kpi_compact := _format_compact_kpi()
+				if not kpi_compact.is_empty():
+					draw_string(ThemeDB.fallback_font, Vector2(2.0, size.y - 6.0), kpi_compact, HORIZONTAL_ALIGNMENT_CENTER, int(size.x - 4.0), 9, TEXT_COLOR)
+				else:
+					draw_string(ThemeDB.fallback_font, Vector2(2.0, size.y - 6.0), dim_str, HORIZONTAL_ALIGNMENT_CENTER, int(size.x - 4.0), 8, MUTED_COLOR)
+			else:
+				# Medium/Wide block (size.x >= 68px, e.g. 80×40 Queue/Server): all labels inside the block!
+				if size.y >= 54.0:
+					draw_string(ThemeDB.fallback_font, Vector2(8.0, 19.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(size.x - 16.0), 11, TEXT_COLOR)
+					var sub_str := "%s · %s" % [element.kind.to_upper(), dim_str]
+					if cur_rot > 0.05:
+						sub_str += " · ∡%.0f°" % cur_rot
+					draw_string(ThemeDB.fallback_font, Vector2(8.0, 33.0), sub_str, HORIZONTAL_ALIGNMENT_LEFT, int(size.x - 16.0), 9, MUTED_COLOR)
+					_draw_live_telemetry_bar(38.0)
+				else:
+					# Standard 40px-tall block (e.g. 80×40 Queue/Server): 2 crisp internal rows
+					draw_string(ThemeDB.fallback_font, Vector2(6.0, 16.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(size.x - 12.0), 10, TEXT_COLOR)
+					var kpi_line := _format_compact_kpi()
+					if not kpi_line.is_empty():
+						draw_string(ThemeDB.fallback_font, Vector2(6.0, 31.0), "%s · %s" % [_short_kind_tag(element.kind), kpi_line], HORIZONTAL_ALIGNMENT_LEFT, int(size.x - 12.0), 9, COLOR_FLOW)
+					else:
+						draw_string(ThemeDB.fallback_font, Vector2(6.0, 31.0), "%s · %s" % [_short_kind_tag(element.kind), dim_str], HORIZONTAL_ALIGNMENT_LEFT, int(size.x - 12.0), 9, MUTED_COLOR)
 
-	# 5. Draw Left and Right Port Sockets
-	var socket_r: float = 6.5 if size.y >= 70.0 else clamp(size.y * 0.12, 4.0, 6.0)
+	elif subgraph != null:
+		_draw_subgraph_body(rect)
+
+	# 3. Perimeter Port Sockets & Multi-Wire Bus Badges
+	_draw_perimeter_port_sockets()
+
+func _draw_straight_conveyor_belt(rect: Rect2, is_highlighted: bool) -> void:
+	var dims := _get_physical_dimensions()
+	var dim_str := "%.0f×%.0fm" % [dims.x, dims.y] if (is_equal_approx(dims.x, round(dims.x)) and is_equal_approx(dims.y, round(dims.y))) else "%.1f×%.1fm" % [dims.x, dims.y]
+	var title: String = element.name if not element.name.is_empty() else element.id
+
+	# Selection glow halo
+	if is_highlighted:
+		draw_rect(rect.grow(3.0), Color(0.0, 0.82, 1.0, 0.22), true)
+
+	# 1. Dark rubber belt bed
+	var bed_col := Color("#172736") if is_highlighted else Color("#121b26")
+	draw_rect(rect, bed_col, true)
+
+	# 2. Vertical roller crossbars along belt length
+	var roller_step := 14.0
+	var roller_col := Color(0.22, 0.34, 0.45, 0.55)
+	var rx := 10.0
+	while rx < size.x - 8.0:
+		draw_line(Vector2(rx, 2.0), Vector2(rx, size.y - 2.0), roller_col, 1.0)
+		rx += roller_step
+
+	# 3. Directional flow chevrons (>>>) along belt centerline
+	var cy := size.y * 0.5
+	var chev_step := 30.0
+	var chev_size: float = clampf(size.y * 0.26, 3.5, 7.0)
+	var chev_col := Color(0.18, 0.85, 0.48, 0.85)
+	var cx := 20.0
+	while cx < size.x - 16.0:
+		var tip := Vector2(cx + chev_size * 0.7, cy)
+		var wing_t := Vector2(cx - chev_size * 0.6, cy - chev_size)
+		var wing_b := Vector2(cx - chev_size * 0.6, cy + chev_size)
+		draw_polyline(PackedVector2Array([wing_t, tip, wing_b]), chev_col, 1.6, true)
+		cx += chev_step
+
+	# 4. Top & Bottom Steel Side Rails
+	var rail_col := Color("#52c7a5") if is_highlighted else Color("#2a9d8f")
+	draw_line(Vector2(0.0, 1.0), Vector2(size.x, 1.0), rail_col, 2.2)
+	draw_line(Vector2(0.0, size.y - 1.0), Vector2(size.x, size.y - 1.0), rail_col, 2.2)
+	draw_line(Vector2(0.5, 0.0), Vector2(0.5, size.y), Color(rail_col.r, rail_col.g, rail_col.b, 0.6), 1.2)
+	draw_line(Vector2(size.x - 0.5, 0.0), Vector2(size.x - 0.5, size.y), Color(rail_col.r, rail_col.g, rail_col.b, 0.6), 1.2)
+
+	# 5. Floating Nameplate & Live Telemetry above the Top Rail (keeps belt centerline 100% clear for products!)
+	var kpi_txt := _format_compact_kpi()
+	var label_txt := "%s  %s" % [title, kpi_txt] if not kpi_txt.is_empty() else "%s · %s" % [title, dim_str]
+	var font := ThemeDB.fallback_font
+	var fsize := 10
+	var tw: float = font.get_string_size(label_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, fsize).x
+	var tx: float = (size.x - tw) * 0.5
+	draw_string(font, Vector2(tx, -10.0), label_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, fsize, TEXT_COLOR)
+
+func _draw_conveyor_midpoint_pill(_rect: Rect2, _is_highlighted: bool) -> void:
+	var title: String = element.name if (element != null and not element.name.is_empty()) else (element.id if element != null else "CONV")
+	var kpi := _format_compact_kpi()
+	var text_line := "%s  %s" % [title, kpi] if not kpi.is_empty() else title
+	var font := ThemeDB.fallback_font
+	var fsize := 10
+	var tw: float = font.get_string_size(text_line, HORIZONTAL_ALIGNMENT_LEFT, -1, fsize).x
+	draw_string(font, Vector2((size.x - tw) * 0.5, -10.0), text_line.strip_edges(), HORIZONTAL_ALIGNMENT_LEFT, -1, fsize, TEXT_COLOR)
+
+func _draw_floating_nameplate_caption(title: String, _accent_col: Color) -> void:
+	# Clean unboxed floating text caption above compact 40×40px blocks (never a bordered box!)
+	var font := ThemeDB.fallback_font
+	var fsize := 9
+	var ts := font.get_string_size(title, HORIZONTAL_ALIGNMENT_LEFT, -1, fsize)
+	var w := clampf(ts.x + 8.0, 44.0, 140.0)
+	var tx := (size.x - w) * 0.5
+	var ty := -5.0
+	draw_string(font, Vector2(tx + 1.0, ty + 1.0), title, HORIZONTAL_ALIGNMENT_CENTER, int(w), fsize, Color(0.0, 0.0, 0.0, 0.85))
+	draw_string(font, Vector2(tx, ty), title, HORIZONTAL_ALIGNMENT_CENTER, int(w), fsize, TEXT_COLOR)
+
+func _short_kind_tag(k: String) -> String:
+	match k:
+		"source": return "SRC"
+		"queue": return "QUEUE"
+		"server": return "SRV"
+		"conveyor": return "CONV"
+		"sink": return "SINK"
+		_: return k.to_upper().substr(0, 5)
+
+func _format_compact_kpi() -> String:
+	if live_metrics.is_empty():
+		return ""
+	var badge_str: String = str(live_metrics.get("badge", ""))
+	if not badge_str.is_empty():
+		return badge_str
+	if element != null:
+		match element.kind:
+			"source":
+				if live_metrics.has("spawned_count"):
+					return "n=%d" % int(live_metrics.get("spawned_count", 0))
+			"queue":
+				if live_metrics.has("queue_length"):
+					return "Q=%d" % int(live_metrics.get("queue_length", 0))
+			"server":
+				if live_metrics.has("utilization_pct"):
+					return "%.0f%%" % float(live_metrics.get("utilization_pct", 0.0))
+			"conveyor":
+				if live_metrics.has("items_in_transit"):
+					return "%d items" % int(live_metrics.get("items_in_transit", 0))
+			"sink":
+				if live_metrics.has("completed_count"):
+					return "Σ=%d" % int(live_metrics.get("completed_count", 0))
+	return ""
+
+func _draw_live_telemetry_bar(y_pos: float) -> void:
+	if live_metrics.is_empty():
+		return
+	var badge_str: String = _format_compact_kpi()
+	if badge_str.is_empty():
+		return
+	var badge_col := Color("#2ecc71")
+	var s_state: String = str(live_metrics.get("state", ""))
+	if s_state == "BUSY": badge_col = Color("#e74c3c")
+	elif s_state == "DOWN": badge_col = Color("#e67e22")
+	elif s_state == "IDLE": badge_col = Color("#95a5a6")
+	elif s_state == "PARTIAL": badge_col = Color("#f1c40f")
+	draw_string(ThemeDB.fallback_font, Vector2(8.0, min(size.y - 6.0, y_pos + 10.0)), badge_str, HORIZONTAL_ALIGNMENT_LEFT, int(size.x - 16.0), 9, badge_col)
+
+func _draw_perimeter_port_sockets() -> void:
+	var socket_r: float = 5.5
 	for port_id in _port_sockets.keys():
+		if not should_show_port_socket(port_id):
+			continue
 		var p_info: Dictionary = _port_sockets[port_id]
 		var p_pos: Vector2 = p_info["pos"]
 		var p_kind: String = p_info["kind"]
 		var is_out: bool = p_info["is_output"]
 		var is_hovered: bool = (port_id == hovered_port_id)
+		var conn_cnt: int = int(port_connection_counts.get(port_id, 0))
 
 		var p_col: Color = get_port_kind_color(p_kind)
 		var bg_col := Color(p_col.r * 0.18, p_col.g * 0.18, p_col.b * 0.18, 0.95)
@@ -1031,32 +955,121 @@ func _draw() -> void:
 			draw_arc(p_pos, socket_r + 4.0, 0, TAU, 16, Color.WHITE, 1.5)
 
 		draw_circle(p_pos, socket_r, bg_col)
-		draw_arc(p_pos, socket_r, 0, TAU, 14, p_col, 1.2)
+		draw_arc(p_pos, socket_r, 0, TAU, 14, p_col, 1.4)
 		if is_many:
-			var sq_r := socket_r * 0.45
+			var sq_r := socket_r * 0.44
 			draw_rect(Rect2(p_pos.x - sq_r, p_pos.y - sq_r, sq_r * 2.0, sq_r * 2.0), Color.WHITE if is_out else p_col, true)
 		else:
-			draw_circle(p_pos, socket_r * 0.5, Color.WHITE if is_out else p_col)
+			draw_circle(p_pos, socket_r * 0.48, Color.WHITE if is_out else p_col)
 
-	# 6. Bottom Port Buttons ([+] and [-]) when spacious
-	if element != null and not layout["collapsed"] and size.y >= 50.0:
-		var btn_h := 16.0
-		var btn_y := size.y - btn_h - 4.0
-		var col_btn_sub := Color("#e74c3c")
+		# Multi-Wire Bus Count Badge (×N) when conn_cnt > 1
+		if conn_cnt > 1:
+			var b_rect := _get_port_badge_rect(port_id)
+			if b_rect.size != Vector2.ZERO:
+				var badge_bg := Color("#3d1f09f0") if conn_cnt > 32 else Color("#0d261cf0")
+				var badge_border := Color("#f39c12") if conn_cnt > 32 else p_col
+				draw_rect(b_rect, badge_bg, true)
+				draw_rect(b_rect, badge_border, false, 1.0)
+				draw_string(ThemeDB.fallback_font, Vector2(b_rect.position.x + 2.0, b_rect.position.y + 10.0), "×%d" % conn_cnt, HORIZONTAL_ALIGNMENT_CENTER, int(b_rect.size.x - 4.0), 8, Color.WHITE)
 
-		_draw_port_btn_pair(Rect2(2.0, btn_y, 13.0, btn_h), Rect2(16.0, btn_y, 13.0, btn_h), Color("#2ecc71"), col_btn_sub)
-		_draw_port_btn_pair(Rect2(32.0, btn_y, 13.0, btn_h), Rect2(46.0, btn_y, 13.0, btn_h), Color("#a8d5ba"), col_btn_sub)
-		_draw_port_btn_pair(Rect2(size.x - 62.0, btn_y, 13.0, btn_h), Rect2(size.x - 48.0, btn_y, 13.0, btn_h), COLOR_SIGNAL, col_btn_sub)
-		_draw_port_btn_pair(Rect2(size.x - 30.0, btn_y, 13.0, btn_h), Rect2(size.x - 16.0, btn_y, 13.0, btn_h), COLOR_METRIC, col_btn_sub)
+func _draw_chart_station_body(title: String) -> void:
+	var subplots: Array = element.properties.get("subplots", [])
+	var badge_str: String = "[%d Subplots]" % subplots.size()
+	draw_string(ThemeDB.fallback_font, Vector2(8.0, 18.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(size.x - 80.0), 10, TEXT_COLOR)
+	draw_string(ThemeDB.fallback_font, Vector2(size.x - 70.0, 18.0), badge_str, HORIZONTAL_ALIGNMENT_RIGHT, 64, 9, COLOR_SIGNAL)
 
+	var y_cursor: float = 34.0
+	for i in range(subplots.size()):
+		var sp = subplots[i]
+		var sp_port: String = str(sp.get("port_id", "P%d" % (i + 1)))
+		var sp_type: String = str(sp.get("type", "time_series"))
+		var sp_title: String = str(sp.get("title", "Subplot %d" % (i + 1)))
 
-func _draw_port_btn_pair(r_add: Rect2, r_sub: Rect2, add_col: Color, sub_col: Color) -> void:
-	# Add button [+]
-	draw_rect(r_add, Color("#172333"), true)
-	draw_rect(r_add, BORDER_NORMAL, false, 1.0)
-	draw_string(ThemeDB.fallback_font, Vector2(r_add.position.x + 3.0, r_add.position.y + 12.0), "+", HORIZONTAL_ALIGNMENT_CENTER, -1, 11, add_col)
+		var row_rect := Rect2(6.0, y_cursor - 10.0, size.x - 12.0, 24.0)
+		draw_rect(row_rect, Color("#0d131a"), true)
+		draw_rect(row_rect, Color("#222d3d"), false, 1.0)
 
-	# Remove button [-]
-	draw_rect(r_sub, Color("#172333"), true)
-	draw_rect(r_sub, BORDER_NORMAL, false, 1.0)
-	draw_string(ThemeDB.fallback_font, Vector2(r_sub.position.x + 3.0, r_sub.position.y + 11.0), "−", HORIZONTAL_ALIGNMENT_CENTER, -1, 11, sub_col)
+		var type_short: String = "SCOPE"
+		if sp_type == "digital_gauge": type_short = "GAUGE"
+		elif sp_type == "histogram": type_short = "HIST"
+		elif sp_type == "xy_scatter": type_short = "SCATTER"
+		elif sp_type == "state_space_3d": type_short = "3D"
+
+		var line_txt := "%s [%s] %s" % [sp_port, type_short, sp_title]
+		draw_string(ThemeDB.fallback_font, Vector2(10.0, y_cursor + 5.0), line_txt, HORIZONTAL_ALIGNMENT_LEFT, int(size.x - 20.0), 9, Color("#8b949e"))
+		y_cursor += 28.0
+
+func _draw_scope_2d_body(title: String) -> void:
+	var screen_rect := Rect2(8.0, 24.0, max(10.0, size.x - 16.0), max(10.0, size.y - 32.0))
+	draw_rect(screen_rect, Color("#071018"), true)
+	draw_rect(screen_rect, Color("#1f6feb80"), false, 1.5)
+	var mid_y := screen_rect.position.y + screen_rect.size.y * 0.5
+	draw_line(Vector2(screen_rect.position.x, mid_y), Vector2(screen_rect.position.x + screen_rect.size.x, mid_y), Color(0.12, 0.3, 0.5, 0.3), 1.0)
+	var s_max: float = 1.0
+	for v in signal_history:
+		s_max = max(s_max, float(v))
+	if signal_history.size() >= 2:
+		var s_pts := PackedVector2Array()
+		var s_step: float = screen_rect.size.x / max(1.0, float(signal_history.size() - 1))
+		for i in range(signal_history.size()):
+			var sx: float = screen_rect.position.x + float(i) * s_step
+			var sy: float = screen_rect.position.y + screen_rect.size.y - (clamp(float(signal_history[i]) / max(0.001, s_max), 0.0, 1.0) * (screen_rect.size.y - 8.0)) - 4.0
+			s_pts.append(Vector2(sx, sy))
+		draw_polyline(s_pts, Color("#00d2ff"), 2.0, true)
+		draw_circle(s_pts[-1], 3.0, Color("#58a6ff"))
+	var latest_val: float = float(signal_history.back()) if not signal_history.is_empty() else 0.0
+	var y_label: String = str(element.properties.get("y_label", "Signal"))
+	draw_string(ThemeDB.fallback_font, Vector2(8.0, 18.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(size.x - 80.0), 10, TEXT_COLOR)
+	draw_string(ThemeDB.fallback_font, Vector2(screen_rect.position.x + screen_rect.size.x - 70.0, 18.0), "%.1f %s" % [latest_val, y_label], HORIZONTAL_ALIGNMENT_RIGHT, 70, 10, Color("#00d2ff"))
+
+func _draw_digital_meter_body(title: String) -> void:
+	var screen_rect := Rect2(8.0, 24.0, max(10.0, size.x - 16.0), max(10.0, size.y - 32.0))
+	draw_rect(screen_rect, Color("#07120b"), true)
+	draw_rect(screen_rect, Color("#238636a0"), false, 1.5)
+	var latest_val: float = float(signal_history.back()) if not signal_history.is_empty() else 0.0
+	var meter_unit: String = str(element.properties.get("unit", ""))
+	var disp_str := "%.1f %s" % [latest_val, meter_unit]
+	draw_string(ThemeDB.fallback_font, Vector2(8.0, 18.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(size.x - 16.0), 10, TEXT_COLOR)
+	draw_string(ThemeDB.fallback_font, Vector2(screen_rect.position.x, screen_rect.position.y + screen_rect.size.y * 0.68), disp_str.strip_edges(), HORIZONTAL_ALIGNMENT_CENTER, int(screen_rect.size.x), 16, Color("#3fb950"))
+
+func _draw_histogram_sink_body(title: String) -> void:
+	var screen_rect := Rect2(8.0, 24.0, max(10.0, size.x - 16.0), max(10.0, size.y - 32.0))
+	draw_rect(screen_rect, Color("#0e0818"), true)
+	draw_rect(screen_rect, Color("#8957e580"), false, 1.2)
+	var n_bars := 9
+	var b_width: float = (screen_rect.size.x - 4.0) / float(n_bars)
+	for b_idx in range(n_bars):
+		var bar_h: float = (sin(float(b_idx) * 0.7 + 0.4) * 0.5 + 0.5) * (screen_rect.size.y - 10.0)
+		var bx: float = screen_rect.position.x + 2.0 + float(b_idx) * b_width
+		var by: float = screen_rect.position.y + screen_rect.size.y - bar_h - 2.0
+		draw_rect(Rect2(bx, by, max(1.0, b_width - 2.0), bar_h), Color("#bc8cffaa"), true)
+	draw_string(ThemeDB.fallback_font, Vector2(8.0, 18.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(size.x - 16.0), 10, TEXT_COLOR)
+
+func _draw_scatter_body(title: String) -> void:
+	var screen_rect := Rect2(8.0, 24.0, max(10.0, size.x - 16.0), max(10.0, size.y - 32.0))
+	draw_rect(screen_rect, Color("#151107"), true)
+	draw_rect(screen_rect, Color("#d2992280"), false, 1.2)
+	var cx := screen_rect.position.x + screen_rect.size.x * 0.5
+	var cy := screen_rect.position.y + screen_rect.size.y * 0.5
+	draw_line(Vector2(cx, screen_rect.position.y), Vector2(cx, screen_rect.position.y + screen_rect.size.y), Color(0.4, 0.35, 0.1, 0.4), 1.0)
+	draw_line(Vector2(screen_rect.position.x, cy), Vector2(screen_rect.position.x + screen_rect.size.x, cy), Color(0.4, 0.35, 0.1, 0.4), 1.0)
+	draw_circle(Vector2(cx + 10.0, cy - 8.0), 3.5, Color("#d29922"))
+	draw_string(ThemeDB.fallback_font, Vector2(8.0, 18.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(size.x - 16.0), 10, TEXT_COLOR)
+
+func _draw_subgraph_body(rect: Rect2) -> void:
+	var dims := _get_physical_dimensions()
+	var title: String = subgraph.name if not subgraph.name.is_empty() else subgraph.id
+	var role_str: String = "[%s]" % ("SUBSYSTEM" if subgraph.role in ["group", "compound"] else subgraph.role.to_upper())
+	var sub_col := Color("#1abc9c") if subgraph.role == "compound" else Color("#9b59b6")
+
+	var inset_rect := rect.grow(-3.0)
+	draw_rect(inset_rect, Color(sub_col.r, sub_col.g, sub_col.b, 0.08), true)
+	draw_rect(inset_rect, sub_col, false, 1.2)
+
+	if uses_floating_nameplate():
+		_draw_floating_nameplate_caption(title, sub_col)
+		draw_string(ThemeDB.fallback_font, Vector2(4.0, size.y * 0.55), "SUB [%d]" % subgraph.elements.size(), HORIZONTAL_ALIGNMENT_CENTER, int(size.x - 8.0), 9, sub_col)
+	else:
+		draw_string(ThemeDB.fallback_font, Vector2(8.0, 20.0), title, HORIZONTAL_ALIGNMENT_LEFT, int(size.x - 16.0), 11, TEXT_COLOR)
+		draw_string(ThemeDB.fallback_font, Vector2(8.0, 34.0), "%s · %.1f×%.1fm (%d items)" % [role_str, dims.x, dims.y, subgraph.elements.size()], HORIZONTAL_ALIGNMENT_LEFT, int(size.x - 16.0), 9, sub_col)
+

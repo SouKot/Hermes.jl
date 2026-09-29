@@ -105,11 +105,11 @@ func _register_defaults() -> void:
 	conv.default_elevation_end = 0.8
 	conv.color = Color("#2ecc71")
 	conv.default_input_ports = [
-		{"id": "flow_in", "kind": "flow", "direction": "input", "cardinality": "one", "name": "Flow In"},
+		{"id": "flow_in", "kind": "flow", "direction": "input", "cardinality": "many", "name": "Flow In"},
 		{"id": "speed_signal", "kind": "signal", "direction": "input", "cardinality": "one", "name": "Speed Signal"}
 	]
 	conv.default_output_ports = [
-		{"id": "flow_out", "kind": "flow", "direction": "output", "cardinality": "one", "name": "Flow Out"}
+		{"id": "flow_out", "kind": "flow", "direction": "output", "cardinality": "many", "name": "Flow Out"}
 	]
 	conv.default_metric_ports = [
 		{"id": "occupancy", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Occupancy"},
@@ -141,10 +141,11 @@ func _register_defaults() -> void:
 	queue.default_elevation_end = 0.8
 	queue.color = Color("#3498db")
 	queue.default_input_ports = [
-		{"id": "flow_in", "kind": "flow", "direction": "input", "cardinality": "many", "name": "Flow In"}
+		{"id": "flow_in", "kind": "flow", "direction": "input", "cardinality": "many", "name": "Flow In"},
+		{"id": "release_signal", "kind": "signal", "direction": "input", "cardinality": "one", "name": "Release / Gate Signal"}
 	]
 	queue.default_output_ports = [
-		{"id": "flow_out", "kind": "flow", "direction": "output", "cardinality": "one", "name": "Flow Out"}
+		{"id": "flow_out", "kind": "flow", "direction": "output", "cardinality": "many", "name": "Flow Out"}
 	]
 	queue.default_metric_ports = [
 		{"id": "occupancy", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Buffer Occupancy"},
@@ -174,11 +175,11 @@ func _register_defaults() -> void:
 	server.default_elevation_end = 0.8
 	server.color = Color("#e67e22")
 	server.default_input_ports = [
-		{"id": "flow_in", "kind": "flow", "direction": "input", "cardinality": "one", "name": "Flow In"},
+		{"id": "flow_in", "kind": "flow", "direction": "input", "cardinality": "many", "name": "Flow In"},
 		{"id": "pause_signal", "kind": "signal", "direction": "input", "cardinality": "one", "name": "Pause Signal"}
 	]
 	server.default_output_ports = [
-		{"id": "flow_out", "kind": "flow", "direction": "output", "cardinality": "one", "name": "Flow Out"}
+		{"id": "flow_out", "kind": "flow", "direction": "output", "cardinality": "many", "name": "Flow Out"}
 	]
 	server.default_metric_ports = [
 		{"id": "utilization", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Utilization"},
@@ -275,7 +276,7 @@ func _register_defaults() -> void:
 	source.color = Color("#27ae60")
 	source.default_input_ports = []
 	source.default_output_ports = [
-		{"id": "flow_out", "kind": "flow", "direction": "output", "cardinality": "one", "name": "Flow Out"}
+		{"id": "flow_out", "kind": "flow", "direction": "output", "cardinality": "many", "name": "Flow Out"}
 	]
 	source.default_metric_ports = [
 		{"id": "generation_count", "kind": "metric", "direction": "output", "cardinality": "many", "name": "Generated Count"}
@@ -485,7 +486,7 @@ func _register_defaults() -> void:
 	portal.default_elevation_end = 0.0
 	portal.color = Color("#9b59b6")
 	portal.default_input_ports = [
-		{"id": "flow_in", "kind": "flow", "direction": "input", "cardinality": "one", "name": "DES In"},
+		{"id": "flow_in", "kind": "flow", "direction": "input", "cardinality": "many", "name": "DES In"},
 		{"id": "gate_control", "kind": "control", "direction": "input", "cardinality": "one", "name": "Gate Control"}
 	]
 	portal.default_output_ports = [

@@ -44,6 +44,9 @@ var is_document_valid: bool = true
 func _init() -> void:
 	new_document()
 
+func create_new_document() -> void:
+	new_document()
+
 func new_document() -> void:
 	active_document = SceneTypes.SceneDocument.new()
 	active_document.spec_version = "1.0.0"
@@ -690,8 +693,10 @@ func remove_elements(ids: Array) -> void:
 	if id_set.has(selected_id) or selected_type == "element":
 		clear_selection()
 
+	_normalize_all_port_channel_orderings()
 	validate()
 	document_modified.emit()
+	return
 
 func duplicate_element(elem_id: String) -> SceneTypes.SceneElement:
 	var elem := get_element(elem_id)
@@ -880,7 +885,19 @@ func update_element_geometry_and_position(elem_id: String, new_dims: Vector3, ne
 
 func add_connection(conn: SceneTypes.SceneConnection) -> void:
 	_record_undo()
-	active_document.connections.append(conn)
+	if active_document != null:
+		# Assign next sequential channel index before normalizing
+		var out_cnt := 0
+		var in_cnt := 0
+		for c in active_document.connections:
+			if c.source_element == conn.source_element and c.source_port == conn.source_port:
+				out_cnt += 1
+			if c.target_element == conn.target_element and c.target_port == conn.target_port:
+				in_cnt += 1
+		if conn.ordering <= 1 and (out_cnt > 0 or in_cnt > 0):
+			conn.ordering = maxi(out_cnt, in_cnt) + 1
+		active_document.connections.append(conn)
+		_normalize_all_port_channel_orderings()
 	validate()
 	document_modified.emit()
 
@@ -903,8 +920,132 @@ func remove_connection(conn_id: String) -> void:
 			break
 	if selected_id == conn_id:
 		clear_selection()
+	_normalize_all_port_channel_orderings()
 	validate()
 	document_modified.emit()
+
+func _normalize_all_port_channel_orderings() -> void:
+	if active_document == null:
+		return
+	var out_groups: Dictionary = {} # "elem:port" -> Array[Dictionary{conn, idx}]
+	var in_groups: Dictionary = {}  # "elem:port" -> Array[Dictionary{conn, idx}]
+	for i in range(active_document.connections.size()):
+		var c: SceneTypes.SceneConnection = active_document.connections[i]
+		var out_key := "%s:%s" % [c.source_element, c.source_port]
+		var in_key := "%s:%s" % [c.target_element, c.target_port]
+		if not out_groups.has(out_key):
+			out_groups[out_key] = []
+		out_groups[out_key].append({"conn": c, "idx": i})
+		if not in_groups.has(in_key):
+			in_groups[in_key] = []
+		in_groups[in_key].append({"conn": c, "idx": i})
+
+	# 1. Renumber output port groups 1..N stably
+	for out_key in out_groups.keys():
+		var items: Array = out_groups[out_key]
+		items.sort_custom(func(a, b):
+			if a["conn"].ordering != b["conn"].ordering:
+				return a["conn"].ordering < b["conn"].ordering
+			return a["idx"] < b["idx"]
+		)
+		for k in range(items.size()):
+			var c: SceneTypes.SceneConnection = items[k]["conn"]
+			var in_key := "%s:%s" % [c.target_element, c.target_port]
+			var in_cnt: int = in_groups.get(in_key, []).size()
+			if items.size() > 1 or in_cnt <= 1:
+				c.ordering = k + 1
+
+	# 2. Renumber input port groups 1..N stably when fan-in > 1
+	for in_key in in_groups.keys():
+		var items: Array = in_groups[in_key]
+		if items.size() <= 1:
+			continue
+		items.sort_custom(func(a, b):
+			if a["conn"].ordering != b["conn"].ordering:
+				return a["conn"].ordering < b["conn"].ordering
+			return a["idx"] < b["idx"]
+		)
+		for k in range(items.size()):
+			var c: SceneTypes.SceneConnection = items[k]["conn"]
+			var out_key := "%s:%s" % [c.source_element, c.source_port]
+			var out_cnt: int = out_groups.get(out_key, []).size()
+			if out_cnt <= 1:
+				c.ordering = k + 1
+
+func get_port_connections(elem_id: String, port_id: String, is_output: bool) -> Array:
+	if active_document == null:
+		return []
+	var items: Array = []
+	for i in range(active_document.connections.size()):
+		var c: SceneTypes.SceneConnection = active_document.connections[i]
+		if is_output:
+			if c.source_element == elem_id and c.source_port == port_id:
+				items.append({"conn": c, "idx": i})
+		else:
+			if c.target_element == elem_id and c.target_port == port_id:
+				items.append({"conn": c, "idx": i})
+	items.sort_custom(func(a, b):
+		if a["conn"].ordering != b["conn"].ordering:
+			return a["conn"].ordering < b["conn"].ordering
+		return a["idx"] < b["idx"]
+	)
+	var result: Array = []
+	for it in items:
+		result.append(it["conn"])
+	return result
+
+func reorder_port_channel(elem_id: String, port_id: String, is_output: bool, conn_id_or_idx: Variant, new_index_1based: int) -> bool:
+	if active_document == null:
+		return false
+	var conns := get_port_connections(elem_id, port_id, is_output)
+	if conns.size() <= 1:
+		return false
+	var old_idx := -1
+	if conn_id_or_idx is int:
+		old_idx = int(conn_id_or_idx) - 1
+	else:
+		var cid_str := str(conn_id_or_idx)
+		for i in range(conns.size()):
+			if conns[i].id == cid_str:
+				old_idx = i
+				break
+	if old_idx < 0 or old_idx >= conns.size():
+		return false
+	var target_idx := clampi(new_index_1based - 1, 0, conns.size() - 1)
+	if old_idx == target_idx:
+		return false
+
+	_record_undo()
+	var moved_conn: SceneTypes.SceneConnection = conns[old_idx]
+	conns.remove_at(old_idx)
+	conns.insert(target_idx, moved_conn)
+
+	# Assign contiguous 1..N ordering and update relative positions in active_document.connections
+	var doc_indices: Array[int] = []
+	var port_conn_ids: Dictionary = {}
+	for c in conns:
+		port_conn_ids[c.id] = true
+	for i in range(active_document.connections.size()):
+		if port_conn_ids.has(active_document.connections[i].id):
+			doc_indices.append(i)
+	for k in range(conns.size()):
+		conns[k].ordering = k + 1
+		if k < doc_indices.size():
+			active_document.connections[doc_indices[k]] = conns[k]
+
+	_normalize_all_port_channel_orderings()
+	validate()
+	document_modified.emit()
+	return true
+
+func delete_port_channel_by_index(elem_id: String, port_id: String, is_output: bool, index_1based: int) -> bool:
+	var conns := get_port_connections(elem_id, port_id, is_output)
+	var idx := index_1based - 1
+	if idx < 0 or idx >= conns.size():
+		return false
+	var target_conn: SceneTypes.SceneConnection = conns[idx]
+	remove_connection(target_conn.id)
+	return true
 
 func add_port_to_element(elem_id: String, port: SceneTypes.ScenePort) -> bool:
 	var elem := get_element(elem_id)

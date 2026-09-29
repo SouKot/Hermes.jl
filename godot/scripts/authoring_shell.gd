@@ -78,6 +78,7 @@ var _btn_breadcrumb_exit: Button
 var _btn_group: Button
 var _btn_ungroup: Button
 var _btn_template: Button
+var _btn_wires: Button
 
 # Left Dock
 var _catalog_container: VBoxContainer
@@ -184,6 +185,10 @@ func _connect_signals() -> void:
 	_diagnostics_panel.fix_requested.connect(_on_diagnostic_fix_requested)
 	if _canvas_2d != null:
 		_canvas_2d.floating_properties_requested.connect(_on_floating_properties_requested)
+		_canvas_2d.wire_visibility_mode_changed.connect(func(_m: int, _lbl: String = ""):
+			if _btn_wires != null and _canvas_2d != null:
+				_btn_wires.text = "🔗 Wires: %s (W)" % _canvas_2d.get_wire_visibility_label()
+		)
 	if _viewport_3d != null:
 		_viewport_3d.floating_properties_requested.connect(_on_floating_properties_requested)
 	if _inspector_panel != null:
@@ -584,6 +589,17 @@ func _build_header() -> Control:
 			_viewport_3d.frame_scene()
 	)
 	row.add_child(btn_frame)
+
+	# Wire Visibility 3-mode toggle button (All | Focus | Off)
+	_btn_wires = Button.new()
+	_btn_wires.text = "🔗 Wires: All (W)"
+	_btn_wires.tooltip_text = "Cycle 2D connection wire visibility: All | Focus (Selected/Hovered) | Off (Shortcut: W)"
+	_btn_wires.pressed.connect(func():
+		if _canvas_2d != null:
+			_canvas_2d.cycle_wire_visibility_mode()
+			_btn_wires.text = "🔗 Wires: %s (W)" % _canvas_2d.get_wire_visibility_label()
+	)
+	row.add_child(_btn_wires)
 
 	_btn_plots = Button.new()
 	_btn_plots.text = "📈 Charts"

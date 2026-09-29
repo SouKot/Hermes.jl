@@ -212,14 +212,11 @@ func rebuild_3d_scene() -> void:
 		var pz: float = float(elem.transform.position[2])
 		var dims: Vector3 = MeshFactory.get_dims(elem, Vector3(2.0, 1.5, 1.0))
 		anchor.position = Vector3(px, pz, -py)
-		if elem.kind == "conveyor":
-			anchor.rotation_degrees.y = 0.0
-		else:
-			anchor.rotation_degrees.y = -float(elem.transform.rotation.z)
+		anchor.rotation_degrees.y = -float(elem.transform.rotation.z)
 
-		var node_3d := MeshFactory.create_3d_node_for_element(elem, doc_store)
+		var node_3d := MeshFactory.create_3d_node_for_element(elem)
 		node_3d.name = "Elem3D_" + elem.id
-		node_3d.position = Vector3.ZERO if elem.kind == "conveyor" else Vector3(0, 0, -dims.y * 0.5)
+		node_3d.position = Vector3(0, 0, -dims.y * 0.5)
 		anchor.add_child(node_3d)
 
 		_entities_root.add_child(anchor)
@@ -662,6 +659,9 @@ func update_agent_telemetry(agents: Array) -> void:
 			_agent_smoothed_transforms.erase(old_id)
 			_agent_target_transforms.erase(old_id)
 			_agent_colors.erase(old_id)
+
+	if not is_inside_tree():
+		_process(1.0)
 
 func set_follow_camera(active: bool, agent_id: String = "") -> void:
 	is_follow_camera_active = active

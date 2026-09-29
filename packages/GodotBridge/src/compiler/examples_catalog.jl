@@ -79,8 +79,25 @@ function _ex_elem(
 )::Dict{String, Any}
     in_ports = Dict{String, Any}[]
     out_ports = Dict{String, Any}[]
+    met_ports = Dict{String, Any}[]
     if kind in ("queue", "server", "conveyor", "sink", "hybrid_gate")
         push!(in_ports, _ex_port("flow_in", "Flow In", "input"; cardinality="many"))
+    end
+    if kind == "queue"
+        push!(in_ports, _ex_port("release_signal", "Release / Gate Signal", "input"; kind="signal", cardinality="one"))
+        push!(met_ports, _ex_port("occupancy", "Buffer Occupancy", "output"; kind="metric", cardinality="many"))
+        push!(met_ports, _ex_port("length", "Queue Length", "output"; kind="metric", cardinality="many"))
+        push!(met_ports, _ex_port("wait_time", "Avg Wait Time", "output"; kind="metric", cardinality="many"))
+    elseif kind == "server"
+        push!(in_ports, _ex_port("pause_signal", "Pause Signal", "input"; kind="signal", cardinality="one"))
+        push!(met_ports, _ex_port("utilization", "Utilization", "output"; kind="metric", cardinality="many"))
+        push!(met_ports, _ex_port("busy", "Busy Channels", "output"; kind="metric", cardinality="many"))
+        push!(met_ports, _ex_port("throughput", "Throughput", "output"; kind="metric", cardinality="many"))
+    elseif kind == "conveyor"
+        push!(in_ports, _ex_port("speed_signal", "Speed Signal", "input"; kind="signal", cardinality="one"))
+        push!(met_ports, _ex_port("occupancy", "Occupancy", "output"; kind="metric", cardinality="many"))
+        push!(met_ports, _ex_port("speed", "Speed", "output"; kind="metric", cardinality="many"))
+        push!(met_ports, _ex_port("in_transit", "In-Transit Count", "output"; kind="metric", cardinality="many"))
     end
     if kind in ("source", "queue", "server", "conveyor", "crowd_spawner", "hybrid_gate")
         push!(out_ports, _ex_port("flow_out", "Flow Out", "output"; cardinality="many"))
@@ -110,7 +127,7 @@ function _ex_elem(
         "properties" => props,
         "input_ports" => in_ports,
         "output_ports" => out_ports,
-        "metric_ports" => Dict{String, Any}[]
+        "metric_ports" => met_ports
     )
 end
 

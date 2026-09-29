@@ -223,6 +223,17 @@ function build_snapshot(
                         curve = ir.conveyor_curves[elem_id]::BakedConveyorCurve
                         pos_3d, tan_3d = sample_conveyor_curve(curve, prog_val)
                         pos_x, pos_y, pos_z = pos_3d[1], pos_3d[2], pos_3d[3]
+                        if curve.preset == :straight
+                            if (abs(curve.inlet_pose.pos[1] - base_pos[1]) < 1e-3 && abs(curve.inlet_pose.pos[2] - base_pos[2]) < 1e-3) ||
+                               (abs(curve.outlet_pose.pos[1] - base_pos[1]) < 1e-3 && abs(curve.outlet_pose.pos[2] - base_pos[2]) < 1e-3)
+                                if abs(tan_3d[2]) < 1e-3
+                                    pos_y += dim[2] * 0.5
+                                else
+                                    pos_x += -tan_3d[2] * (dim[2] * 0.5)
+                                    pos_y +=  tan_3d[1] * (dim[2] * 0.5)
+                                end
+                            end
+                        end
                         spd_nom = (conv_node isa IRConveyorNode) ? conv_node.speed : (curve.total_length / max(0.001, transit_tau))
                         vel_x = tan_3d[1] * spd_nom
                         vel_y = tan_3d[2] * spd_nom

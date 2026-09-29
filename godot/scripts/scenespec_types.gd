@@ -518,6 +518,21 @@ class SceneElement extends SceneExtensible:
 		elem.output_ports = _parse_ports(d.get("output_ports", []))
 		elem.metric_ports = _parse_ports(d.get("metric_ports", []))
 
+		if elem.kind == "queue" and elem.input_ports.size() > 0:
+			var has_sig := false
+			for p in elem.input_ports:
+				if p.kind == "signal":
+					has_sig = true
+					break
+			if not has_sig:
+				elem.input_ports.append(ScenePort.from_dict({
+					"id": "release_signal",
+					"kind": "signal",
+					"direction": "input",
+					"cardinality": "one",
+					"name": "Release / Gate Signal"
+				}))
+
 		if d.has("vertical_extent"):
 			elem.vertical_extent = d["vertical_extent"].duplicate(true) if d["vertical_extent"] is Dictionary else d["vertical_extent"]
 		if d.has("visual"):

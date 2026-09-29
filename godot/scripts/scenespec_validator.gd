@@ -673,6 +673,7 @@ func _validate_connections_and_ports(doc: RefCounted, diagnostics: Array, elems_
 			if card == "one" and count > 1:
 				diagnostics.append({
 					"rule_id": "PORT_004_CARDINALITY_EXCEEDED",
+					"code": "PORT_004_CARDINALITY_EXCEEDED",
 					"severity": "error",
 					"object_kind": "port",
 					"object_id": pid,
@@ -680,9 +681,32 @@ func _validate_connections_and_ports(doc: RefCounted, diagnostics: Array, elems_
 					"message": "Input port '%s' on element '%s' has cardinality 'one' but receives %d incoming connections" % [pid, eid, count],
 					"suggested_fix": "Remove extra connections or set port cardinality to 'many'"
 				})
+			elif card == "many" and count > 64:
+				diagnostics.append({
+					"rule_id": "PORT_004_CARDINALITY_EXCEEDED",
+					"code": "PORT_004_CARDINALITY_EXCEEDED",
+					"severity": "error",
+					"object_kind": "port",
+					"object_id": pid,
+					"property_path": "cardinality",
+					"message": "Input bus port '%s' on element '%s' exceeds maximum allowed fan-in of 64 channels (%d connected)" % [pid, eid, count],
+					"suggested_fix": "Use a Subgraph or intermediate merge buffer to keep fan-in <= 64"
+				})
+			elif card == "many" and count > 32:
+				diagnostics.append({
+					"rule_id": "PORT_006_HIGH_FANOUT",
+					"code": "PORT_006_HIGH_FANOUT",
+					"severity": "warning",
+					"object_kind": "port",
+					"object_id": pid,
+					"property_path": "cardinality",
+					"message": "Input bus port '%s' on element '%s' has high fan-in (%d channels > 32 recommended)" % [pid, eid, count],
+					"suggested_fix": "Consider grouping upstream stages into a Subgraph for visual clarity"
+				})
 			if check_required and bool(_prop(p, "required", true)) and count == 0:
 				diagnostics.append({
 					"rule_id": "PORT_005_REQUIRED_UNCONNECTED",
+					"code": "PORT_005_REQUIRED_UNCONNECTED",
 					"severity": "warning",
 					"object_kind": "port",
 					"object_id": pid,
@@ -700,12 +724,35 @@ func _validate_connections_and_ports(doc: RefCounted, diagnostics: Array, elems_
 			if card == "one" and count > 1:
 				diagnostics.append({
 					"rule_id": "PORT_004_CARDINALITY_EXCEEDED",
+					"code": "PORT_004_CARDINALITY_EXCEEDED",
 					"severity": "error",
 					"object_kind": "port",
 					"object_id": pid,
 					"property_path": "cardinality",
 					"message": "Output port '%s' on element '%s' has cardinality 'one' but feeds %d outgoing connections" % [pid, eid, count],
 					"suggested_fix": "Remove extra connections or set port cardinality to 'many'"
+				})
+			elif card == "many" and count > 64:
+				diagnostics.append({
+					"rule_id": "PORT_004_CARDINALITY_EXCEEDED",
+					"code": "PORT_004_CARDINALITY_EXCEEDED",
+					"severity": "error",
+					"object_kind": "port",
+					"object_id": pid,
+					"property_path": "cardinality",
+					"message": "Output bus port '%s' on element '%s' exceeds maximum allowed fan-out of 64 channels (%d connected)" % [pid, eid, count],
+					"suggested_fix": "Use a Subgraph or intermediate dispatch queue to keep fan-out <= 64"
+				})
+			elif card == "many" and count > 32:
+				diagnostics.append({
+					"rule_id": "PORT_006_HIGH_FANOUT",
+					"code": "PORT_006_HIGH_FANOUT",
+					"severity": "warning",
+					"object_kind": "port",
+					"object_id": pid,
+					"property_path": "cardinality",
+					"message": "Output bus port '%s' on element '%s' has high fan-out (%d channels > 32 recommended)" % [pid, eid, count],
+					"suggested_fix": "Consider grouping downstream stations into a Subgraph for visual clarity"
 				})
 			if check_required and bool(_prop(p, "required", true)) and count == 0:
 				diagnostics.append({
