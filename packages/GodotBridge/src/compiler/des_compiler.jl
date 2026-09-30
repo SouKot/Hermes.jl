@@ -23,8 +23,56 @@ struct CustomArrivalProcess{F} <: ArrivalProcess
     sampler::F
     priority::Int
     last_scheduled_t::Base.RefValue{Float64}
+    entity_type::String
+    default_attributes::Dict{String, Any}
+    spawn_counter::Base.RefValue{Int}
 end
-CustomArrivalProcess(sampler::F, priority::Int=0) where {F} = CustomArrivalProcess{F}(sampler, priority, Ref(0.01))
+CustomArrivalProcess(sampler::F, priority::Int=0, last_t::Base.RefValue{Float64}=Ref(0.01), entity_type::String="carton", default_attrs::Dict{String, Any}=Dict{String, Any}()) where {F} =
+    CustomArrivalProcess{F}(sampler, priority, last_t, entity_type, default_attrs, Ref(0))
+
+function _seed_entity_attributes!(
+    world::SimCore.SimWorld,
+    rng::AbstractRNG,
+    entity_id::Integer,
+    t::Float64,
+    default_prio::Int,
+    entity_type::String,
+    default_attrs::Dict{String, Any},
+    spawn_counter::Base.RefValue{Int}
+)::Int
+    spawn_counter[] += 1
+    seq = spawn_counter[]
+    SimCore.set_entity_attribute!(world, entity_id, "type", entity_type)
+    SimCore.set_entity_attribute!(world, entity_id, "spawn_seq", seq)
+    prio = default_prio
+    for (k_str, raw_v) in default_attrs
+        val = if raw_v isa AbstractVector && !isempty(raw_v)
+            raw_v[mod1(seq, length(raw_v))]
+        elseif raw_v isa AbstractDict && haskey(raw_v, "distribution")
+            dname = lowercase(string(raw_v["distribution"]))
+            if dname == "uniform"
+                lo = Float64(get(raw_v, "min", 0.0))
+                hi = Float64(get(raw_v, "max", 1.0))
+                lo + rand(rng) * (hi - lo)
+            elseif dname in ("exponential", "exp")
+                m = Float64(get(raw_v, "mean", 1.0))
+                -m * log(max(1e-12, rand(rng)))
+            else
+                get(raw_v, "value", 0.0)
+            end
+        else
+            raw_v
+        end
+        if k_str == "due_offset" && val isa Real
+            SimCore.set_entity_attribute!(world, entity_id, "due_date", t + Float64(val))
+        end
+        SimCore.set_entity_attribute!(world, entity_id, k_str, val)
+        if k_str == "priority" && val isa Real
+            prio = Int(round(val))
+        end
+    end
+    return prio
+end
 
 # Extend SimDES arrival scheduling for CustomArrivalProcess via multiple dispatch
 function SimDES._schedule_next_arrival!(world::SimCore.SimWorld, fel::SimDES.FutureEventList,
@@ -33,7 +81,9 @@ function SimDES._schedule_next_arrival!(world::SimCore.SimWorld, fel::SimDES.Fut
     Δt = max(0.0001, Float64(a.sampler(rng)))
     t_next = t + Δt
     a.last_scheduled_t[] = t_next
-    SimDES.schedule!(fel, SimCore.EntityArrival(SimCore.new_entity_id!(world), zone_id, t_next, a.priority, true), t_next)
+    ent_id = SimCore.new_entity_id!(world)
+    prio = _seed_entity_attributes!(world, rng, ent_id, t_next, a.priority, a.entity_type, a.default_attributes, a.spawn_counter)
+    SimDES.schedule!(fel, SimCore.EntityArrival(ent_id, zone_id, t_next, prio, true), t_next)
     return nothing
 end
 
@@ -102,20 +152,35 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
     initial_arrivals = Tuple{Int, Float64, Int}[]
 
     # 1. Topology analysis: classify connections and find Queue -> Server fusion candidates
-    # downstream_conns[source_elem_id] = [(target_elem_id, from_port, to_port, conn_id), ...]
+    # Count how many queues feed each server so multi-queue servers (N queues -> 1 server) do NOT fuse
+    server_incoming_queues = Dict{String, Int}()
+    for (elem_id, node) in ir.nodes
+        if node isa IRQueueNode
+            conns = get(ir.downstream_conns, elem_id, Tuple{String, String, String, String}[])
+            for (dest_id, _, _, _) in conns
+                if get(ir.nodes, dest_id, nothing) isa IRServerNode
+                    server_incoming_queues[dest_id] = get(server_incoming_queues, dest_id, 0) + 1
+                end
+            end
+        end
+    end
+
     fused_pairs = Dict{String, String}() # queue_id => server_id
     server_to_queue = Dict{String, String}() # server_id => queue_id
 
     for (elem_id, node) in ir.nodes
         if node isa IRQueueNode
             conns = get(ir.downstream_conns, elem_id, Tuple{String, String, String, String}[])
-            for (dest_id, from_port, to_port, _) in conns
+            if length(conns) == 1
+                dest_id, _, _, _ = first(conns)
                 dest_node = get(ir.nodes, dest_id, nothing)
-                if dest_node isa IRServerNode
-                    # Found Queue -> Server connection
+                if dest_node isa IRServerNode &&
+                   get(server_incoming_queues, dest_id, 0) == 1 &&
+                   dest_node.intake_mode === :slot_order &&
+                   !haskey(ir.zone_hooks, elem_id)
+                    # Fuse single-queue -> single-server when queue has no standalone hooks
                     fused_pairs[elem_id] = dest_id
                     server_to_queue[dest_id] = elem_id
-                    break
                 end
             end
         end
@@ -126,14 +191,13 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
     element_to_zone = Dict{String, Int}()
     next_zone_id = 1
 
-    # First pass: assign zone IDs
-    for (elem_id, node) in ir.nodes
+    # First pass: assign zone IDs in deterministic sorted order
+    for elem_id in sort!(collect(keys(ir.nodes)))
+        node = ir.nodes[elem_id]
         if node isa IRSourceNode || node isa IRSinkNode || node isa IRCrowdSpawnerNode || node isa IRHybridGateNode
-            # Sources, Sinks, Crowd Spawners don't have their own processing server zone
             continue
         elseif node isa IRQueueNode
             if haskey(fused_pairs, elem_id)
-                # Fused station: will share zone_id with server
                 srv_id = fused_pairs[elem_id]
                 if !haskey(element_to_zone, srv_id)
                     zid = next_zone_id
@@ -144,7 +208,6 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
                     element_to_zone[elem_id] = element_to_zone[srv_id]
                 end
             else
-                # Standalone queue
                 element_to_zone[elem_id] = next_zone_id
                 next_zone_id += 1
             end
@@ -156,6 +219,14 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
         elseif node isa IRConveyorNode
             element_to_zone[elem_id] = next_zone_id
             next_zone_id += 1
+        end
+    end
+
+    # Populate ir.element_to_zone and ir.zone_to_element
+    merge!(ir.element_to_zone, element_to_zone)
+    for (eid, zid) in element_to_zone
+        if !haskey(ir.zone_to_element, zid) || (ir.nodes[eid] isa IRServerNode)
+            ir.zone_to_element[zid] = eid
         end
     end
 
@@ -194,7 +265,7 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
                 plist = get!(zone_proc_lists, dest_zone, CustomArrivalProcess[])
                 stream_offset = length(plist) * 0.0001
                 initial_t = 0.01 + stream_offset
-                arr_proc = CustomArrivalProcess(node.arrival_sampler, node.priority, Ref(initial_t))
+                arr_proc = CustomArrivalProcess(node.arrival_sampler, node.priority, Ref(initial_t), node.entity_type, node.default_attributes)
                 push!(plist, arr_proc)
                 push!(initial_arrivals, (dest_zone, initial_t, node.priority))
             end
@@ -328,6 +399,14 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
                        BernoulliFailure(1.0 / max(1.0, srv_node.mtbf), 1.0 / max(1.0, srv_node.mttr)) :
                        NoFailure()
 
+            c_disc_fn = if q_node.custom_discipline_fn isa Function
+                q_node.custom_discipline_fn
+            elseif q_node.custom_discipline_fn isa AbstractString && !isempty(strip(q_node.custom_discipline_fn))
+                parse_discipline_expr(String(q_node.custom_discipline_fn))
+            else
+                nothing
+            end
+
             # Create ZoneConfig
             cfg = ZoneConfig(
                 id = zid,
@@ -337,7 +416,10 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
                 arrival = arrival,
                 routing = routing,
                 queue_discipline = discipline,
-                failures = failures
+                failures = failures,
+                custom_discipline = c_disc_fn,
+                intake_mode = srv_node.intake_mode,
+                process_mode = srv_node.process_mode
             )
             zone_configs[zid] = cfg
             push!(compiled_zones, zid)
@@ -369,7 +451,9 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
                 arrival = arrival,
                 routing = routing,
                 queue_discipline = FIFO,
-                failures = failures
+                failures = failures,
+                intake_mode = srv_node.intake_mode,
+                process_mode = srv_node.process_mode
             )
             zone_configs[zid] = cfg
             push!(compiled_zones, zid)
@@ -393,7 +477,12 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
                 arrival = arrival,
                 routing = routing,
                 queue_discipline = FIFO,
-                failures = NoFailure()
+                failures = NoFailure(),
+                conveyor_mode = conv_node.conveyor_mode,
+                conveyor_pitch = conv_node.conveyor_pitch,
+                conveyor_index_interval = conv_node.conveyor_index_interval,
+                path_length = max(0.1, conv_node.length),
+                nominal_speed = max(0.01, conv_node.speed)
             )
             zone_configs[zid] = cfg
             push!(compiled_zones, zid)
@@ -409,6 +498,13 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
             routing = resolve_routing(elem_id)
             rule = parse_discipline(q_node.discipline)
             discipline = to_simdes_discipline(rule)
+            c_disc_fn = if q_node.custom_discipline_fn isa Function
+                q_node.custom_discipline_fn
+            elseif q_node.custom_discipline_fn isa AbstractString && !isempty(strip(q_node.custom_discipline_fn))
+                parse_discipline_expr(String(q_node.custom_discipline_fn))
+            else
+                nothing
+            end
 
             cfg = ZoneConfig(
                 id = zid,
@@ -418,7 +514,8 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
                 arrival = arrival,
                 routing = routing,
                 queue_discipline = discipline,
-                failures = NoFailure()
+                failures = NoFailure(),
+                custom_discipline = c_disc_fn
             )
             zone_configs[zid] = cfg
             push!(compiled_zones, zid)

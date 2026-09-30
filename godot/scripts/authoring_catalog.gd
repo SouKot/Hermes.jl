@@ -117,13 +117,19 @@ func _register_defaults() -> void:
 		{"id": "in_transit", "kind": "metric", "direction": "output", "cardinality": "many", "name": "In-Transit Count"}
 	]
 	conv.property_schemas = [
+		{"key": "conveyor_mode", "display_name": "Conveyor Mode", "type": "enum", "default_value": "free_flow", "enum_options": [{"value": "free_flow", "label": "Free-Flow (Continuous Speed)"}, {"value": "accumulating", "label": "Zero-Pressure Accumulating"}, {"value": "indexing", "label": "Step / Indexing Pulse"}], "runtime_editable": true, "group": "Kinematics", "description": "Physical transport mode: continuous free-flow, zero-pressure accumulation, or periodic indexing pulses."},
 		{"key": "speed", "display_name": "Conveyor Velocity", "type": "float", "default_value": 1.5, "unit": "m/s", "range": [0.1, 10.0, 0.1], "runtime_editable": true, "group": "Kinematics", "description": "Linear surface speed of the transport bed."},
+		{"key": "accumulation_pitch", "display_name": "Pitch / Step Distance", "type": "float", "default_value": 0.5, "unit": "m", "range": [0.1, 5.0, 0.05], "runtime_editable": true, "group": "Kinematics", "description": "Minimum center-to-center spacing (accumulating) or step distance per pulse (indexing)."},
+		{"key": "index_interval", "display_name": "Indexing Pulse Interval", "type": "float", "default_value": 1.0, "unit": "s", "range": [0.1, 60.0, 0.1], "runtime_editable": true, "group": "Kinematics", "description": "Time interval between step pulses in indexing conveyor mode."},
 		{"key": "capacity", "display_name": "Bed Item Capacity", "type": "int", "default_value": 10, "unit": "items", "range": [1, 500, 1], "runtime_editable": false, "group": "Capacity & Buffers", "description": "Maximum item accumulation on the belt before upstream blockage."},
 		{"key": "reversible", "display_name": "Reversible Flow", "type": "bool", "default_value": false, "unit": "", "range": [], "runtime_editable": true, "group": "Kinematics", "description": "Allow reverse direction conveying via control signals."},
 		{"key": "acceleration", "display_name": "Bed Acceleration", "type": "float", "default_value": 2.0, "unit": "m/s²", "range": [0.1, 10.0, 0.1], "runtime_editable": true, "group": "Kinematics", "description": "Rate of speed change when starting or stopping."}
 	]
 	conv.default_properties = {
+		"conveyor_mode": "free_flow",
 		"speed": 1.5,
+		"accumulation_pitch": 0.5,
+		"index_interval": 1.0,
 		"capacity": 10,
 		"reversible": false,
 		"acceleration": 2.0
@@ -154,12 +160,14 @@ func _register_defaults() -> void:
 	]
 	queue.property_schemas = [
 		{"key": "capacity", "display_name": "Buffer Capacity", "type": "int", "default_value": 20, "unit": "items", "range": [1, 1000, 1], "runtime_editable": false, "group": "Storage Policy", "description": "Maximum accumulation buffer storage capacity."},
-		{"key": "discipline", "display_name": "Queue Discipline", "type": "enum", "default_value": "FIFO", "enum_options": [{"value": "FIFO", "label": "FIFO (First-In First-Out)"}, {"value": "LIFO", "label": "LIFO (Last-In First-Out)"}, {"value": "Priority", "label": "Priority (Attribute-Based)"}], "runtime_editable": false, "group": "Storage Policy", "description": "Queuing sequence policy for items in this buffer."},
+		{"key": "discipline", "display_name": "Queue Discipline", "type": "enum", "default_value": "FIFO", "enum_options": [{"value": "FIFO", "label": "FIFO (First-In First-Out)"}, {"value": "LIFO", "label": "LIFO (Last-In First-Out)"}, {"value": "Priority", "label": "Priority (Highest First)"}, {"value": "EDD", "label": "EDD (Earliest Due Date)"}, {"value": "SPT", "label": "SPT (Shortest Processing Time)"}, {"value": "Custom", "label": "Custom Comparator (entity_a, entity_b)"}], "runtime_editable": false, "group": "Storage Policy", "description": "Queuing sequence policy for items in this buffer."},
+		{"key": "custom_discipline", "display_name": "Custom Comparator Expr", "type": "string", "default_value": "", "unit": "", "range": [], "runtime_editable": false, "group": "Storage Policy", "description": "Julia expression comparing entity_a and entity_b (e.g. entity_a.priority > entity_b.priority)."},
 		{"key": "max_wait_time", "display_name": "Max Wait Time", "type": "float", "default_value": 300.0, "unit": "s", "range": [1.0, 7200.0, 10.0], "runtime_editable": true, "group": "Storage Policy", "description": "Threshold before items timeout or trigger secondary routing."}
 	]
 	queue.default_properties = {
 		"capacity": 20,
 		"discipline": "FIFO",
+		"custom_discipline": "",
 		"max_wait_time": 300.0
 	}
 	_entries["queue"] = queue
@@ -207,6 +215,35 @@ func _register_defaults() -> void:
 			"runtime_editable": false,
 			"group": "Capacity & Resources",
 			"description": "Number of parallel processing units / heads in this station."
+		},
+		{
+			"key": "intake_mode",
+			"display_name": "Multi-Queue Intake Mode",
+			"type": "enum",
+			"default_value": "slot_order",
+			"enum_options": [
+				{"value": "slot_order", "label": "Slot Order (Port Priority 1..N)"},
+				{"value": "round_robin", "label": "Round-Robin Across Connected Queues"},
+				{"value": "longest_queue", "label": "Longest Connected Queue First"},
+				{"value": "highest_fill", "label": "Highest Fill Ratio Queue First"},
+				{"value": "custom", "label": "Custom (Scripted in on_pull Hook)"}
+			],
+			"runtime_editable": true,
+			"group": "DES Processing",
+			"description": "How this server pulls items when multiple upstream queues are wired to Flow In."
+		},
+		{
+			"key": "process_mode",
+			"display_name": "DEVS Process Mode",
+			"type": "enum",
+			"default_value": "standard",
+			"enum_options": [
+				{"value": "standard", "label": "Standard (Auto Service Timer)"},
+				{"value": "custom", "label": "Custom Event State Machine (schedule_event!)"}
+			],
+			"runtime_editable": true,
+			"group": "DES Processing",
+			"description": "Standard auto-schedules service completion; Custom lets hooks drive FEL events manually."
 		},
 		{
 			"key": "failure_model",
@@ -257,6 +294,8 @@ func _register_defaults() -> void:
 	server.default_properties = {
 		"service_time": {"type": "triangular", "min": 2.0, "mode": 4.5, "max": 7.0},
 		"servers": 1,
+		"intake_mode": "slot_order",
+		"process_mode": "standard",
 		"failure_model": "None",
 		"mtbf": 3600.0,
 		"mttr": 120.0,

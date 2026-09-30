@@ -455,16 +455,7 @@ func _gui_input(event: InputEvent) -> void:
 						accept_event()
 						return
 
-				# 1. Check if clicked on a port badge (×N) -> open Channel Pop-Up Pill
-				var hit_badge := _hit_test_port_badge(mb.position)
-				if not hit_badge.is_empty():
-					var p_info_b: Dictionary = _port_sockets[hit_badge]
-					var spos_b: Vector2 = mb.global_position if mb.global_position != Vector2.ZERO else get_port_canvas_position(hit_badge)
-					port_channel_popup_requested.emit(nid, hit_badge, bool(p_info_b.get("is_output", true)), spos_b)
-					accept_event()
-					return
-
-				# 2. Check if clicked on a port socket
+				# 1. Check if clicked on a port socket
 				var hit_port := _hit_test_port(mb.position)
 				if not hit_port.is_empty():
 					var p_info: Dictionary = _port_sockets[hit_port]
@@ -519,11 +510,9 @@ func _gui_input(event: InputEvent) -> void:
 			if not hit_port.is_empty():
 				var p_info: Dictionary = _port_sockets[hit_port]
 				var conn_cnt: int = int(port_connection_counts.get(hit_port, 0))
-				if conn_cnt > 1:
+				if conn_cnt >= 1:
 					var spos: Vector2 = mb.global_position if mb.global_position != Vector2.ZERO else get_port_canvas_position(hit_port)
 					port_channel_popup_requested.emit(nid, hit_port, bool(p_info.get("is_output", true)), spos)
-				else:
-					disconnect_port_requested.emit(nid, hit_port)
 				accept_event()
 				return
 			else:
@@ -613,7 +602,7 @@ func _gui_input(event: InputEvent) -> void:
 		else:
 			var hit_p := _hit_test_port(mm.position)
 			set_hovered_port(hit_p)
-			if not hit_p.is_empty() or not _hit_test_port_badge(mm.position).is_empty():
+			if not hit_p.is_empty():
 				mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 			else:
 				var corner := _hit_test_resize_corner(mm.position)
@@ -675,32 +664,10 @@ func _hit_test_port(local_pos: Vector2) -> String:
 			best_id = port_id
 	return best_id
 
-func _get_port_badge_rect(port_id: String) -> Rect2:
-	if not _port_sockets.has(port_id):
-		return Rect2()
-	var cnt: int = int(port_connection_counts.get(port_id, 0))
-	if cnt <= 1:
-		return Rect2()
-	var p_info: Dictionary = _port_sockets[port_id]
-	var p_pos: Vector2 = p_info["pos"]
-	var edge: String = str(p_info.get("edge", "right"))
-	var bw := 22.0
-	var bh := 13.0
-	match edge:
-		"left":
-			return Rect2(p_pos.x - bw - 6.0, p_pos.y - bh * 0.5, bw, bh)
-		"right":
-			return Rect2(p_pos.x + 6.0, p_pos.y - bh * 0.5, bw, bh)
-		"top":
-			return Rect2(p_pos.x - bw * 0.5, p_pos.y - bh - 6.0, bw, bh)
-		_:
-			return Rect2(p_pos.x - bw * 0.5, p_pos.y + 6.0, bw, bh)
+func _get_port_badge_rect(_port_id: String) -> Rect2:
+	return Rect2()
 
-func _hit_test_port_badge(local_pos: Vector2) -> String:
-	for port_id in _port_sockets.keys():
-		var r := _get_port_badge_rect(port_id)
-		if r.size != Vector2.ZERO and r.grow(2.0).has_point(local_pos):
-			return port_id
+func _hit_test_port_badge(_local_pos: Vector2) -> String:
 	return ""
 
 func _hit_test_port_button(_local_pos: Vector2) -> Dictionary:
@@ -713,11 +680,6 @@ func _hit_test_remove_button(_local_pos: Vector2) -> String:
 	return ""
 
 func _get_tooltip(at_position: Vector2) -> String:
-	var hit_badge := _hit_test_port_badge(at_position)
-	if not hit_badge.is_empty():
-		var cnt: int = int(port_connection_counts.get(hit_badge, 0))
-		return "Bus Port '%s' (%d channels)\nClick to inspect, reorder, or delete channels" % [hit_badge, cnt]
-
 	var hit_port := _hit_test_port(at_position)
 	if not hit_port.is_empty():
 		var p_info: Dictionary = _port_sockets.get(hit_port, {})
@@ -727,8 +689,10 @@ func _get_tooltip(at_position: Vector2) -> String:
 		var cnt: int = int(port_connection_counts.get(hit_port, 0))
 		var base_tip := "%s %s: %s (ID: %s)" % [kind_str, dir_str, p_name, hit_port]
 		if cnt > 0:
-			base_tip += "\nConnected channels: %d" % cnt
-		return base_tip + "\n(Drag to wire · Right-click to manage/disconnect)"
+			base_tip += "\nConnected channels: %d\n(Drag to wire · Right-click to manage connections)" % cnt
+		else:
+			base_tip += "\n(Drag to wire)"
+		return base_tip
 
 	if element != null:
 		var name_str := element.name if not element.name.is_empty() else element.id
@@ -944,7 +908,6 @@ func _draw_perimeter_port_sockets() -> void:
 		var p_kind: String = p_info["kind"]
 		var is_out: bool = p_info["is_output"]
 		var is_hovered: bool = (port_id == hovered_port_id)
-		var conn_cnt: int = int(port_connection_counts.get(port_id, 0))
 
 		var p_col: Color = get_port_kind_color(p_kind)
 		var bg_col := Color(p_col.r * 0.18, p_col.g * 0.18, p_col.b * 0.18, 0.95)
@@ -961,16 +924,6 @@ func _draw_perimeter_port_sockets() -> void:
 			draw_rect(Rect2(p_pos.x - sq_r, p_pos.y - sq_r, sq_r * 2.0, sq_r * 2.0), Color.WHITE if is_out else p_col, true)
 		else:
 			draw_circle(p_pos, socket_r * 0.48, Color.WHITE if is_out else p_col)
-
-		# Multi-Wire Bus Count Badge (×N) when conn_cnt > 1
-		if conn_cnt > 1:
-			var b_rect := _get_port_badge_rect(port_id)
-			if b_rect.size != Vector2.ZERO:
-				var badge_bg := Color("#3d1f09f0") if conn_cnt > 32 else Color("#0d261cf0")
-				var badge_border := Color("#f39c12") if conn_cnt > 32 else p_col
-				draw_rect(b_rect, badge_bg, true)
-				draw_rect(b_rect, badge_border, false, 1.0)
-				draw_string(ThemeDB.fallback_font, Vector2(b_rect.position.x + 2.0, b_rect.position.y + 10.0), "×%d" % conn_cnt, HORIZONTAL_ALIGNMENT_CENTER, int(b_rect.size.x - 4.0), 8, Color.WHITE)
 
 func _draw_chart_station_body(title: String) -> void:
 	var subplots: Array = element.properties.get("subplots", [])

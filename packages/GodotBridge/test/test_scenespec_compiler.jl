@@ -309,3 +309,132 @@ end
     @test exit_count[] > 0
 end
 
+@testset "Immediate Roadmap Actions I-1 to I-4: Attributes, HookContext, Visuals & Custom Disciplines" begin
+    # 1. I-1: Entity Attribute Bag & Source default_attributes ("auto_increment", "due_date_offset", literal)
+    spec_i1 = GodotBridge.create_default_scene()
+    spec_i1["elements"][1]["properties"]["interarrival_time"] = Dict("type" => "constant", "value" => 0.5)
+    spec_i1["elements"][1]["properties"]["default_attributes"] = Dict(
+        "batch_id" => "auto_increment",
+        "due_date_offset" => 50.0,
+        "lot_tag" => "LOT-A"
+    )
+    spec_i1["elements"][3]["properties"]["service_time"] = Dict("type" => "constant", "value" => 5.0)
+    # Also attach an authored I-2 / I-3 hook in SceneSpec properties["hooks"]
+    spec_i1["elements"][2]["properties"]["hooks"] = Dict(
+        "on_entry" => """
+            bid = get_attribute(ctx, "batch_id", 0)
+            set_attribute!(ctx, "inspected", true)
+            if bid >= 2
+                set_color!(ctx, :red)
+                set_mesh!(ctx, :sphere)
+                set_size!(ctx, 1.5)
+                set_priority!(ctx, 10)
+            else
+                set_color!(ctx, 0.1, 0.9, 0.2)
+            end
+        """
+    )
+
+    comp_i1 = GodotBridge.compile_scenespec(spec_i1)
+    @test comp_i1.success
+    inst_i1 = GodotBridge.SimulationInstance(
+        "test_i1_i3", comp_i1.world, comp_i1.fel, comp_i1.zone_configs, comp_i1.source_map, comp_i1.execution_ir;
+        seed = 42, clock_speed = Inf
+    )
+    GodotBridge.step_until!(inst_i1, 2.0; fast_forward = true)
+
+    snap_i1 = GodotBridge.build_snapshot(inst_i1; scene_id = "test_i1_i3")
+    @test length(snap_i1.entities) >= 2
+
+    found_batch_1 = false
+    found_batch_2 = false
+    for ent in snap_i1.entities
+        p = ent.properties
+        @test haskey(p, "attributes")
+        attrs = p["attributes"]
+        @test get(attrs, "lot_tag", "") == "LOT-A"
+        @test get(attrs, "inspected", false) == true
+        @test haskey(attrs, "due_date")
+        bid = get(attrs, "batch_id", 0)
+        if bid == 1
+            found_batch_1 = true
+            @test isapprox(p["color_r"], 0.1; atol=1e-2)
+            @test isapprox(p["color_g"], 0.9; atol=1e-2)
+        elseif bid >= 2
+            found_batch_2 = true
+            @test isapprox(p["color_r"], 0.95; atol=1e-2)
+            @test p["mesh_type"] == "sphere"
+            @test isapprox(p["prod_w"], 0.4 * 1.5; atol=1e-3)
+            @test p["priority"] == 10
+        end
+    end
+    @test found_batch_1
+    @test found_batch_2
+
+    # 2. I-2: route_to!(ctx, target_zone) in on_service_complete hook
+    world_r = SimCore.SimWorld()
+    fel_r = SimDES.FutureEventList()
+    # Zone 1 fixed routes to Zone 2 by default, but hook redirects entity to Zone 3
+    cfg_r = Dict{Int, SimDES.ZoneConfig}(
+        1 => SimDES.ZoneConfig(id=1, num_servers=1, capacity=10, service_dist=SimDES.deterministic_service(1.0), routing=SimDES.FixedRoute(2)),
+        2 => SimDES.ZoneConfig(id=2, num_servers=1, capacity=10, service_dist=SimDES.deterministic_service(10.0), routing=SimDES.ExitSystem()),
+        3 => SimDES.ZoneConfig(id=3, num_servers=1, capacity=10, service_dist=SimDES.deterministic_service(10.0), routing=SimDES.ExitSystem()),
+    )
+    for (_, c) in cfg_r
+        SimDES.build_world!(world_r, c)
+    end
+    sm_r = GodotBridge.SourceMap()
+    GodotBridge.register_mapping!(sm_r, GodotBridge.SourceMapRecord("srv_1", "server", [1], false, nothing, :server_workstation))
+    GodotBridge.register_mapping!(sm_r, GodotBridge.SourceMapRecord("srv_normal", "server", [2], false, nothing, :server_workstation))
+    GodotBridge.register_mapping!(sm_r, GodotBridge.SourceMapRecord("srv_rework", "server", [3], false, nothing, :server_workstation))
+    ir_r = GodotBridge.ExecutionGraphIR()
+    inst_r = GodotBridge.SimulationInstance("test_reroute", world_r, fel_r, cfg_r, sm_r, ir_r; seed=1, clock_speed=Inf)
+    inst_r.zone_hooks["srv_1"] = GodotBridge.ZoneHooks(
+        on_service_complete = GodotBridge.parse_hook_expr("""
+            if get_attribute(ctx, "defective", false)
+                route_to!(ctx, "srv_rework")
+            end
+        """)
+    )
+    eid_r = SimCore.new_entity_id!(world_r)
+    SimCore.set_entity_attribute!(world_r, eid_r, "defective", true)
+    SimDES.schedule!(fel_r, SimCore.EntityArrival(eid_r, 1, 0.1, 0, true), 0.1)
+    GodotBridge.step_until!(inst_r, 1.5; fast_forward=true)
+    ag_r = SimCore.get_des_agent(world_r, eid_r)
+    @test ag_r !== nothing
+    @test ag_r.current_zone == 3 # Redirected to srv_rework (zone 3) instead of srv_normal (zone 2)!
+
+    # 3. I-4: LIFO, EDD, SPT, and Custom Queue Discipline Comparator
+    @test GodotBridge.to_simdes_discipline(GodotBridge.parse_discipline("lifo")) == SimDES.LIFO
+    @test GodotBridge.to_simdes_discipline(GodotBridge.parse_discipline("edd"))  == SimDES.EDD
+    @test GodotBridge.to_simdes_discipline(GodotBridge.parse_discipline("spt"))  == SimDES.SPT
+
+    # Test Custom Queue Discipline Comparator ordering in compiled SceneSpec
+    spec_i4 = GodotBridge.create_default_scene()
+    spec_i4["elements"][2]["properties"]["discipline"] = "Custom"
+    # Reverse batch_id order: larger batch_id served first
+    spec_i4["elements"][2]["properties"]["custom_discipline"] = "get_attribute(entity_a, \"custom_score\", 0) > get_attribute(entity_b, \"custom_score\", 0)"
+    comp_i4 = GodotBridge.compile_scenespec(spec_i4)
+    @test comp_i4.success
+    zcfg_i4 = comp_i4.zone_configs[1]
+    @test zcfg_i4.custom_discipline !== nothing
+
+    # Verify custom comparator sorts queue in world
+    w_i4 = comp_i4.world
+    empty!(w_i4.zone_states[1].queue)
+    w_i4.zone_states[1].busy_servers = 1
+    w_i4.zone_states[1].queue_length = 0
+    for (id_val, score_val) in ((101, 10), (102, 50), (103, 30))
+        uid = UInt64(id_val)
+        SimCore.add_des_agent!(w_i4, uid, SimCore.DESAgent(1.0, 1, 0, Inf))
+        SimCore.set_entity_attribute!(w_i4, uid, "custom_score", score_val)
+        w_i4.zone_states[1].queue_length += 1
+        SimDES._enqueue_entity!(w_i4, w_i4.zone_states[1], zcfg_i4, uid, 0, 1.0)
+    end
+    # Highest custom_score (102 => 50, then 103 => 30, then 101 => 10) should dequeue first!
+    @test SimDES._dequeue_next_entity!(w_i4, w_i4.zone_states[1], zcfg_i4) == UInt64(102)
+    @test SimDES._dequeue_next_entity!(w_i4, w_i4.zone_states[1], zcfg_i4) == UInt64(103)
+    @test SimDES._dequeue_next_entity!(w_i4, w_i4.zone_states[1], zcfg_i4) == UInt64(101)
+end
+
+

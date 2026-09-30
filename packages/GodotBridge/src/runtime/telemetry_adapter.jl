@@ -7,18 +7,6 @@
 using SimCore
 using SimDES
 
-function _entity_zone_kind(zid::String, source_map)::String
-    if haskey(source_map.by_zone, zid)
-        role = first(source_map.by_zone[zid]).role_in_zone
-        if role == :queue_buffer; return "queue"
-        elseif role == :server_workstation; return "server"
-        elseif role == :conveyor_bed; return "conveyor"
-        elseif role == :sink_drain; return "sink"
-        end
-    end
-    return "unknown"
-end
-
 """
     build_snapshot(instance::SimulationInstance; scene_id::String="active_scene", step_count::UInt64=UInt64(0)) -> DirectSnapshotPayload
 
@@ -116,6 +104,14 @@ function build_snapshot(
                         metrics["transit_delay"] = node isa IRConveyorNode ? node.transit_delay : (conv_len / max(0.01, conv_spd))
                         metrics["total_transited"] = zs !== nothing ? zs.total_departures : 0
                         metrics["badge"] = "[ $(zstate.busy_servers) transit ]"
+                    elseif map_rec.role_in_zone == :sink_drain
+                        occ = UInt32(0)
+                        dep_count = world.stats.total_departures
+                        rate_sec = curr_t > 0.0 ? round(Float64(dep_count) / curr_t, digits=2) : 0.0
+                        metrics["total_departures"] = dep_count
+                        metrics["throughput_per_sec"] = rate_sec
+                        metrics["throughput_per_min"] = round(rate_sec * 60.0, digits=1)
+                        metrics["badge"] = "[ $(dep_count) done ]"
                     elseif map_rec.role_in_zone == :standalone
                         if node isa IRSourceNode
                             arr_count = world.stats.total_arrivals
@@ -129,18 +125,6 @@ function build_snapshot(
                     end
                 end
             end
-        end
-
-        if node isa IRSinkNode
-            sys_zs = get(world.zone_stats, 0, world.stats)
-            dep_count = sys_zs.total_departures > 0 ? sys_zs.total_departures : world.stats.total_departures
-            sys_soj = sys_zs.sojourn_time_samples > 0 ? round(sys_zs.sojourn_time_sum / sys_zs.sojourn_time_samples, digits=2) : 0.0
-            rate_sec = curr_t > 0.0 ? round(Float64(dep_count) / curr_t, digits=2) : 0.0
-            metrics["total_departures"] = dep_count
-            metrics["system_sojourn_mean"] = sys_soj
-            metrics["throughput_per_sec"] = rate_sec
-            metrics["throughput_per_min"] = round(rate_sec * 60.0, digits=1)
-            metrics["badge"] = "[ $(dep_count) done ]"
         end
 
         push!(elements_state, DirectSnapshotElement(
@@ -213,41 +197,69 @@ function build_snapshot(
                 dim = get(ir.spatial_dimensions, elem_id, (2.0, 2.0, 1.0))
 
                 if first_rec.role_in_zone == :conveyor_bed
-                    # Conveyor: evaluate baked 3D parametric curve at transit progress `prog_val`
+                    # Conveyor: interpolate along length based on transit progress
                     conv_node = get(ir.nodes, elem_id, nothing)
                     transit_tau = (conv_node isa IRConveyorNode) ? conv_node.transit_delay : 2.0
                     elapsed = agent.service_start_time < Inf ? max(0.0, curr_t - agent.service_start_time) : 0.0
                     prog_val = clamp(elapsed / max(0.001, transit_tau), 0.0, 1.0)
 
-                    if haskey(ir.conveyor_curves, elem_id)
-                        curve = ir.conveyor_curves[elem_id]::BakedConveyorCurve
-                        pos_3d, tan_3d = sample_conveyor_curve(curve, prog_val)
-                        pos_x, pos_y, pos_z = pos_3d[1], pos_3d[2], pos_3d[3]
-                        if curve.preset == :straight
-                            if (abs(curve.inlet_pose.pos[1] - base_pos[1]) < 1e-3 && abs(curve.inlet_pose.pos[2] - base_pos[2]) < 1e-3) ||
-                               (abs(curve.outlet_pose.pos[1] - base_pos[1]) < 1e-3 && abs(curve.outlet_pose.pos[2] - base_pos[2]) < 1e-3)
-                                if abs(tan_3d[2]) < 1e-3
-                                    pos_y += dim[2] * 0.5
-                                else
-                                    pos_x += -tan_3d[2] * (dim[2] * 0.5)
-                                    pos_y +=  tan_3d[1] * (dim[2] * 0.5)
+                    # Determine orientation and direction from downstream connections
+                    downstreams = get(ir.downstream_conns, elem_id, Tuple{String, String, String, String}[])
+                    
+                    if dim[1] >= dim[2]
+                        # Horizontal conveyor along X
+                        reverse_dir = false
+                        if !isempty(downstreams)
+                            dst_id = first(downstreams)[1]
+                            if haskey(ir.spatial_positions, dst_id)
+                                dst_pos = ir.spatial_positions[dst_id]
+                                dst_dim = get(ir.spatial_dimensions, dst_id, (2.0, 2.0, 1.0))
+                                if (dst_pos[1] + dst_dim[1] * 0.5) < base_pos[1]
+                                    reverse_dir = true
                                 end
                             end
                         end
-                        spd_nom = (conv_node isa IRConveyorNode) ? conv_node.speed : (curve.total_length / max(0.001, transit_tau))
-                        vel_x = tan_3d[1] * spd_nom
-                        vel_y = tan_3d[2] * spd_nom
-                    else
-                        start_x = base_pos[1]
-                        end_x = base_pos[1] + dim[1]
+
+                        if reverse_dir
+                            start_x = base_pos[1] + dim[1]
+                            end_x = base_pos[1]
+                        else
+                            start_x = base_pos[1]
+                            end_x = base_pos[1] + dim[1]
+                        end
                         start_y = base_pos[2] + dim[2] * 0.5
                         end_y = start_y
-                        pos_x = start_x + prog_val * (end_x - start_x)
-                        pos_y = start_y + prog_val * (end_y - start_y)
-                        pos_z = base_pos[3]
-                        vel_x = (end_x - start_x) / max(0.001, transit_tau)
-                        vel_y = (end_y - start_y) / max(0.001, transit_tau)
+                    else
+                        # Vertical conveyor along Y
+                        reverse_dir = false
+                        if !isempty(downstreams)
+                            dst_id = first(downstreams)[1]
+                            if haskey(ir.spatial_positions, dst_id)
+                                dst_pos = ir.spatial_positions[dst_id]
+                                dst_dim = get(ir.spatial_dimensions, dst_id, (2.0, 2.0, 1.0))
+                                if (dst_pos[2] + dst_dim[2] * 0.5) < base_pos[2]
+                                    reverse_dir = true
+                                end
+                            end
+                        end
+
+                        start_x = base_pos[1] + dim[1] * 0.5
+                        end_x = start_x
+                        if reverse_dir
+                            start_y = base_pos[2] + dim[2]
+                            end_y = base_pos[2]
+                        else
+                            start_y = base_pos[2]
+                            end_y = base_pos[2] + dim[2]
+                        end
                     end
+
+                    pos_x = start_x + prog_val * (end_x - start_x)
+                    pos_y = start_y + prog_val * (end_y - start_y)
+                    pos_z = base_pos[3]
+
+                    vel_x = (end_x - start_x) / max(0.001, transit_tau)
+                    vel_y = (end_y - start_y) / max(0.001, transit_tau)
                 else
                     pos_x = base_pos[1] + dim[1] * 0.5
                     pos_y = base_pos[2] + dim[2] * 0.5
@@ -270,16 +282,7 @@ function build_snapshot(
             "element_id" => elem_id,
             "zone_id" => zid,
             "priority" => agent.priority,
-            "in_service" => agent.service_start_time < Inf,
-            "mesh_type" => String(ir.product_def.mesh_type),
-            "color_r"   => ir.product_def.color[1],
-            "color_g"   => ir.product_def.color[2],
-            "color_b"   => ir.product_def.color[3],
-            "prod_w"    => ir.product_def.width,
-            "prod_h"    => ir.product_def.height,
-            "prod_d"    => ir.product_def.depth,
-            "t_frac"    => prog_val,
-            "zone_kind" => _entity_zone_kind(string(zid), source_map)
+            "in_service" => agent.service_start_time < Inf
         )
 
         push!(entities, DirectSnapshotEntity(
@@ -320,30 +323,17 @@ function build_snapshot(
 
     sojourn_mean = world.stats.sojourn_time_samples > 0 ? round(world.stats.sojourn_time_sum / world.stats.sojourn_time_samples, digits=2) : 0.0
     wait_mean = world.stats.wait_time_samples > 0 ? round(world.stats.wait_time_sum / world.stats.wait_time_samples, digits=2) : 0.0
-    sys_zs = get(world.zone_stats, 0, nothing)
-    sys_sojourn_mean = (sys_zs !== nothing && sys_zs.sojourn_time_samples > 0) ?
-                       round(sys_zs.sojourn_time_sum / sys_zs.sojourn_time_samples, digits=2) : sojourn_mean
-    sys_departures = (sys_zs !== nothing && sys_zs.total_departures > 0) ? sys_zs.total_departures : tot_dep
-    prio_wait_means = Dict{String, Float64}()
-    for (zk, zstat) in world.zone_stats
-        if zk <= -100 && zstat.wait_time_samples > 0
-            prio = -100 - zk
-            prio_wait_means[string(prio)] = round(zstat.wait_time_sum / zstat.wait_time_samples, digits=2)
-        end
-    end
-    th_eff = curr_t > 0.0 ? round(Float64(sys_departures) / curr_t, digits=3) : 0.0
+    th_eff = curr_t > 0.0 ? round(Float64(tot_dep) / curr_t, digits=3) : 0.0
     
     flow_err = abs(tot_arr - (tot_dep + act_wip))
     flow_ok = flow_err == 0
 
     # Little's Law check (L = lambda * W)
     L_obs = Float64(act_wip)
-    lambda_eff = curr_t > 0.0 ? (Float64(sys_departures) / curr_t) : 0.0
-    W_obs = (sys_zs !== nothing && sys_zs.sojourn_time_samples > 0) ?
-            (sys_zs.sojourn_time_sum / sys_zs.sojourn_time_samples) :
-            (world.stats.sojourn_time_samples > 0 ? (world.stats.sojourn_time_sum / world.stats.sojourn_time_samples) : 0.0)
+    lambda_eff = curr_t > 0.0 ? (Float64(tot_dep) / curr_t) : 0.0
+    W_obs = world.stats.sojourn_time_samples > 0 ? (world.stats.sojourn_time_sum / world.stats.sojourn_time_samples) : 0.0
     
-    littles_err, littles_status = if sys_departures < 15
+    littles_err, littles_status = if tot_dep < 15
         (0.0, "warming_up")
     else
         exp_L = lambda_eff * W_obs
@@ -356,19 +346,16 @@ function build_snapshot(
         "wip_total" => act_wip,
         "total_arrivals" => tot_arr,
         "total_departures" => tot_dep,
-        "system_departures" => sys_departures,
         "active_in_queues" => act_q,
         "active_in_service" => act_srv,
         "active_on_conveyors" => act_conv,
         "sojourn_mean" => sojourn_mean,
-        "system_sojourn_mean" => sys_sojourn_mean,
         "wait_mean" => wait_mean,
-        "priority_wait_means" => prio_wait_means,
         "throughput_eff" => th_eff,
         "throughput_per_min" => round(th_eff * 60.0, digits=1),
         "flow_balance_error" => flow_err,
         "flow_balance_ok" => flow_ok,
-        "warmup_complete" => sys_departures >= 30,
+        "warmup_complete" => tot_dep >= 30,
         "littles_law_error_pct" => littles_err,
         "littles_law_status" => littles_status
     )

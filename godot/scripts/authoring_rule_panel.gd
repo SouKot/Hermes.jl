@@ -18,12 +18,12 @@ var _routing_row: HBoxContainer = null
 var _routing_option: OptionButton = null
 
 func _init() -> void:
-	_ensure_ui()
+	_ensure_rows()
 
 func _ready() -> void:
-	_ensure_ui()
+	_ensure_rows()
 
-func _ensure_ui() -> void:
+func _ensure_rows() -> void:
 	if _discipline_row != null:
 		return
 	add_theme_constant_override("separation", 4)
@@ -63,7 +63,7 @@ func _ensure_ui() -> void:
 	add_child(_routing_row)
 
 func configure(element_id: String, kind: String, props: Dictionary) -> void:
-	_ensure_ui()
+	_ensure_rows()
 	_element_id = element_id
 	_kind = kind
 
@@ -89,3 +89,4 @@ func _on_discipline_selected(idx: int) -> void:
 func _on_routing_selected(idx: int) -> void:
 	if _element_id.is_empty(): return
 	rule_changed.emit(_element_id, "routing_rule", ROUTING_VALUES[idx])
+

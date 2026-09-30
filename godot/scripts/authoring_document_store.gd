@@ -1222,17 +1222,182 @@ func update_port_properties(elem_id: String, port_id: String, props: Dictionary)
 func update_connection_condition(conn_id: String, condition_dict: Dictionary) -> bool:
 	if active_document == null:
 		return false
-	var target_conn: SceneTypes.SceneConnection = null
-	for c in active_document.connections:
-		if c.id == conn_id:
-			target_conn = c
-			break
+	var target_conn: SceneTypes.SceneConnection = get_connection(conn_id)
 	if target_conn == null:
 		return false
 
 	_record_undo()
 	target_conn.condition = condition_dict.duplicate(true)
 	validate()
+	document_modified.emit()
+	return true
+
+func get_connection(conn_id: String) -> SceneTypes.SceneConnection:
+	if active_document == null:
+		return null
+	for c in active_document.connections:
+		if c.id == conn_id:
+			return c
+	return null
+
+func get_default_wire_shape() -> String:
+	if active_document == null or not (active_document.scene is Dictionary):
+		return "bezier"
+	var m: String = str(active_document.scene.get("default_wire_shape", "bezier")).strip_edges().to_lower()
+	if m in ["bezier", "orthogonal", "chamfer", "straight"]:
+		return m
+	return "bezier"
+
+func set_default_wire_shape(shape_mode: String) -> bool:
+	if active_document == null:
+		return false
+	var clean := shape_mode.strip_edges().to_lower()
+	if clean not in ["bezier", "orthogonal", "chamfer", "straight"]:
+		return false
+	if get_default_wire_shape() == clean:
+		return false
+	_record_undo()
+	active_document.scene["default_wire_shape"] = clean
+	is_dirty = true
+	document_modified.emit()
+	return true
+
+func get_connection_visual(conn_id: String) -> Dictionary:
+	var defaults := {
+		"routing_mode": "auto",
+		"radius_or_tension": 8.0,
+		"stroke_style": "auto",
+		"width": 2.0,
+		"color": "",
+		"waypoints": []
+	}
+	var conn := get_connection(conn_id)
+	if conn == null:
+		return defaults
+	var raw = conn.extensions.get("visual", null)
+	if not (raw is Dictionary):
+		return defaults
+	var res := defaults.duplicate(true)
+	var rm: String = str(raw.get("routing_mode", "auto")).strip_edges().to_lower()
+	if rm in ["auto", "bezier", "orthogonal", "chamfer", "straight"]:
+		res["routing_mode"] = rm
+	res["radius_or_tension"] = clampf(float(raw.get("radius_or_tension", 8.0)), 0.0, 20.0)
+	var st: String = str(raw.get("stroke_style", "auto")).strip_edges().to_lower()
+	if st in ["auto", "solid", "dashed", "dotted"]:
+		res["stroke_style"] = st
+	res["width"] = clampf(float(raw.get("width", 2.0)), 1.5, 4.0)
+	res["color"] = str(raw.get("color", "")).strip_edges()
+	var wps_raw = raw.get("waypoints", [])
+	var wps_clean: Array = []
+	if wps_raw is Array:
+		for wp in wps_raw:
+			if wp is Array and wp.size() >= 2:
+				wps_clean.append([float(wp[0]), float(wp[1])])
+			elif wp is Vector2:
+				wps_clean.append([float(wp.x), float(wp.y)])
+	res["waypoints"] = wps_clean
+	return res
+
+func get_effective_wire_shape(conn_id: String) -> String:
+	var vis := get_connection_visual(conn_id)
+	var rm: String = str(vis.get("routing_mode", "auto"))
+	if rm in ["bezier", "orthogonal", "chamfer", "straight"]:
+		return rm
+	return get_default_wire_shape()
+
+func update_connection_visual(conn_id: String, updates: Dictionary, record_undo: bool = true) -> bool:
+	var conn := get_connection(conn_id)
+	if conn == null:
+		return false
+	if record_undo:
+		_record_undo()
+	var vis := get_connection_visual(conn_id)
+	for k in updates.keys():
+		var sk := str(k)
+		if sk == "routing_mode":
+			var rm := str(updates[k]).strip_edges().to_lower()
+			if rm in ["auto", "bezier", "orthogonal", "chamfer", "straight"]:
+				vis["routing_mode"] = rm
+		elif sk == "radius_or_tension":
+			vis["radius_or_tension"] = clampf(float(updates[k]), 0.0, 20.0)
+		elif sk == "stroke_style":
+			var st := str(updates[k]).strip_edges().to_lower()
+			if st in ["auto", "solid", "dashed", "dotted"]:
+				vis["stroke_style"] = st
+		elif sk == "width":
+			vis["width"] = clampf(float(updates[k]), 1.5, 4.0)
+		elif sk == "color":
+			vis["color"] = str(updates[k]).strip_edges()
+		elif sk == "waypoints" and updates[k] is Array:
+			var wps_clean: Array = []
+			for wp in updates[k]:
+				if wp is Array and wp.size() >= 2:
+					wps_clean.append([snapped(float(wp[0]), 0.05), snapped(float(wp[1]), 0.05)])
+				elif wp is Vector2:
+					wps_clean.append([snapped(float(wp.x), 0.05), snapped(float(wp.y), 0.05)])
+			vis["waypoints"] = wps_clean
+	conn.extensions["visual"] = vis
+	is_dirty = true
+	document_modified.emit()
+	return true
+
+func reset_connection_visual(conn_id: String) -> bool:
+	var conn := get_connection(conn_id)
+	if conn == null:
+		return false
+	_record_undo()
+	conn.extensions.erase("visual")
+	is_dirty = true
+	document_modified.emit()
+	return true
+
+func insert_connection_waypoint(conn_id: String, index: int, world_pos_m: Vector2, record_undo: bool = true) -> int:
+	var conn := get_connection(conn_id)
+	if conn == null:
+		return -1
+	if record_undo:
+		_record_undo()
+	var vis := get_connection_visual(conn_id)
+	var wps: Array = vis.get("waypoints", [])
+	var ins_idx: int = clampi(index, 0, wps.size())
+	wps.insert(ins_idx, [snapped(world_pos_m.x, 0.05), snapped(world_pos_m.y, 0.05)])
+	vis["waypoints"] = wps
+	conn.extensions["visual"] = vis
+	is_dirty = true
+	document_modified.emit()
+	return ins_idx
+
+func move_connection_waypoint(conn_id: String, index: int, world_pos_m: Vector2, record_undo: bool = false) -> bool:
+	var conn := get_connection(conn_id)
+	if conn == null:
+		return false
+	var vis := get_connection_visual(conn_id)
+	var wps: Array = vis.get("waypoints", [])
+	if index < 0 or index >= wps.size():
+		return false
+	if record_undo:
+		_record_undo()
+	wps[index] = [snapped(world_pos_m.x, 0.05), snapped(world_pos_m.y, 0.05)]
+	vis["waypoints"] = wps
+	conn.extensions["visual"] = vis
+	is_dirty = true
+	document_modified.emit()
+	return true
+
+func remove_connection_waypoint(conn_id: String, index: int, record_undo: bool = true) -> bool:
+	var conn := get_connection(conn_id)
+	if conn == null:
+		return false
+	var vis := get_connection_visual(conn_id)
+	var wps: Array = vis.get("waypoints", [])
+	if index < 0 or index >= wps.size():
+		return false
+	if record_undo:
+		_record_undo()
+	wps.remove_at(index)
+	vis["waypoints"] = wps
+	conn.extensions["visual"] = vis
+	is_dirty = true
 	document_modified.emit()
 	return true
 

@@ -113,21 +113,46 @@ func rebuild(entities: Array) -> void:
 			if not badge.is_empty():
 				elem_item.set_text(0, elem_label + "  " + badge)
 
-		# Live entity sub-items (queue/server entities)
+		# Live entity sub-items (queue/server/conveyor entities)
 		if ents_by_elem.has(elem.id):
 			for ent in ents_by_elem[elem.id]:
 				var ent_id: String = str(ent.get("id", ""))
 				var props: Dictionary = ent.get("properties", {})
 				var in_srv: bool = bool(props.get("in_service", false))
-				var ent_label: String
-				if in_srv:
-					ent_label = ICON_SERVING + ent_id.replace("ent_", "#") + " | in service"
-				else:
-					ent_label = ICON_ENTITY + ent_id.replace("ent_", "#") + " | waiting"
+				var prio: int = int(props.get("priority", 0))
+				var status_str := "in service" if in_srv else "waiting"
+				if prio > 0:
+					status_str += " · P%d" % prio
+
+				var attrs: Dictionary = {}
+				if props.get("attributes") is Dictionary:
+					attrs = props["attributes"]
+
+				var summary_parts: PackedStringArray = PackedStringArray()
+				for ak in attrs.keys():
+					var ks := str(ak)
+					if ks in ["arrival_time", "priority", "entity_type"]:
+						continue
+					summary_parts.append("%s=%s" % [ks, str(attrs[ak])])
+				var attr_summary := (" [" + ", ".join(summary_parts) + "]") if not summary_parts.is_empty() else ""
+
+				var ent_label: String = (ICON_SERVING if in_srv else ICON_ENTITY) + ent_id.replace("ent_", "#") + " | " + status_str + attr_summary
 				var ent_item := _tree.create_item(elem_item)
 				ent_item.set_text(0, ent_label)
-				ent_item.set_custom_color(0, Color("#7f8c8d"))
-				ent_item.set_metadata(0, {"type": "entity", "id": ent_id, "element_id": elem.id})
+
+				var ent_clr := Color("#8fa3b0")
+				if props.has("color_r") and props.has("color_g") and props.has("color_b"):
+					ent_clr = Color(float(props["color_r"]), float(props["color_g"]), float(props["color_b"]))
+				ent_item.set_custom_color(0, ent_clr)
+				ent_item.set_metadata(0, {"type": "entity", "id": ent_id, "element_id": elem.id, "attributes": attrs})
+
+				if not attrs.is_empty():
+					ent_item.collapsed = true
+					for ak in attrs.keys():
+						var kv_item := _tree.create_item(ent_item)
+						kv_item.set_text(0, "    • %s: %s" % [str(ak), str(attrs[ak])])
+						kv_item.set_custom_color(0, Color("#7f8c8d"))
+						kv_item.set_selectable(0, false)
 
 func _on_item_selected() -> void:
 	var selected := _tree.get_selected()

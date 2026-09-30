@@ -20,7 +20,10 @@ struct IRSourceNode <: AbstractIRNode
     entity_type::String
     arrival_sampler::Any  # (rng::AbstractRNG) -> Float64
     priority::Int
+    default_attributes::Dict{String, Any}
 end
+IRSourceNode(id::String, entity_type::String, arrival_sampler, priority::Int) =
+    IRSourceNode(id, entity_type, arrival_sampler, priority, Dict{String, Any}())
 
 """
     IRQueueNode <: AbstractIRNode
@@ -30,13 +33,16 @@ Waiting line / buffer node with capacity and discipline.
 struct IRQueueNode <: AbstractIRNode
     id::String
     capacity::Int
-    discipline::Symbol  # :fifo, :lifo, :priority
+    discipline::Symbol  # :fifo, :lifo, :priority, :edd, :spt, :custom
     initial_occupancy::Int
     routing_rule::Symbol
     routing_weights::Dict{String, Float64}
+    custom_discipline_fn::Any
 end
 IRQueueNode(id::String, capacity::Int, discipline::Symbol, initial_occupancy::Int) =
-    IRQueueNode(id, capacity, discipline, initial_occupancy, :fixed, Dict{String, Float64}())
+    IRQueueNode(id, capacity, discipline, initial_occupancy, :fixed, Dict{String, Float64}(), nothing)
+IRQueueNode(id::String, capacity::Int, discipline::Symbol, initial_occupancy::Int, routing_rule::Symbol, routing_weights::Dict{String, Float64}) =
+    IRQueueNode(id, capacity, discipline, initial_occupancy, routing_rule, routing_weights, nothing)
 
 """
     IRServerNode <: AbstractIRNode
@@ -53,9 +59,13 @@ struct IRServerNode <: AbstractIRNode
     mttr::Float64
     routing_rule::Symbol
     routing_weights::Dict{String, Float64}
+    intake_mode::Symbol
+    process_mode::Symbol
 end
 IRServerNode(id::String, num_servers::Int, service_dist_obj, service_sampler, failure_model::Symbol, mtbf::Float64, mttr::Float64) =
-    IRServerNode(id, num_servers, service_dist_obj, service_sampler, failure_model, mtbf, mttr, :fixed, Dict{String, Float64}())
+    IRServerNode(id, num_servers, service_dist_obj, service_sampler, failure_model, mtbf, mttr, :fixed, Dict{String, Float64}(), :slot_order, :standard)
+IRServerNode(id::String, num_servers::Int, service_dist_obj, service_sampler, failure_model::Symbol, mtbf::Float64, mttr::Float64, routing_rule::Symbol, routing_weights::Dict{String, Float64}) =
+    IRServerNode(id, num_servers, service_dist_obj, service_sampler, failure_model, mtbf, mttr, routing_rule, routing_weights, :slot_order, :standard)
 
 """
     IRConveyorNode <: AbstractIRNode
@@ -70,9 +80,14 @@ struct IRConveyorNode <: AbstractIRNode
     capacity::Int
     routing_rule::Symbol
     routing_weights::Dict{String, Float64}
+    conveyor_mode::Symbol
+    conveyor_pitch::Float64
+    conveyor_index_interval::Float64
 end
 IRConveyorNode(id::String, length::Float64, speed::Float64, transit_delay::Float64, capacity::Int) =
-    IRConveyorNode(id, length, speed, transit_delay, capacity, :fixed, Dict{String, Float64}())
+    IRConveyorNode(id, length, speed, transit_delay, capacity, :fixed, Dict{String, Float64}(), :free_flow, 0.5, 1.0)
+IRConveyorNode(id::String, length::Float64, speed::Float64, transit_delay::Float64, capacity::Int, routing_rule::Symbol, routing_weights::Dict{String, Float64}) =
+    IRConveyorNode(id, length, speed, transit_delay, capacity, routing_rule, routing_weights, :free_flow, 0.5, 1.0)
 
 """
     IRSinkNode <: AbstractIRNode
@@ -138,6 +153,7 @@ struct ExecutionGraphIR
     spatial_dimensions::Dict{String, Tuple{Float64, Float64, Float64}}
     product_def::ProductDefinition
     conveyor_curves::Dict{String, Any}
+    zone_hooks::Dict{String, Any}
 end
 
 function ExecutionGraphIR(
@@ -147,7 +163,8 @@ function ExecutionGraphIR(
     downstream_conns::Dict{String, Vector{Tuple{String, String, String, String}}},
     spatial_positions::Dict{String, Tuple{Float64, Float64, Float64}},
     spatial_dimensions::Dict{String, Tuple{Float64, Float64, Float64}},
-    product_def::ProductDefinition
+    product_def::ProductDefinition,
+    conveyor_curves::Dict{String, Any} = Dict{String, Any}()
 )
     return ExecutionGraphIR(
         nodes,
@@ -157,6 +174,7 @@ function ExecutionGraphIR(
         spatial_positions,
         spatial_dimensions,
         product_def,
+        conveyor_curves,
         Dict{String, Any}()
     )
 end
@@ -170,6 +188,7 @@ function ExecutionGraphIR()
         Dict{String, Tuple{Float64, Float64, Float64}}(),
         Dict{String, Tuple{Float64, Float64, Float64}}(),
         ProductDefinition(),
+        Dict{String, Any}(),
         Dict{String, Any}()
     )
 end

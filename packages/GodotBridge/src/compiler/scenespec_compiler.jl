@@ -100,8 +100,10 @@ function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationRe
             for e in errs
                 push!(all_diagnostics, CompilerDiagnostic("COMPILER_ARRIVAL_DIST", elem_id, e; property_path="properties.interarrival_time"))
             end
-            prio = Int(get(props, "priority", 0))
-            ir.nodes[elem_id] = IRSourceNode(elem_id, string(get(props, "entity_type", "carton")), sampler, prio)
+            default_attrs = _parse_default_attributes(get(props, "default_attributes", nothing))
+            raw_prio = get(props, "priority", get(default_attrs, "priority", 0))
+            prio = raw_prio isa Real ? Int(round(raw_prio)) : 0
+            ir.nodes[elem_id] = IRSourceNode(elem_id, string(get(props, "entity_type", "carton")), sampler, prio, default_attrs)
 
         elseif kind == "queue" || endswith(kind, "/queue")
             cap = Int(get(props, "capacity", 20))
@@ -109,12 +111,25 @@ function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationRe
                 push!(all_diagnostics, CompilerDiagnostic("COMPILER_CAPACITY", elem_id, "Queue capacity must be > 0, got $cap"; property_path="properties.capacity"))
                 cap = 1
             end
-            disc_str = lowercase(string(get(props, "discipline", "fifo")))
-            disc = disc_str in ("priority", "hol", "priority_hol") ? :priority : (disc_str == "lifo" ? :lifo : :fifo)
+            disc_str = lowercase(strip(string(get(props, "discipline", "fifo"))))
+            disc = if disc_str in ("priority", "hol", "priority_hol")
+                :priority
+            elseif disc_str in ("lifo", "last_in_first_out", "stack")
+                :lifo
+            elseif disc_str in ("edd", "earliest_due_date")
+                :edd
+            elseif disc_str in ("spt", "shortest_processing_time")
+                :spt
+            elseif disc_str in ("custom", "comparator", "custom_comparator")
+                :custom
+            else
+                :fifo
+            end
             init_occ = Int(get(props, "initial_occupancy", 0))
             r_rule = Symbol(lowercase(string(get(props, "routing_rule", "fixed"))))
             r_weights = _parse_routing_weights(get(props, "routing_weights", nothing))
-            ir.nodes[elem_id] = IRQueueNode(elem_id, cap, disc, init_occ, r_rule, r_weights)
+            custom_disc_code = strip(string(get(props, "custom_discipline", "")))
+            ir.nodes[elem_id] = IRQueueNode(elem_id, cap, disc, init_occ, r_rule, r_weights, custom_disc_code)
 
         elseif kind == "server" || endswith(kind, "/server")
             num_srv = Int(get(props, "servers", 1))
@@ -131,7 +146,9 @@ function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationRe
             mttr_v = Float64(get(props, "mttr", 120.0))
             r_rule = Symbol(lowercase(string(get(props, "routing_rule", "fixed"))))
             r_weights = _parse_routing_weights(get(props, "routing_weights", nothing))
-            ir.nodes[elem_id] = IRServerNode(elem_id, num_srv, dist_obj, sampler, f_model, mtbf_v, mttr_v, r_rule, r_weights)
+            intake_m = Symbol(lowercase(strip(string(get(props, "intake_mode", "slot_order")))))
+            proc_m = Symbol(lowercase(strip(string(get(props, "process_mode", "standard")))))
+            ir.nodes[elem_id] = IRServerNode(elem_id, num_srv, dist_obj, sampler, f_model, mtbf_v, mttr_v, r_rule, r_weights, intake_m, proc_m)
 
         elseif kind == "conveyor" || endswith(kind, "/conveyor")
             spd = max(0.01, Float64(get(props, "speed", 1.5)))
@@ -144,7 +161,10 @@ function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationRe
             transit_tau = len / spd
             r_rule = Symbol(lowercase(string(get(props, "routing_rule", "fixed"))))
             r_weights = _parse_routing_weights(get(props, "routing_weights", nothing))
-            ir.nodes[elem_id] = IRConveyorNode(elem_id, len, spd, transit_tau, cap, r_rule, r_weights)
+            cmode = Symbol(lowercase(strip(string(get(props, "conveyor_mode", "free_flow")))))
+            pitch = max(0.01, Float64(get(props, "accumulation_pitch", get(props, "pitch", 0.5))))
+            idx_iv = max(0.01, Float64(get(props, "index_interval", 1.0)))
+            ir.nodes[elem_id] = IRConveyorNode(elem_id, len, spd, transit_tau, cap, r_rule, r_weights, cmode, pitch, idx_iv)
 
         elseif kind == "sink" || endswith(kind, "/sink")
             rec_soj = Bool(get(props, "record_sojourn", true))
@@ -172,6 +192,51 @@ function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationRe
                 "Element '$elem_id' has unrecognized kind '$kind'. Treated as generic passthrough.";
                 severity = DIAG_WARNING
             ))
+        end
+
+        # Compile authored lifecycle hooks if present in properties["hooks"]
+        raw_hooks = get(props, "hooks", nothing)
+        if raw_hooks isa AbstractDict && !isempty(raw_hooks)
+            zh = ZoneHooks()
+            has_any_hook = false
+            for (ev_k, ev_sym) in (
+                ("on_entry", :on_entry),
+                ("on_service_start", :on_service_start),
+                ("on_service_complete", :on_service_complete),
+                ("on_exit", :on_exit),
+                ("on_event", :on_event),
+                ("on_pull", :on_pull)
+            )
+                code_str = strip(string(get(raw_hooks, ev_k, get(raw_hooks, ev_sym, ""))))
+                if !isempty(code_str)
+                    try
+                        fn = parse_hook_expr(code_str)
+                        setfield!(zh, ev_sym, fn)
+                        has_any_hook = true
+                    catch err
+                        push!(all_diagnostics, CompilerDiagnostic(
+                            "COMPILER_HOOK_SYNTAX",
+                            elem_id,
+                            "Hook '$ev_k' failed to compile: $(sprint(showerror, err))";
+                            severity = DIAG_WARNING,
+                            property_path = "properties.hooks.$ev_k"
+                        ))
+                    end
+                end
+            end
+            if has_any_hook
+                ir.zone_hooks[elem_id] = zh
+                if zh.on_pull !== nothing && haskey(ir.nodes, elem_id) && ir.nodes[elem_id] isa IRServerNode
+                    sn = ir.nodes[elem_id]::IRServerNode
+                    if sn.intake_mode === :slot_order
+                        ir.nodes[elem_id] = IRServerNode(
+                            sn.id, sn.num_servers, sn.service_dist_obj, sn.service_sampler,
+                            sn.failure_model, sn.mtbf, sn.mttr, sn.routing_rule, sn.routing_weights,
+                            :custom, sn.process_mode
+                        )
+                    end
+                end
+            end
         end
     end
 
@@ -226,7 +291,8 @@ function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationRe
         ir.spatial_positions,
         ir.spatial_dimensions,
         product_def,
-        ir.conveyor_curves
+        ir.conveyor_curves,
+        ir.zone_hooks
     )
 
     # 3c. Bake 3D/2D parametric conveyor curves & resolve C¹ junction poses
@@ -269,13 +335,115 @@ function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationRe
         SimCore.add_obstacle!(world, obs)
     end
 
-    # 8. Seed initial events
+    # Populate PortDirectory, containment hierarchy, and entity groups
+    _populate_port_directory_and_containment!(world, typed_spec, flat_spec, ir)
+
+    # 8. Seed initial events and initial entity attributes
+    init_rng = default_rng()
     for (zid, t_arr, prio) in des_artifacts.initial_arrivals
         ent_id = SimCore.new_entity_id!(world)
-        SimDES.schedule!(fel, SimCore.EntityArrival(ent_id, zid, t_arr, prio, true), t_arr)
+        seeded_prio = prio
+        cfg = get(des_artifacts.zone_configs, zid, nothing)
+        if cfg !== nothing
+            arr = cfg.arrival
+            if arr isa CustomArrivalProcess
+                seeded_prio = _seed_entity_attributes!(
+                    world, init_rng, ent_id, t_arr, prio,
+                    arr.entity_type, arr.default_attributes, arr.spawn_counter
+                )
+            elseif arr isa CompositeArrivalProcess
+                for proc in arr.processes
+                    if abs(proc.last_scheduled_t[] - t_arr) < 1e-6
+                        seeded_prio = _seed_entity_attributes!(
+                            world, init_rng, ent_id, t_arr, prio,
+                            proc.entity_type, proc.default_attributes, proc.spawn_counter
+                        )
+                        break
+                    end
+                end
+            end
+        end
+        SimDES.schedule!(fel, SimCore.EntityArrival(ent_id, zid, t_arr, seeded_prio, true), t_arr)
     end
 
     return CompilationResult(true, world, fel, des_artifacts.zone_configs, des_artifacts.source_map, all_diagnostics, ir)
+end
+
+function _populate_port_directory_and_containment!(
+    world::SimCore.SimWorld,
+    typed_spec::TypedSceneSpec,
+    flat_spec::TypedSceneSpec,
+    ir::ExecutionGraphIR
+)
+    # 1. Register explicit subgraphs as container handles (is_container = true)
+    for sg in typed_spec.subgraphs
+        SimCore.register_entity_handle!(world, sg.id, :subgraph; is_container=true, zone_id=0)
+    end
+
+    # 2. Register all elements, ports, groups, and containment links
+    for elem in flat_spec.elements
+        ksym = Symbol(split(lowercase(strip(elem.kind)), '/')[end])
+        zid = get(ir.element_to_zone, elem.id, 0)
+        is_cont = ksym in (:subgraph, :container, :cell, :zone)
+        h = SimCore.register_entity_handle!(world, elem.id, ksym; is_container=is_cont, zone_id=zid)
+        if zid > 0 && ksym in (:server, :conveyor)
+            world.port_directory.zone_to_handle[zid] = h
+        end
+        SimCore.register_port!(world, h, :in_flow, :in; domain=:flow)
+        SimCore.register_port!(world, h, :out_flow, :out; domain=:flow)
+        SimCore.register_port!(world, h, :in_signal, :in; domain=:signal)
+        SimCore.register_port!(world, h, :out_signal, :out; domain=:signal)
+        SimCore.register_port!(world, h, :in_event, :in; domain=:event)
+        SimCore.register_port!(world, h, :out_event, :out; domain=:event)
+        SimCore.register_port!(world, h, :out_metric, :out; domain=:metric)
+
+        props = elem.properties
+        # Groups
+        raw_g = get(props, "group", nothing)
+        if raw_g !== nothing && !isempty(strip(string(raw_g)))
+            gvec = get!(world.port_directory.by_group, Symbol(strip(string(raw_g))), SimCore.EntityHandle[])
+            !(h in gvec) && push!(gvec, h)
+        end
+        raw_gs = get(props, "groups", nothing)
+        if raw_gs isa AbstractVector
+            for g in raw_gs
+                gs = strip(string(g))
+                if !isempty(gs)
+                    gvec = get!(world.port_directory.by_group, Symbol(gs), SimCore.EntityHandle[])
+                    !(h in gvec) && push!(gvec, h)
+                end
+            end
+        end
+
+        # Containment (explicit container/parent property or slash-separated subgraph prefix)
+        parent_str = strip(string(get(props, "container", get(props, "parent", ""))))
+        if isempty(parent_str) && occursin('/', elem.id)
+            parts = split(elem.id, '/')
+            parent_str = join(parts[1:end-1], "/")
+        end
+        if !isempty(parent_str)
+            ph = SimCore.register_entity_handle!(world, parent_str, :subgraph; is_container=true, zone_id=0)
+            world.containment_parent[h] = ph
+            cvec = get!(world.containment_children, ph, SimCore.EntityHandle[])
+            !(h in cvec) && push!(cvec, h)
+        end
+    end
+
+    # 3. Register all enabled connections as bidirectional port wires
+    for conn in flat_spec.connections
+        !conn.enabled && continue
+        sh = get(world.port_directory.name_to_handle, conn.source_element, SimCore.INVALID_HANDLE)
+        dh = get(world.port_directory.name_to_handle, conn.target_element, SimCore.INVALID_HANDLE)
+        if isvalid(sh) && isvalid(dh)
+            lt = Symbol(lowercase(string(conn.link_type)))
+            sp_raw = lowercase(strip(conn.source_port))
+            dp_raw = lowercase(strip(conn.target_port))
+            sp = (lt === :flow && sp_raw in ("out", "flow_out", "out_flow", "")) ? :out_flow : Symbol(sp_raw)
+            dp = (lt === :flow && dp_raw in ("in", "flow_in", "in_flow", "")) ? :in_flow : Symbol(dp_raw)
+            SimCore.register_port_wire!(world, sh, sp, dh, dp; wire_id=conn.id)
+        end
+    end
+    return nothing
 end
 
 function _parse_routing_weights(raw)::Dict{String, Float64}
@@ -289,3 +457,14 @@ function _parse_routing_weights(raw)::Dict{String, Float64}
     end
     return res
 end
+
+function _parse_default_attributes(raw)::Dict{String, Any}
+    res = Dict{String, Any}()
+    if raw isa AbstractDict
+        for (k, v) in raw
+            res[string(k)] = v
+        end
+    end
+    return res
+end
+

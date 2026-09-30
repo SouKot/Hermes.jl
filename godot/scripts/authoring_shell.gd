@@ -79,6 +79,14 @@ var _btn_group: Button
 var _btn_ungroup: Button
 var _btn_template: Button
 var _btn_wires: Button
+var _opt_wire_shape: OptionButton
+const WIRE_SHAPE_IDS: Array[String] = ["bezier", "orthogonal", "chamfer", "straight"]
+const WIRE_SHAPE_ITEMS: Array[String] = [
+	"∿ Wire Shape: Curved",
+	"90° Wire Shape: Orthogonal",
+	"∠ Wire Shape: Metro 45°",
+	"╱ Wire Shape: Straight"
+]
 
 # Left Dock
 var _catalog_container: VBoxContainer
@@ -601,6 +609,19 @@ func _build_header() -> Control:
 	)
 	row.add_child(_btn_wires)
 
+	# Universal Scene-Wide Default Wire Shape OptionButton
+	_opt_wire_shape = OptionButton.new()
+	_opt_wire_shape.tooltip_text = "Default scene-wide connection wire routing shape (applied to all wires set to Auto)"
+	for i in range(WIRE_SHAPE_ITEMS.size()):
+		_opt_wire_shape.add_item(WIRE_SHAPE_ITEMS[i], i)
+	_opt_wire_shape.item_selected.connect(func(idx: int):
+		if doc_store != null and idx >= 0 and idx < WIRE_SHAPE_IDS.size():
+			doc_store.set_default_wire_shape(WIRE_SHAPE_IDS[idx])
+			if _canvas_2d != null:
+				_canvas_2d._redraw_all()
+	)
+	row.add_child(_opt_wire_shape)
+
 	_btn_plots = Button.new()
 	_btn_plots.text = "📈 Charts"
 	_btn_plots.tooltip_text = "Toggle real-time live telemetry waveforms & charts"
@@ -1097,9 +1118,18 @@ func _open_rule_builder(conn_id: String) -> void:
 	_rule_builder.visible = true
 	_rule_builder.move_to_front()
 
+func _sync_wire_shape_toolbar() -> void:
+	if _opt_wire_shape == null or doc_store == null:
+		return
+	var def_shape := doc_store.get_default_wire_shape()
+	var idx := WIRE_SHAPE_IDS.find(def_shape)
+	if idx >= 0 and _opt_wire_shape.selected != idx:
+		_opt_wire_shape.selected = idx
+
 func _on_document_loaded(doc: SceneTypes.SceneDocument) -> void:
 	_update_title()
 	_update_abm_status_pill()
+	_sync_wire_shape_toolbar()
 	if _autosave_status_label != null:
 		_autosave_status_label.text = "● Saved"
 		_autosave_status_label.add_theme_color_override("font_color", Color("#52c7a5"))
@@ -1110,6 +1140,9 @@ func _on_document_loaded(doc: SceneTypes.SceneDocument) -> void:
 func _on_document_modified() -> void:
 	_update_title()
 	_update_abm_status_pill()
+	_sync_wire_shape_toolbar()
+	if _canvas_2d != null:
+		_canvas_2d._redraw_all()
 	if _autosave_status_label != null and doc_store != null and doc_store.is_dirty:
 		_autosave_status_label.text = "● Unsaved Changes"
 		_autosave_status_label.add_theme_color_override("font_color", Color("#f1c40f"))

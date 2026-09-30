@@ -16,6 +16,9 @@ const Catalog := preload("res://scripts/authoring_catalog.gd")
 const BlockNode := preload("res://scripts/authoring_block_node.gd")
 const SceneTypes := preload("res://scripts/scenespec_types.gd")
 const ConveyorCurve3D := preload("res://scripts/conveyor_curve_3d.gd")
+const FloatingInspector := preload("res://scripts/authoring_floating_inspector.gd")
+const RulePanel := preload("res://scripts/authoring_rule_panel.gd")
+const Outliner := preload("res://scripts/authoring_outliner.gd")
 
 func _init() -> void:
 	print("==================================================")
@@ -141,7 +144,29 @@ func _init() -> void:
 		_fail("reorder_port_channel failed to move q_out_4 to channel #1")
 		return
 	assertions += 1
-	print("[PASS] 2. 5-In / 4-Out Multi-Wire Bus Delete #3, Auto-Renumber, Reorder & Undo/Redo verified.")
+
+	# Verify no static ×N rectangle badge exists on multi-wire ports and right-clicking any connected port (>=1) opens ChannelPopup
+	canvas.rebuild_blocks()
+	var b_hub: BlockNode = canvas._block_nodes["srv_hub"]
+	if b_hub._get_port_badge_rect("flow_out") != Rect2() or not b_hub._hit_test_port_badge(b_hub.get_port_local_position("flow_out") + Vector2(10, 0)).is_empty():
+		_fail("Expected static ×N port badge rectangle to be completely removed")
+		return
+	var b_src1: BlockNode = canvas._block_nodes["src_1"]
+	var rclick_ev := InputEventMouseButton.new()
+	rclick_ev.button_index = MOUSE_BUTTON_RIGHT
+	rclick_ev.pressed = true
+	rclick_ev.position = b_src1.get_port_local_position("flow_out")
+	rclick_ev.global_position = Vector2(120, 120)
+	b_src1._gui_input(rclick_ev)
+	if store.get_port_connections("src_1", "flow_out", true).size() != 1:
+		_fail("Right-clicking a port with 1 connection must NOT auto-disconnect the port")
+		return
+	if not canvas.get_channel_popup().visible or canvas.get_channel_popup().current_element_id != "src_1":
+		_fail("Right-clicking a port with 1 connection must open the Channel Manager popup")
+		return
+	canvas.get_channel_popup().close_popup()
+	assertions += 1
+	print("[PASS] 2. 5-In / 4-Out Multi-Wire Bus Delete #3, Auto-Renumber, Reorder, Undo/Redo & Right-Click Popup verified.")
 
 	# -------------------------------------------------------------------------
 	# 3. High-Density Scale (30+ Connections), Filterable Popup & Guardrails
@@ -320,6 +345,211 @@ func _init() -> void:
 		return
 	assertions += 1
 	print("[PASS] 6. Adaptive Nameplates verified.")
+
+	# -------------------------------------------------------------------------
+	# 7. Port-Normal Wire Shapes, Interactive Waypoints (All 4 Modes) & WirePopup (Option 1B)
+	# -------------------------------------------------------------------------
+	var conn_wq := store.add_connection_direct("conn_wire_test", "src_compact", "flow_out", "q_medium", "flow_in", "flow")
+	var srv_ctrl: SceneTypes.SceneElement = catalog.create_element_instance("server", "srv_ctrl", Vector2(7, 8))
+	store.add_element(srv_ctrl)
+	var conn_sig := store.add_connection_direct("conn_sig_test", "srv_ctrl", "utilization", "q_medium", "release_signal", "signal")
+	canvas.rebuild_blocks()
+
+	# 7a. Verify Port Normals: Left=(-1,0), Right=(+1,0), Top=(0,-1), Bottom=(0,+1)
+	var geom_flow := canvas.compute_connection_geometry(conn_wq)
+	var geom_sig := canvas.compute_connection_geometry(conn_sig)
+	if not (geom_flow["start_normal"].distance_to(Vector2(1, 0)) < 0.01 and geom_flow["end_normal"].distance_to(Vector2(-1, 0)) < 0.01):
+		_fail("Expected Left/Right flow ports to have horizontal normals (+X, -X), got %s and %s" % [str(geom_flow["start_normal"]), str(geom_flow["end_normal"])])
+		return
+	if not (geom_sig["start_normal"].distance_to(Vector2(0, 1)) < 0.01 and geom_sig["end_normal"].distance_to(Vector2(0, -1)) < 0.01):
+		_fail("Expected Bottom metric / Top signal ports to have vertical normals (+Y, -Y), got %s and %s" % [str(geom_sig["start_normal"]), str(geom_sig["end_normal"])])
+		return
+	assertions += 1
+
+	# 7b. Scene-Wide Default Wire Shape vs Per-Wire Override
+	if store.get_effective_wire_shape("conn_wire_test") != "bezier":
+		_fail("Expected default wire shape to be 'bezier'")
+		return
+	store.set_default_wire_shape("orthogonal")
+	if store.get_effective_wire_shape("conn_wire_test") != "orthogonal":
+		_fail("Expected 'auto' wire to follow scene-wide default 'orthogonal'")
+		return
+
+	# 7c. Plain Right-Click on wire -> selects wire and opens Expanded Floating Wire Pop-up (Option 1B)
+	var flow_pts: PackedVector2Array = canvas.compute_connection_geometry(conn_wq)["points"]
+	var click_on_wire_pt: Vector2 = flow_pts[flow_pts.size() / 2]
+	var rclick_wire := InputEventMouseButton.new()
+	rclick_wire.button_index = MOUSE_BUTTON_RIGHT
+	rclick_wire.pressed = true
+	rclick_wire.position = click_on_wire_pt
+	rclick_wire.global_position = click_on_wire_pt
+	canvas._gui_input(rclick_wire)
+
+	var wpop = canvas.get_wire_popup()
+	if not wpop.visible or wpop.current_conn_id != "conn_wire_test":
+		_fail("Expected plain Right-Click on wire to open Expanded Floating Wire Pop-up (Option 1B) for 'conn_wire_test'")
+		return
+	wpop.set_shape_mode("chamfer")
+	wpop.set_radius_or_tension(12.0)
+	wpop.set_stroke_style("dotted")
+	wpop.set_wire_width(3.0)
+	wpop.set_color_override("#00d2ff")
+	var vis_after := store.get_connection_visual("conn_wire_test")
+	if vis_after["routing_mode"] != "chamfer" or not is_equal_approx(float(vis_after["width"]), 3.0) or vis_after["stroke_style"] != "dotted" or vis_after["color"] != "#00d2ff":
+		_fail("WirePopup Option 1B controls did not persist visual settings: %s" % str(vis_after))
+		return
+	wpop.close_popup()
+	assertions += 1
+
+	# 7d. Interactive On-Canvas Waypoint (●) & Midpoint (⊕) Handles across ALL 4 Wire Types
+	store.select("conn_wire_test", "connection")
+	var geom_before_wp := canvas.compute_connection_geometry(conn_wq)
+	var mid_handles_0: Array = geom_before_wp["midpoint_handles"]
+	if mid_handles_0.size() != 1:
+		_fail("Expected 1 midpoint (⊕) handle on 0-waypoint wire, got %d" % mid_handles_0.size())
+		return
+
+	# Left-click press on midpoint (⊕) handle to insert a new waypoint (●) and drag it
+	var lpress_mid := InputEventMouseButton.new()
+	lpress_mid.button_index = MOUSE_BUTTON_LEFT
+	lpress_mid.pressed = true
+	lpress_mid.position = mid_handles_0[0]
+	canvas._gui_input(lpress_mid)
+
+	var drag_motion := InputEventMouseMotion.new()
+	drag_motion.position = mid_handles_0[0] + Vector2(0, -40)
+	canvas._gui_input(drag_motion)
+
+	var lrelease := InputEventMouseButton.new()
+	lrelease.button_index = MOUSE_BUTTON_LEFT
+	lrelease.pressed = false
+	lrelease.position = drag_motion.position
+	canvas._gui_input(lrelease)
+
+	for mode_test in ["bezier", "orthogonal", "chamfer", "straight"]:
+		store.update_connection_visual("conn_wire_test", {"routing_mode": mode_test})
+		var g_mode := canvas.compute_connection_geometry(conn_wq)
+		if g_mode["effective_mode"] != mode_test:
+			_fail("Expected effective_mode '%s', got '%s'" % [mode_test, str(g_mode["effective_mode"])])
+			return
+		if g_mode["waypoint_handles"].size() != 1 or g_mode["midpoint_handles"].size() != 2 or g_mode["points"].size() < 3:
+			_fail("Expected 1 waypoint (●) handle and 2 midpoint (⊕) handles in mode '%s', got wp=%d mid=%d" % [mode_test, g_mode["waypoint_handles"].size(), g_mode["midpoint_handles"].size()])
+			return
+	assertions += 1
+
+	# Right-click directly on the waypoint (●) handle to delete that single bend
+	var wp_pos_canvas: Vector2 = canvas.compute_connection_geometry(conn_wq)["waypoint_handles"][0]
+	var rclick_wp := InputEventMouseButton.new()
+	rclick_wp.button_index = MOUSE_BUTTON_RIGHT
+	rclick_wp.pressed = true
+	rclick_wp.position = wp_pos_canvas
+	canvas._gui_input(rclick_wp)
+	if store.get_connection_visual("conn_wire_test")["waypoints"].size() != 0:
+		_fail("Expected Right-Click on waypoint (●) handle to remove that single waypoint")
+		return
+
+	# Shift + Right-Click on wire -> immediately deletes the connection
+	var pts_for_del: PackedVector2Array = canvas.compute_connection_geometry(conn_sig)["points"]
+	var shift_rclick := InputEventMouseButton.new()
+	shift_rclick.button_index = MOUSE_BUTTON_RIGHT
+	shift_rclick.pressed = true
+	shift_rclick.shift_pressed = true
+	shift_rclick.position = pts_for_del[pts_for_del.size() / 2]
+	canvas._gui_input(shift_rclick)
+	if store.get_connection("conn_sig_test") != null:
+		_fail("Expected Shift + Right-Click on wire to immediately delete 'conn_sig_test'")
+		return
+	assertions += 1
+	print("[PASS] 7. Port-Normal Wire Shapes (4 Modes), Interactive Waypoint Handles & WirePopup (Option 1B) verified.")
+
+	# -------------------------------------------------------------------------
+	# 8. Immediate Roadmap Actions I-1 to I-4 GUI Verification
+	# -------------------------------------------------------------------------
+	var src_entry = catalog.get_entry("source")
+	if src_entry == null or src_entry.get_property_schema("priority").is_empty():
+		_fail("Expected 'source' property schema in AuthoringCatalog to include 'priority'")
+		return
+
+	var q_entry = catalog.get_entry("queue")
+	var disc_schema: Dictionary = q_entry.get_property_schema("discipline") if q_entry != null else {}
+	var disc_opts: Array = []
+	for opt_item in disc_schema.get("enum_options", []):
+		if opt_item is Dictionary:
+			disc_opts.append(str(opt_item.get("value", "")))
+	for req_opt in ["FIFO", "LIFO", "Priority", "EDD", "SPT", "Custom"]:
+		if not disc_opts.has(req_opt):
+			_fail("Expected 'queue' discipline options to include '%s', got %s" % [req_opt, str(disc_opts)])
+			return
+
+	# Verify FloatingInspector builds cleanly for Source (default_attributes) & Queue (Custom discipline + Hooks)
+	var finsp := FloatingInspector.new(store, catalog)
+	finsp._ready()
+	finsp.open_for_element("src_compact", Vector2(100, 100))
+	store.set_element_property("src_compact", "default_attributes", {
+		"batch_id": "auto_increment",
+		"due_date_offset": 60.0
+	})
+	finsp.open_for_element("q_medium", Vector2(120, 120))
+	store.set_element_property("q_medium", "discipline", "Custom")
+	store.set_element_property("q_medium", "custom_discipline", "get_attribute(a, \"due_date\", Inf) < get_attribute(b, \"due_date\", Inf)")
+	finsp.open_for_element("q_medium", Vector2(120, 120))
+	finsp._switch_tab(4) # Switch to Hooks tab (HookContext reference + Quick Hook Presets)
+	if store.get_element("q_medium").properties.get("discipline", "") != "Custom":
+		_fail("Expected q_medium discipline to be 'Custom'")
+		return
+
+	# Verify AuthoringRulePanel supports Custom (Comparator)
+	var rpanel := RulePanel.new()
+	rpanel._ready()
+	rpanel.configure("q_medium", "queue", store.get_element("q_medium").properties)
+	if rpanel._discipline_option.item_count < 6 or not rpanel._custom_disc_box.visible:
+		_fail("Expected AuthoringRulePanel discipline dropdown to have 6 options and show custom comparator editor when 'Custom' is active")
+		return
+
+	# Verify AuthoringOutliner renders live entity color overrides, priority, attribute summary, and expandable attributes
+	var outliner := Outliner.new()
+	outliner._ready()
+	outliner.setup(store)
+	outliner.rebuild([
+		{
+			"id": "ent_101",
+			"element_id": "q_medium",
+			"properties": {
+				"color_r": 0.95,
+				"color_g": 0.22,
+				"color_b": 0.22,
+				"mesh_type": "sphere",
+				"priority": 10,
+				"attributes": {
+					"batch_id": 2,
+					"due_date": 51.0,
+					"inspected": true
+				}
+			}
+		}
+	])
+	var root_item: TreeItem = outliner._tree.get_root()
+	var q_elem_item: TreeItem = null
+	var child := root_item.get_first_child()
+	while child != null:
+		var meta = child.get_metadata(0)
+		if meta is Dictionary and meta.get("id", "") == "q_medium":
+			q_elem_item = child
+			break
+		child = child.get_next()
+	if q_elem_item == null or q_elem_item.get_child_count() != 1:
+		_fail("Expected 1 live entity sub-item under q_medium in AuthoringOutliner")
+		return
+	var ent_row: TreeItem = q_elem_item.get_first_child()
+	var ent_text: String = ent_row.get_text(0)
+	if ent_text.find("P10") == -1 or ent_text.find("batch_id=2") == -1:
+		_fail("Expected entity row in AuthoringOutliner to show priority ('P10') and attribute summary ('batch_id=2'), got '%s'" % ent_text)
+		return
+	if ent_row.get_child_count() != 3:
+		_fail("Expected entity row in AuthoringOutliner to have 3 expandable attribute key-value child rows, got %d" % ent_row.get_child_count())
+		return
+	assertions += 1
+	print("[PASS] 8. Immediate Roadmap Actions I-1 to I-4 GUI (Catalog, FloatingInspector, RulePanel, Outliner) verified.")
 
 	print("==================================================")
 	print("ALL PHASE 7G TESTS PASSED (%d assertion groups)" % assertions)

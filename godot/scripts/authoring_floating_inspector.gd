@@ -57,7 +57,7 @@ var _spin_wid: SpinBox
 var _spin_hgt: SpinBox
 var _spin_zs: SpinBox
 var _spin_ze: SpinBox
-const HOOK_EVENTS := ["on_entry", "on_service_start", "on_service_complete", "on_exit"]
+const HOOK_EVENTS := ["on_entry", "on_service_start", "on_service_complete", "on_exit", "on_pull", "on_event"]
 var _hook_editors: Array = []
 var _hook_enables: Array = []
 var _hook_error_label: Label = null
@@ -1302,12 +1302,26 @@ func _on_selection_changed(sel_id: String, sel_type: String) -> void:
 # ============================================================================
 # Tab 4: Hooks
 # ============================================================================
+const SIMVIZ_RECIPES := [
+	{"label": "📚 Insert SimViz Recipe...", "code": ""},
+	{"label": "VIP Color & Priority 10 (item)", "code": "if rand_uniform() < 0.35\n    set_priority!(10)\n    set_color!(:red)\n    set_label!(\"VIP\")\nelse\n    set_color!(:green)\nend"},
+	{"label": "Route to Shortest Connected Queue (:out_flow)", "code": "best = connected_entity_argmin(:out_flow, e -> queue_length(e))\nif isvalid(best)\n    route_to!(best)\nend"},
+	{"label": "Pull Highest-Priority Item Across All Input Queues", "code": "pull_from_port_argmax!(:in_flow, c -> c.priority)"},
+	{"label": "Pull from Longest Connected Input Queue", "code": "pull_from_port_longest!(:in_flow)"},
+	{"label": "Sequence-Dependent Setup Penalty (+2.5s)", "code": "if last_processed_attr(:family, :A) != get_attr(:family, :A)\n    add_setup_time!(2.5)\nend"},
+	{"label": "Throttle Conveyor by Downstream Fill Ratio", "code": "dn = connected_entity(:out_flow, 1)\nif isvalid(dn) && fill_ratio(dn) > 0.7\n    set_speed!(0.5)\nelse\n    set_speed!(2.0)\nend"},
+	{"label": "Batch Update Speed of All Conveyors (O(N))", "code": "set_speed!(entities_of_kind(:conveyor), 2.5)"},
+	{"label": "Check Container / Subgraph Utilization", "code": "if has_container() && utilization(container_entity()) > 0.8\n    set_color!(item(), :orange)\nend"},
+	{"label": "Schedule Periodic Custom Event (:heartbeat)", "code": "schedule_every!(5.0, :heartbeat)"}
+]
+
 func _render_hooks_tab(elem: SceneTypes.SceneElement) -> void:
 	_hook_editors.clear()
 	_hook_enables.clear()
 	
 	var info_lbl := Label.new()
-	info_lbl.text = "EVENT HOOKS"
+	info_lbl.text = "EVENT HOOKS (SimViz DSL: self(), item(), set_color!, route_to!, set_speed!, pull_from_port_argmax!...)"
+	info_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	info_lbl.add_theme_font_size_override("font_size", 10)
 	info_lbl.add_theme_color_override("font_color", MUTED)
 	_pages_container.add_child(info_lbl)
@@ -1326,6 +1340,12 @@ func _render_hooks_tab(elem: SceneTypes.SceneElement) -> void:
 		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		lbl.add_theme_font_size_override("font_size", 11)
 		hdr.add_child(lbl)
+
+		var recipe_opt := OptionButton.new()
+		recipe_opt.add_theme_font_size_override("font_size", 9)
+		for r_idx in range(SIMVIZ_RECIPES.size()):
+			recipe_opt.add_item(SIMVIZ_RECIPES[r_idx]["label"], r_idx)
+		hdr.add_child(recipe_opt)
 		
 		var chk := CheckBox.new()
 		chk.text = "Enable"
@@ -1341,6 +1361,16 @@ func _render_hooks_tab(elem: SceneTypes.SceneElement) -> void:
 		code_edit.add_theme_font_size_override("font_size", 10)
 		_hook_editors.append(code_edit)
 		section.add_child(code_edit)
+
+		var cap_edit := code_edit
+		var cap_chk := chk
+		var cap_opt := recipe_opt
+		recipe_opt.item_selected.connect(func(r_idx: int):
+			if r_idx > 0 and r_idx < SIMVIZ_RECIPES.size():
+				cap_edit.text = SIMVIZ_RECIPES[r_idx]["code"]
+				cap_chk.button_pressed = true
+				cap_opt.select(0)
+		)
 		
 		var apply_btn := Button.new()
 		apply_btn.text = "Apply Hook"

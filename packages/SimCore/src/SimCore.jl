@@ -32,13 +32,14 @@ include("pipeline.jl")   # StatsPipeline, WarmupPolicy — uses warmup + collect
 include("analysis.jl")   # check_littles_law, batch_means_ci, replicate — uses pipeline
 include("stats.jl")      # SimStats (legacy) — must be defined before SimWorld
 include("world.jl")
+include("simviz_helpers.jl")
 
 # ── Public API exports ────────────────────────────────────────────────────────
 
 # Events
 export SimEvent
 export EntityArrival, ProcessComplete, ResourceFailure, ScheduledChange,
-       TransferOut, NullEvent
+       TransferOut, NullEvent, CustomUserEvent
 export CancellableEvent, cancel!, next_event_id!, is_cancelled
 
 # Clock
@@ -54,13 +55,22 @@ export HybridSyncConfig, ServiceZone, HybridSyncBuffers, HybridSyncState,
     AbstractSyncTransport, LocalSyncTransport,
     validate_sync_config, reset_sync_buffers!, reset_sync_state!, sync_step!, mark_departure!
 
-# World
+# World & SimViz M-1
 export SimWorld, ZoneState, new_entity_id!,
        add_des_agent!, remove_des_agent!,
        add_crowd_agent!, remove_crowd_agent!,
        add_fluid_particle!, add_obstacle!, remove_entity!,
        get_des_agent, get_crowd_agent, update_crowd_agent!,
-       add_zone!, get_zone, entity_count
+       add_zone!, get_zone, entity_count,
+       EntityHandle, INVALID_HANDLE, EntityKinematics, kinematics_distance, kinematics_progress,
+       PortDescriptor, PortWireLink, PortDirectory, UserTelemetryStore,
+       get_entity_attributes, get_entity_attribute, set_entity_attribute!,
+       get_zone_attributes, get_zone_attribute, set_zone_attribute!,
+       get_entity_visuals, set_entity_visual!, EntityStateView, get_entity_state,
+       HookOpCode, HookCommand, PortCandidate, HookContext, with_hook_context,
+       HelperFunctionMeta, HELPER_CATALOG, register_simviz_helper!, list_simviz_helpers,
+       register_entity_handle!, register_port!, register_port_wire!,
+       get_attr, SimViz
 
 # Legacy stats (SimStats — retained for backward compat with SimViz)
 export SimStats, record_arrival!, record_departure!, record_queue_length!,

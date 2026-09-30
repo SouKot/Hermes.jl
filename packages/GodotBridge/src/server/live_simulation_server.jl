@@ -21,6 +21,8 @@ const VALID_HOOK_EVENTS = Dict(
     "on_service_start"    => :on_service_start,
     "on_service_complete" => :on_service_complete,
     "on_exit"             => :on_exit,
+    "on_event"            => :on_event,
+    "on_pull"             => :on_pull,
 )
 
 function _to_plain_dict(x)

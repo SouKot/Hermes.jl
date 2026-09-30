@@ -5,6 +5,7 @@ extends Control
 
 const BlockNode := preload("res://scripts/authoring_block_node.gd")
 const ChannelPopup := preload("res://scripts/authoring_channel_popup.gd")
+const WirePopup := preload("res://scripts/authoring_wire_popup.gd")
 const SceneTypes := preload("res://scripts/scenespec_types.gd")
 const DocumentStore := preload("res://scripts/authoring_document_store.gd")
 const ConveyorCurve3D := preload("res://scripts/conveyor_curve_3d.gd")
@@ -33,7 +34,10 @@ var doc_store: DocumentStore
 var _block_nodes: Dictionary = {} # element_id -> SimVizAuthoringBlockNode
 var wire_visibility_mode: int = WireVisibilityMode.ALL
 var _channel_popup: ChannelPopup = null
+var _wire_popup: WirePopup = null
 var _hovered_channel_conn_id: String = ""
+var _dragging_waypoint_conn_id: String = ""
+var _dragging_waypoint_idx: int = -1
 
 # Pan & Zoom transform
 var pan_offset: Vector2 = Vector2(80, 80)
@@ -104,6 +108,18 @@ func _ensure_layers() -> void:
 		)
 		add_child(_channel_popup)
 
+	if _wire_popup == null:
+		_wire_popup = WirePopup.new()
+		_wire_popup.name = "WirePopup"
+		_wire_popup.wire_visual_changed.connect(func(_cid: String):
+			_redraw_all()
+		)
+		_wire_popup.wire_deleted.connect(func(_cid: String):
+			_sync_port_connection_counts()
+			_redraw_all()
+		)
+		add_child(_wire_popup)
+
 func _ensure_wires_layer() -> void:
 	_ensure_layers()
 
@@ -136,6 +152,21 @@ func open_channel_popup(elem_id: String, port_id: String, is_output: bool, scree
 func get_channel_popup() -> ChannelPopup:
 	_ensure_layers()
 	return _channel_popup
+
+func open_wire_popup(conn_id: String, screen_pos: Vector2 = Vector2(140, 140)) -> void:
+	_ensure_layers()
+	if _channel_popup != null and _channel_popup.visible:
+		_channel_popup.close_popup()
+	if _wire_popup != null and doc_store != null:
+		var local_pos := screen_pos
+		if is_inside_tree():
+			local_pos = get_global_transform().affine_inverse() * screen_pos
+		_wire_popup.open_for_connection(doc_store, conn_id, local_pos)
+		move_child(_wire_popup, -1)
+
+func get_wire_popup() -> WirePopup:
+	_ensure_layers()
+	return _wire_popup
 
 func _sync_port_connection_counts() -> void:
 	if doc_store == null or doc_store.active_document == null:
@@ -953,62 +984,107 @@ func _hit_test_conveyor_endpoint_port(canvas_mouse: Vector2) -> Dictionary:
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
-		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
-			if _channel_popup != null and _channel_popup.visible:
-				var pop_rect := Rect2(_channel_popup.position, _channel_popup.size)
-				if not pop_rect.has_point(mb.position):
-					_channel_popup.close_popup()
+		if mb.button_index == MOUSE_BUTTON_LEFT:
+			if mb.pressed:
+				if _channel_popup != null and _channel_popup.visible:
+					var pop_rect := Rect2(_channel_popup.position, _channel_popup.size)
+					if not pop_rect.has_point(mb.position):
+						_channel_popup.close_popup()
+				if _wire_popup != null and _wire_popup.visible:
+					var wpop_rect := Rect2(_wire_popup.position, _wire_popup.size)
+					if not wpop_rect.has_point(mb.position):
+						_wire_popup.close_popup()
 
-			# 1. Check physical curved conveyor endpoint port drag start
-			var hit_ep := _hit_test_conveyor_endpoint_port(mb.position)
-			if not hit_ep.is_empty():
-				var cid: String = str(hit_ep["elem_id"])
-				var cport: String = str(hit_ep["port_id"])
-				var cis_out: bool = bool(hit_ep["is_output"])
-				if doc_store != null:
-					doc_store.select_port(cid, cport)
-				_on_port_drag_started(cid, cport, "flow", cis_out, hit_ep["pos"])
-				accept_event()
-				return
+				# 0. Check interactive waypoint (●) or midpoint (⊕) handles on currently selected connection
+				if doc_store != null and doc_store.selected_type == "connection" and not doc_store.selected_id.is_empty():
+					var sel_cid := doc_store.selected_id
+					var hit_wp_idx := _hit_test_selected_wire_waypoint(sel_cid, mb.position)
+					if hit_wp_idx >= 0:
+						doc_store._record_undo()
+						_dragging_waypoint_conn_id = sel_cid
+						_dragging_waypoint_idx = hit_wp_idx
+						accept_event()
+						return
+					var hit_mid_idx := _hit_test_selected_wire_midpoint(sel_cid, mb.position)
+					if hit_mid_idx >= 0:
+						var world_m := _canvas_to_world_m(mb.position)
+						var new_idx := doc_store.insert_connection_waypoint(sel_cid, hit_mid_idx, world_m, true)
+						if new_idx >= 0:
+							_dragging_waypoint_conn_id = sel_cid
+							_dragging_waypoint_idx = new_idx
+							if _wire_popup != null and _wire_popup.visible:
+								_wire_popup.refresh_ui()
+							_redraw_all()
+							accept_event()
+							return
 
-			var hit_track := _hit_test_conveyor_track(mb.position)
-			if not hit_track.is_empty():
-				if mb.double_click:
-					_on_block_selected(hit_track)
-					var spos: Vector2 = mb.global_position if mb.global_position != Vector2.ZERO else mb.position
-					floating_properties_requested.emit(hit_track, spos)
-				else:
-					_on_block_selected(hit_track)
-				_redraw_all()
-				accept_event()
-				return
+				# 1. Check physical curved conveyor endpoint port drag start
+				var hit_ep := _hit_test_conveyor_endpoint_port(mb.position)
+				if not hit_ep.is_empty():
+					var cid: String = str(hit_ep["elem_id"])
+					var cport: String = str(hit_ep["port_id"])
+					var cis_out: bool = bool(hit_ep["is_output"])
+					if doc_store != null:
+						doc_store.select_port(cid, cport)
+					_on_port_drag_started(cid, cport, "flow", cis_out, hit_ep["pos"])
+					accept_event()
+					return
 
-			var hit_conn := _hit_test_connection(mb.position)
-			if not hit_conn.is_empty():
-				if doc_store != null:
-					doc_store.select(hit_conn, "connection")
-				_redraw_all()
-				accept_event()
-				return
-			else:
-				if doc_store != null and doc_store.selected_type == "connection":
-					doc_store.clear_selection()
+				var hit_track := _hit_test_conveyor_track(mb.position)
+				if not hit_track.is_empty():
+					if mb.double_click:
+						_on_block_selected(hit_track)
+						var spos: Vector2 = mb.global_position if mb.global_position != Vector2.ZERO else mb.position
+						floating_properties_requested.emit(hit_track, spos)
+					else:
+						_on_block_selected(hit_track)
 					_redraw_all()
+					accept_event()
+					return
+
+				var hit_conn := _hit_test_connection(mb.position)
+				if not hit_conn.is_empty():
+					if doc_store != null:
+						doc_store.select(hit_conn, "connection")
+					_redraw_all()
+					accept_event()
+					return
+				else:
+					if doc_store != null and doc_store.selected_type == "connection":
+						doc_store.clear_selection()
+						_redraw_all()
+			else:
+				if not _dragging_waypoint_conn_id.is_empty():
+					_dragging_waypoint_conn_id = ""
+					_dragging_waypoint_idx = -1
+					if _wire_popup != null and _wire_popup.visible:
+						_wire_popup.refresh_ui()
+					_redraw_all()
+					accept_event()
+					return
 
 		elif mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
+			# 0. Check if right-clicked on a waypoint handle (●) of the selected connection -> delete that single waypoint
+			if doc_store != null and doc_store.selected_type == "connection" and not doc_store.selected_id.is_empty():
+				var sel_cid := doc_store.selected_id
+				var hit_wp_idx := _hit_test_selected_wire_waypoint(sel_cid, mb.position)
+				if hit_wp_idx >= 0:
+					doc_store.remove_connection_waypoint(sel_cid, hit_wp_idx, true)
+					if _wire_popup != null and _wire_popup.visible:
+						_wire_popup.refresh_ui()
+					_redraw_all()
+					accept_event()
+					return
+
 			var hit_ep := _hit_test_conveyor_endpoint_port(mb.position)
 			if not hit_ep.is_empty():
 				var cid: String = str(hit_ep["elem_id"])
 				var cport: String = str(hit_ep["port_id"])
 				var cis_out: bool = bool(hit_ep["is_output"])
 				var cnt := doc_store.get_port_connections(cid, cport, cis_out).size() if doc_store != null else 0
-				if cnt > 1:
+				if cnt >= 1:
 					var spos: Vector2 = mb.global_position if mb.global_position != Vector2.ZERO else mb.position
 					open_channel_popup(cid, cport, cis_out, spos)
-				elif doc_store != null:
-					doc_store.disconnect_port(cid, cport)
-					_sync_port_connection_counts()
-					_redraw_all()
 				accept_event()
 				return
 
@@ -1023,10 +1099,21 @@ func _gui_input(event: InputEvent) -> void:
 
 			var hit_conn := _hit_test_connection(mb.position)
 			if not hit_conn.is_empty():
-				if doc_store != null:
-					doc_store.remove_connection(hit_conn)
-					_sync_port_connection_counts()
-				_redraw_all()
+				if mb.shift_pressed:
+					# Shift + Right-Click -> immediately delete wire
+					if _wire_popup != null and _wire_popup.visible and _wire_popup.current_conn_id == hit_conn:
+						_wire_popup.close_popup()
+					if doc_store != null:
+						doc_store.remove_connection(hit_conn)
+						_sync_port_connection_counts()
+					_redraw_all()
+				else:
+					# Plain Right-Click -> select wire and open Expanded Floating Wire Pop-up (Option 1B)
+					if doc_store != null:
+						doc_store.select(hit_conn, "connection")
+					var spos: Vector2 = mb.global_position if mb.global_position != Vector2.ZERO else mb.position
+					open_wire_popup(hit_conn, spos)
+					_redraw_all()
 				accept_event()
 				return
 
@@ -1047,6 +1134,13 @@ func _gui_input(event: InputEvent) -> void:
 
 	elif event is InputEventMouseMotion:
 		var mm := event as InputEventMouseMotion
+		if not _dragging_waypoint_conn_id.is_empty() and _dragging_waypoint_idx >= 0:
+			if doc_store != null:
+				var world_m := _canvas_to_world_m(mm.position)
+				doc_store.move_connection_waypoint(_dragging_waypoint_conn_id, _dragging_waypoint_idx, world_m, false)
+			_redraw_all()
+			accept_event()
+			return
 		if _panning:
 			pan_offset = mm.position - _pan_start
 			_update_blocks_transform()
@@ -1477,6 +1571,274 @@ func _should_draw_connection(conn: SceneTypes.SceneConnection) -> bool:
 			return true
 	return false
 
+func _world_m_to_canvas(pt_m: Vector2) -> Vector2:
+	return pan_offset + pt_m * (20.0 * zoom_level)
+
+func _canvas_to_world_m(canvas_pt: Vector2) -> Vector2:
+	var m_scale: float = maxf(20.0 * zoom_level, 0.001)
+	return (canvas_pt - pan_offset) / m_scale
+
+func _resolve_port_pose(elem_id: String, port_id: String, is_output: bool = true) -> Dictionary:
+	if doc_store != null:
+		var elem := doc_store.get_element(elem_id)
+		if elem != null and _is_curved_or_joined_conveyor_elem(elem):
+			var is_flow_in := (port_id == "flow_in" or port_id == "in" or port_id.begins_with("flow_in"))
+			var is_flow_out := (port_id == "flow_out" or port_id == "out" or port_id.begins_with("flow_out"))
+			if is_flow_in or is_flow_out:
+				var pts_m := ConveyorCurve3D.sample_2d_polyline(elem, doc_store, 20)
+				if pts_m.size() >= 2:
+					var m_scale: float = 20.0 * zoom_level
+					if is_flow_in:
+						var ep_in := pan_offset + pts_m[0] * m_scale
+						var t_in := (pts_m[1] - pts_m[0]).normalized()
+						var n_in := -t_in if t_in.length_squared() > 1e-4 else Vector2(-1, 0)
+						return {"pos": ep_in, "normal": n_in, "edge": "left"}
+					else:
+						var n_pts := pts_m.size()
+						var ep_out := pan_offset + pts_m[n_pts - 1] * m_scale
+						var t_out := (pts_m[n_pts - 1] - pts_m[n_pts - 2]).normalized()
+						var n_out := t_out if t_out.length_squared() > 1e-4 else Vector2(1, 0)
+						return {"pos": ep_out, "normal": n_out, "edge": "right"}
+	if _block_nodes.has(elem_id):
+		var b: BlockNode = _block_nodes[elem_id]
+		var pos := b.get_port_canvas_position(port_id)
+		var p_info: Dictionary = b.get_port_info(port_id)
+		var edge: String = str(p_info.get("edge", "right" if is_output else "left"))
+		var local_n := Vector2(1, 0)
+		match edge:
+			"left": local_n = Vector2(-1, 0)
+			"right": local_n = Vector2(1, 0)
+			"top": local_n = Vector2(0, -1)
+			"bottom": local_n = Vector2(0, 1)
+		return {"pos": pos, "normal": local_n.rotated(b.rotation), "edge": edge}
+	return {"pos": Vector2.ZERO, "normal": Vector2(1, 0) if is_output else Vector2(-1, 0), "edge": "right" if is_output else "left"}
+
+func _resolve_port_position(elem_id: String, port_id: String) -> Vector2:
+	return _resolve_port_pose(elem_id, port_id, true)["pos"]
+
+func compute_connection_geometry(conn: SceneTypes.SceneConnection) -> Dictionary:
+	var src_pose := _resolve_port_pose(conn.source_element, conn.source_port, true)
+	var tgt_pose := _resolve_port_pose(conn.target_element, conn.target_port, false)
+	var p1: Vector2 = src_pose["pos"]
+	var p2: Vector2 = tgt_pose["pos"]
+	var n1: Vector2 = src_pose["normal"]
+	var n2: Vector2 = tgt_pose["normal"]
+
+	var vis: Dictionary = doc_store.get_connection_visual(conn.id) if doc_store != null else {}
+	var eff_mode: String = doc_store.get_effective_wire_shape(conn.id) if doc_store != null else "bezier"
+	var slider_val: float = float(vis.get("radius_or_tension", 8.0))
+	var raw_wps: Array = vis.get("waypoints", [])
+
+	var wp_canvas: Array[Vector2] = []
+	for wp in raw_wps:
+		if wp is Array and wp.size() >= 2:
+			wp_canvas.append(_world_m_to_canvas(Vector2(float(wp[0]), float(wp[1]))))
+		elif wp is Vector2:
+			wp_canvas.append(_world_m_to_canvas(wp))
+
+	if p1 == Vector2.ZERO or p2 == Vector2.ZERO:
+		return {
+			"points": PackedVector2Array(),
+			"waypoint_handles": wp_canvas,
+			"midpoint_handles": [],
+			"effective_mode": eff_mode,
+			"start_normal": n1,
+			"end_normal": n2
+		}
+
+	var anchors: Array[Vector2] = [p1]
+	for wpt in wp_canvas:
+		anchors.append(wpt)
+	anchors.append(p2)
+
+	var points := PackedVector2Array()
+	var midpoints: Array[Vector2] = []
+	var k_spans: int = anchors.size() - 1
+
+	if eff_mode == "straight":
+		for s in range(k_spans):
+			midpoints.append(anchors[s].lerp(anchors[s + 1], 0.5))
+		var raw_poly := PackedVector2Array(anchors)
+		var r_px: float = slider_val * 1.4 * zoom_level
+		points = _round_or_chamfer_polyline(raw_poly, r_px, false) if (r_px > 0.5 and anchors.size() > 2) else raw_poly
+
+	elif eff_mode == "bezier":
+		var tension: float = lerpf(0.22, 0.85, clampf(slider_val / 20.0, 0.0, 1.0))
+		var tangents: Array[Vector2] = []
+		for i in range(anchors.size()):
+			if i == 0:
+				tangents.append(n1.normalized())
+			elif i == anchors.size() - 1:
+				tangents.append((-n2).normalized())
+			else:
+				var d_vec := anchors[i + 1] - anchors[i - 1]
+				tangents.append(d_vec.normalized() if d_vec.length_squared() > 1e-4 else Vector2(1, 0))
+
+		var min_handle: float = 28.0 * zoom_level
+		for s in range(k_spans):
+			var a: Vector2 = anchors[s]
+			var b: Vector2 = anchors[s + 1]
+			var span_len: float = a.distance_to(b)
+			var h_len: float = maxf(span_len * tension, min_handle)
+			var cp1: Vector2 = a + tangents[s] * h_len
+			var cp2: Vector2 = b - tangents[s + 1] * h_len
+			midpoints.append(a.bezier_interpolate(cp1, cp2, b, 0.5))
+			var segs := 20
+			var start_i := 0 if s == 0 else 1
+			for i in range(start_i, segs + 1):
+				var t := float(i) / float(segs)
+				points.append(a.bezier_interpolate(cp1, cp2, b, t))
+
+	else:
+		# "orthogonal" (90° Manhattan) or "chamfer" (45° Metro)
+		var stub_len: float = 14.0 * zoom_level
+		var s0: Vector2 = p1 + n1 * stub_len
+		var e0: Vector2 = p2 + n2 * stub_len
+
+		var guide_pts: Array[Vector2] = [s0]
+		for wpt in wp_canvas:
+			guide_pts.append(wpt)
+		guide_pts.append(e0)
+
+		var raw_ortho := PackedVector2Array([p1, s0])
+		for s in range(guide_pts.size() - 1):
+			var ga: Vector2 = guide_pts[s]
+			var gb: Vector2 = guide_pts[s + 1]
+			var span_pts := _build_orthogonal_span(ga, gb, n1 if s == 0 else Vector2.ZERO, n2 if s == guide_pts.size() - 2 else Vector2.ZERO, wp_canvas.is_empty())
+			midpoints.append(_polyline_midpoint(span_pts))
+			for idx_p in range(1, span_pts.size()):
+				raw_ortho.append(span_pts[idx_p])
+		raw_ortho.append(p2)
+
+		var cleaned_ortho := _clean_collinear_points(raw_ortho)
+		var r_px: float = slider_val * 1.4 * zoom_level
+		if eff_mode == "chamfer":
+			var bev_px: float = maxf(r_px, 4.0 * zoom_level)
+			points = _round_or_chamfer_polyline(cleaned_ortho, bev_px, true)
+		else:
+			points = _round_or_chamfer_polyline(cleaned_ortho, r_px, false) if r_px > 0.5 else cleaned_ortho
+
+	return {
+		"points": points,
+		"waypoint_handles": wp_canvas,
+		"midpoint_handles": midpoints,
+		"effective_mode": eff_mode,
+		"start_normal": n1,
+		"end_normal": n2
+	}
+
+func _build_orthogonal_span(ga: Vector2, gb: Vector2, n_start: Vector2, n_end: Vector2, is_single_span: bool) -> PackedVector2Array:
+	var pts := PackedVector2Array([ga])
+	var dx: float = gb.x - ga.x
+	var dy: float = gb.y - ga.y
+	if absf(dx) < 0.5 or absf(dy) < 0.5:
+		pts.append(gb)
+		return pts
+
+	if is_single_span and n_start != Vector2.ZERO and n_end != Vector2.ZERO:
+		var start_horiz: bool = absf(n_start.x) >= absf(n_start.y)
+		var end_horiz: bool = absf(n_end.x) >= absf(n_end.y)
+		if start_horiz and end_horiz:
+			if dx * n_start.x > 0.0:
+				var mid_x: float = ga.x + dx * 0.5
+				pts.append(Vector2(mid_x, ga.y))
+				pts.append(Vector2(mid_x, gb.y))
+			else:
+				var step_y: float = (48.0 * zoom_level) if absf(dy) < 40.0 * zoom_level else 0.0
+				var mid_y: float = (ga.y + gb.y) * 0.5 - step_y
+				pts.append(Vector2(ga.x, mid_y))
+				pts.append(Vector2(gb.x, mid_y))
+		elif start_horiz and not end_horiz:
+			pts.append(Vector2(gb.x, ga.y))
+		elif not start_horiz and end_horiz:
+			pts.append(Vector2(ga.x, gb.y))
+		else:
+			var mid_y: float = ga.y + dy * 0.5
+			pts.append(Vector2(ga.x, mid_y))
+			pts.append(Vector2(gb.x, mid_y))
+	else:
+		if absf(dx) >= absf(dy):
+			var mid_x: float = ga.x + dx * 0.5
+			pts.append(Vector2(mid_x, ga.y))
+			pts.append(Vector2(mid_x, gb.y))
+		else:
+			var mid_y: float = ga.y + dy * 0.5
+			pts.append(Vector2(ga.x, mid_y))
+			pts.append(Vector2(gb.x, mid_y))
+
+	pts.append(gb)
+	return pts
+
+func _polyline_midpoint(poly: PackedVector2Array) -> Vector2:
+	if poly.is_empty():
+		return Vector2.ZERO
+	if poly.size() == 1:
+		return poly[0]
+	var total_len := 0.0
+	for i in range(poly.size() - 1):
+		total_len += poly[i].distance_to(poly[i + 1])
+	if total_len < 1e-3:
+		return poly[0]
+	var half := total_len * 0.5
+	var accum := 0.0
+	for i in range(poly.size() - 1):
+		var seg := poly[i].distance_to(poly[i + 1])
+		if accum + seg >= half and seg > 1e-4:
+			var f := clampf((half - accum) / seg, 0.0, 1.0)
+			return poly[i].lerp(poly[i + 1], f)
+		accum += seg
+	return poly[poly.size() - 1]
+
+func _clean_collinear_points(poly: PackedVector2Array) -> PackedVector2Array:
+	if poly.size() <= 2:
+		return poly
+	var out := PackedVector2Array([poly[0]])
+	for i in range(1, poly.size() - 1):
+		var prev: Vector2 = out[out.size() - 1]
+		var cur: Vector2 = poly[i]
+		var nxt: Vector2 = poly[i + 1]
+		if prev.distance_to(cur) < 0.5:
+			continue
+		var d1 := (cur - prev).normalized()
+		var d2 := (nxt - cur).normalized()
+		if absf(d1.cross(d2)) < 0.01 and d1.dot(d2) > 0.98:
+			continue
+		out.append(cur)
+	if out[out.size() - 1].distance_to(poly[poly.size() - 1]) >= 0.5:
+		out.append(poly[poly.size() - 1])
+	return out
+
+func _round_or_chamfer_polyline(poly: PackedVector2Array, radius_px: float, is_chamfer: bool) -> PackedVector2Array:
+	if poly.size() <= 2 or radius_px <= 0.5:
+		return poly
+	var out := PackedVector2Array([poly[0]])
+	for i in range(1, poly.size() - 1):
+		var p_prev: Vector2 = poly[i - 1]
+		var p_cur: Vector2 = poly[i]
+		var p_next: Vector2 = poly[i + 1]
+		var v_in := p_prev - p_cur
+		var v_out := p_next - p_cur
+		var len_in := v_in.length()
+		var len_out := v_out.length()
+		if len_in < 2.0 or len_out < 2.0:
+			out.append(p_cur)
+			continue
+		var cut: float = minf(radius_px, minf(len_in, len_out) * 0.45)
+		var p_a := p_cur + (v_in / len_in) * cut
+		var p_b := p_cur + (v_out / len_out) * cut
+		if is_chamfer:
+			out.append(p_a)
+			out.append(p_b)
+		else:
+			var arc_steps := 6
+			for s in range(arc_steps + 1):
+				var t := float(s) / float(arc_steps)
+				var q0 := p_a.lerp(p_cur, t)
+				var q1 := p_cur.lerp(p_b, t)
+				out.append(q0.lerp(q1, t))
+	out.append(poly[poly.size() - 1])
+	return out
+
 func _draw_connections() -> void:
 	if doc_store == null or doc_store.active_document == null or _wires_layer == null:
 		return
@@ -1486,17 +1848,113 @@ func _draw_connections() -> void:
 	for conn in doc_store.active_document.connections:
 		if not _should_draw_connection(conn):
 			continue
+		var geom := compute_connection_geometry(conn)
+		var pts: PackedVector2Array = geom["points"]
+		if pts.size() < 2:
+			continue
+
+		var vis := doc_store.get_connection_visual(conn.id)
+		var stroke_style: String = str(vis.get("stroke_style", "auto"))
+		if stroke_style == "auto":
+			stroke_style = "solid" if conn.link_type == "flow" else "dashed"
+		var width: float = float(vis.get("width", 2.0))
+		var col_str: String = str(vis.get("color", ""))
+		var base_col := FLOW_WIRE_COLOR if conn.link_type == "flow" else SIGNAL_WIRE_COLOR
+		if not col_str.is_empty():
+			base_col = Color.from_string(col_str, base_col)
+
 		var is_conn_sel: bool = (str(conn.id) == sel_conn_id) or (str(conn.id) == _hovered_channel_conn_id and not _hovered_channel_conn_id.is_empty())
-		var p1 := _resolve_port_position(conn.source_element, conn.source_port)
-		var p2 := _resolve_port_position(conn.target_element, conn.target_port)
-		if p1 != Vector2.ZERO and p2 != Vector2.ZERO:
-			if is_conn_sel:
-				_draw_spline(_wires_layer, p1, p2, Color(0.0, 0.82, 1.0, 0.45), 6.0, false)
-				_draw_spline(_wires_layer, p1, p2, Color("#00d2ff"), 2.5, false)
-			else:
-				var col := FLOW_WIRE_COLOR if conn.link_type == "flow" else SIGNAL_WIRE_COLOR
-				var dashed: bool = (conn.link_type != "flow")
-				_draw_spline(_wires_layer, p1, p2, col, 2.0, dashed)
+		if is_conn_sel:
+			_draw_styled_polyline(_wires_layer, pts, Color(0.0, 0.82, 1.0, 0.40), width + 4.0, "solid")
+			var fg_col := Color("#00d2ff") if col_str.is_empty() else base_col
+			_draw_styled_polyline(_wires_layer, pts, fg_col, maxf(width, 2.5), stroke_style)
+			if str(conn.id) == sel_conn_id:
+				_draw_wire_handles(_wires_layer, geom)
+		else:
+			_draw_styled_polyline(_wires_layer, pts, base_col, width, stroke_style)
+
+func _draw_styled_polyline(target: CanvasItem, points: PackedVector2Array, col: Color, width: float, stroke_style: String) -> void:
+	if points.size() < 2:
+		return
+	if stroke_style == "solid":
+		target.draw_polyline(points, col, width, true)
+	else:
+		var dash_len: float = 8.0 if stroke_style == "dashed" else 2.5
+		var gap_len: float = 5.0 if stroke_style == "dashed" else 4.5
+		var cycle: float = dash_len + gap_len
+		var dist_accum: float = 0.0
+		for i in range(points.size() - 1):
+			var a: Vector2 = points[i]
+			var b: Vector2 = points[i + 1]
+			var seg_len: float = a.distance_to(b)
+			if seg_len < 0.1:
+				continue
+			var dir: Vector2 = (b - a) / seg_len
+			var d_cur: float = 0.0
+			while d_cur < seg_len:
+				var phase: float = fmod(dist_accum + d_cur, cycle)
+				if phase < dash_len:
+					var draw_rem: float = minf(dash_len - phase, seg_len - d_cur)
+					target.draw_line(a + dir * d_cur, a + dir * (d_cur + draw_rem), col, width)
+					d_cur += draw_rem
+				else:
+					var skip_rem: float = minf(cycle - phase, seg_len - d_cur)
+					d_cur += maxf(skip_rem, 0.5)
+			dist_accum += seg_len
+
+	# Draw arrowhead at destination port
+	var to: Vector2 = points[points.size() - 1]
+	var seg_vec: Vector2 = to - points[points.size() - 2]
+	if seg_vec.length_squared() < 1e-4:
+		seg_vec = to - points[0]
+	if seg_vec.length_squared() >= 1e-4:
+		var dir := seg_vec.normalized()
+		var perp := Vector2(-dir.y, dir.x) * 5.0
+		var a1 := to - (dir * 10.0) + perp
+		var a2 := to - (dir * 10.0) - perp
+		if abs((a1 - to).cross(a2 - to)) > 1.0:
+			target.draw_colored_polygon(PackedVector2Array([to, a1, a2]), col)
+
+func _draw_wire_handles(target: CanvasItem, geom: Dictionary) -> void:
+	var mid_handles: Array = geom.get("midpoint_handles", [])
+	for mp in mid_handles:
+		var mpos: Vector2 = mp
+		target.draw_circle(mpos, 5.5, Color("#0f1823"))
+		target.draw_arc(mpos, 5.5, 0.0, TAU, 16, Color("#00d2ff"), 1.3)
+		target.draw_line(mpos - Vector2(2.8, 0), mpos + Vector2(2.8, 0), Color("#00d2ff"), 1.3)
+		target.draw_line(mpos - Vector2(0, 2.8), mpos + Vector2(0, 2.8), Color("#00d2ff"), 1.3)
+
+	var wp_handles: Array = geom.get("waypoint_handles", [])
+	for wp in wp_handles:
+		var wpos: Vector2 = wp
+		target.draw_circle(wpos, 6.5, Color(1.0, 1.0, 1.0, 0.9))
+		target.draw_circle(wpos, 4.8, Color("#00d2ff"))
+
+func _hit_test_selected_wire_waypoint(conn_id: String, canvas_mouse: Vector2) -> int:
+	if doc_store == null:
+		return -1
+	var conn := doc_store.get_connection(conn_id)
+	if conn == null:
+		return -1
+	var geom := compute_connection_geometry(conn)
+	var wps: Array = geom.get("waypoint_handles", [])
+	for i in range(wps.size()):
+		if canvas_mouse.distance_to(wps[i]) <= 9.5:
+			return i
+	return -1
+
+func _hit_test_selected_wire_midpoint(conn_id: String, canvas_mouse: Vector2) -> int:
+	if doc_store == null:
+		return -1
+	var conn := doc_store.get_connection(conn_id)
+	if conn == null:
+		return -1
+	var geom := compute_connection_geometry(conn)
+	var mps: Array = geom.get("midpoint_handles", [])
+	for i in range(mps.size()):
+		if canvas_mouse.distance_to(mps[i]) <= 9.5:
+			return i
+	return -1
 
 func _hit_test_connection(canvas_mouse: Vector2) -> String:
 	if doc_store == null or doc_store.active_document == null:
@@ -1510,25 +1968,15 @@ func _hit_test_connection(canvas_mouse: Vector2) -> String:
 	for conn in doc_store.active_document.connections:
 		if not _should_draw_connection(conn):
 			continue
-		var p1 := _resolve_port_position(conn.source_element, conn.source_port)
-		var p2 := _resolve_port_position(conn.target_element, conn.target_port)
-		if p1 == Vector2.ZERO or p2 == Vector2.ZERO:
+		var geom := compute_connection_geometry(conn)
+		var pts: PackedVector2Array = geom["points"]
+		if pts.size() < 2:
 			continue
-
-		var dx := (p2.x - p1.x) * 0.5
-		var cp1 := p1 + Vector2(max(abs(dx), 40.0), 0)
-		var cp2 := p2 - Vector2(max(abs(dx), 40.0), 0)
-
-		var prev_pt := p1
-		var segments := 16
-		for i in range(1, segments + 1):
-			var t := float(i) / float(segments)
-			var cur_pt := p1.bezier_interpolate(cp1, cp2, p2, t)
-			var d := _dist_to_segment(canvas_mouse, prev_pt, cur_pt)
+		for i in range(pts.size() - 1):
+			var d := _dist_to_segment(canvas_mouse, pts[i], pts[i + 1])
 			if d < best_dist:
 				best_dist = d
 				best_conn_id = conn.id
-			prev_pt = cur_pt
 
 	return best_conn_id
 
@@ -1540,57 +1988,18 @@ func _dist_to_segment(p: Vector2, a: Vector2, b: Vector2) -> float:
 	var proj: Vector2 = a + (b - a) * t
 	return p.distance_to(proj)
 
-func _resolve_port_position(elem_id: String, port_id: String) -> Vector2:
-	if doc_store != null:
-		var elem := doc_store.get_element(elem_id)
-		# Only curved/joined conveyors resolve flow_in/flow_out via sampled curve endpoints;
-		# straight conveyors resolve flow_in/flow_out directly via their BlockNode perimeter!
-		if elem != null and _is_curved_or_joined_conveyor_elem(elem):
-			var is_flow_in := (port_id == "flow_in" or port_id == "in" or port_id.begins_with("flow_in"))
-			var is_flow_out := (port_id == "flow_out" or port_id == "out" or port_id.begins_with("flow_out"))
-			if is_flow_in or is_flow_out:
-				var pts_m := ConveyorCurve3D.sample_2d_polyline(elem, doc_store, 20)
-				if pts_m.size() >= 2:
-					var m_scale: float = 20.0 * zoom_level
-					var ep_m: Vector2 = pts_m[0] if is_flow_in else pts_m[pts_m.size() - 1]
-					return pan_offset + ep_m * m_scale
-	if _block_nodes.has(elem_id):
-		var b: BlockNode = _block_nodes[elem_id]
-		return b.get_port_canvas_position(port_id)
-	return Vector2.ZERO
-
 func _draw_spline(target: CanvasItem, from: Vector2, to: Vector2, col: Color, width: float, dashed: bool) -> void:
 	if not from.is_finite() or not to.is_finite():
 		return
 	if from.distance_squared_to(to) < 1.0:
 		return
-
 	var dx := (to.x - from.x) * 0.5
 	var cp1 := from + Vector2(max(abs(dx), 40.0), 0)
 	var cp2 := to - Vector2(max(abs(dx), 40.0), 0)
-
 	var points: PackedVector2Array = []
 	var segments := 24
 	for i in range(segments + 1):
 		var t := float(i) / float(segments)
-		var pt := from.bezier_interpolate(cp1, cp2, to, t)
-		points.append(pt)
-
-	if dashed:
-		for i in range(0, points.size() - 1, 2):
-			target.draw_line(points[i], points[i + 1], col, width)
-	else:
-		target.draw_polyline(points, col, width, true)
-
-	if points.size() >= 2:
-		var seg_vec := to - points[points.size() - 2]
-		if seg_vec.length_squared() < 1e-4:
-			seg_vec = to - from
-		if seg_vec.length_squared() >= 1e-4:
-			var dir := seg_vec.normalized()
-			var perp := Vector2(-dir.y, dir.x) * 5.0
-			var a1 := to - (dir * 10.0) + perp
-			var a2 := to - (dir * 10.0) - perp
-			if abs((a1 - to).cross(a2 - to)) > 1.0:
-				target.draw_colored_polygon(PackedVector2Array([to, a1, a2]), col)
+		points.append(from.bezier_interpolate(cp1, cp2, to, t))
+	_draw_styled_polyline(target, points, col, width, "dashed" if dashed else "solid")
 

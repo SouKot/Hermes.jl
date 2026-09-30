@@ -149,6 +149,38 @@ deadlock by announcing the minimum future event time.
 """
 struct NullEvent <: SimEvent end
 
+"""
+    CustomUserEvent(zone_id, element_id, tag, time[, payload, interval, callback])
+
+A user-scheduled event injected into the FutureEventList via `schedule_event!`,
+`schedule_at!`, `schedule_every!`, or `after!`.
+
+# Fields
+- `zone_id::Int`: integer zone ID of the target entity (`0` if global)
+- `element_id::String`: authored element ID string of the target entity
+- `tag::Symbol`: user-defined event tag (e.g., `:shift_break`, `:index_pulse`)
+- `time::Float64`: scheduled simulated time
+- `payload::Any`: optional payload passed by user script
+- `interval::Float64`: if `> 0.0`, automatically reschedules every `interval` seconds
+- `callback::Union{Nothing, Function}`: optional zero-arg closure (`after!(delay) do ... end`)
+"""
+struct CustomUserEvent <: SimEvent
+    zone_id    :: Int
+    element_id :: String
+    tag        :: Symbol
+    time       :: Float64
+    payload    :: Any
+    interval   :: Float64
+    callback   :: Union{Nothing, Function}
+end
+
+CustomUserEvent(zone_id::Int, element_id::String, tag::Symbol, time::Float64;
+                payload::Any = nothing,
+                interval::Float64 = 0.0,
+                callback::Union{Nothing, Function} = nothing) =
+    CustomUserEvent(zone_id, element_id, tag, time, payload, interval, callback)
+
+
 # ── Cancellable event wrapper ──────────────────────────────────────────────────
 
 """

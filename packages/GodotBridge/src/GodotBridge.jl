@@ -178,15 +178,15 @@ export num_connected_clients, is_server_running
 # Dynamic Compiler & Live Simulation Exports (Phase 7D-12A)
 export CompilerDiagnostic, DiagnosticSeverity, SourceMap, SourceMapRecord, has_errors
 export ExecutionGraphIR, ProductDefinition, compile_scenespec, CompilationResult, CustomArrivalProcess, CompositeArrivalProcess
-export Pose3D, SplineControlPoint3D, BakedConveyorCurve, CONVEYOR_SHAPE_PRESETS, register_conveyor_shape_preset!
-export bake_conveyor_curve, sample_conveyor_curve, compute_loop_conveyor_poses, bake_all_conveyor_curves!
 export list_examples, get_example_scenespec
 export SimulationInstance, step_until!, set_speed!
 export RuntimeManager, stage_and_activate!, play!, pause!, step!
 export build_snapshot, start_live_server, create_default_scene
 export AnalyticalResult, ValidationReport, solve_mm1, solve_mmc, solve_mg1, solve_jackson_tandem, validate_benchmark, evaluate_littles_law
 export SimulationRunSummary, generate_run_summary, format_ascii_report, export_summary_csv
-export ZoneHooks, call_hook!, parse_hook_expr
+export ZoneHooks, call_hook!, parse_hook_expr, apply_hook_mutations!
+export CustomComparatorDiscipline, parse_discipline_expr
+export SimViz, EntityHandle, INVALID_HANDLE, HookContext, HelperFunctionMeta
 
 # Version info
 const VERSION = v"0.1.0"
