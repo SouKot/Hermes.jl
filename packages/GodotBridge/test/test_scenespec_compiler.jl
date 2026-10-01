@@ -416,25 +416,26 @@ end
     spec_i4["elements"][2]["properties"]["custom_discipline"] = "get_attribute(entity_a, \"custom_score\", 0) > get_attribute(entity_b, \"custom_score\", 0)"
     comp_i4 = GodotBridge.compile_scenespec(spec_i4)
     @test comp_i4.success
-    zcfg_i4 = comp_i4.zone_configs[1]
+    q_zid = comp_i4.source_map.by_element["q_staging"].zone_ids[1]
+    zcfg_i4 = comp_i4.zone_configs[q_zid]
     @test zcfg_i4.custom_discipline !== nothing
 
     # Verify custom comparator sorts queue in world
     w_i4 = comp_i4.world
-    empty!(w_i4.zone_states[1].queue)
-    w_i4.zone_states[1].busy_servers = 1
-    w_i4.zone_states[1].queue_length = 0
+    empty!(w_i4.zone_states[q_zid].queue)
+    w_i4.zone_states[q_zid].busy_servers = 1
+    w_i4.zone_states[q_zid].queue_length = 0
     for (id_val, score_val) in ((101, 10), (102, 50), (103, 30))
         uid = UInt64(id_val)
-        SimCore.add_des_agent!(w_i4, uid, SimCore.DESAgent(1.0, 1, 0, Inf))
+        SimCore.add_des_agent!(w_i4, uid, SimCore.DESAgent(1.0, q_zid, 0, Inf))
         SimCore.set_entity_attribute!(w_i4, uid, "custom_score", score_val)
-        w_i4.zone_states[1].queue_length += 1
-        SimDES._enqueue_entity!(w_i4, w_i4.zone_states[1], zcfg_i4, uid, 0, 1.0)
+        w_i4.zone_states[q_zid].queue_length += 1
+        SimDES._enqueue_entity!(w_i4, w_i4.zone_states[q_zid], zcfg_i4, uid, 0, 1.0)
     end
     # Highest custom_score (102 => 50, then 103 => 30, then 101 => 10) should dequeue first!
-    @test SimDES._dequeue_next_entity!(w_i4, w_i4.zone_states[1], zcfg_i4) == UInt64(102)
-    @test SimDES._dequeue_next_entity!(w_i4, w_i4.zone_states[1], zcfg_i4) == UInt64(103)
-    @test SimDES._dequeue_next_entity!(w_i4, w_i4.zone_states[1], zcfg_i4) == UInt64(101)
+    @test SimDES._dequeue_next_entity!(w_i4, w_i4.zone_states[q_zid], zcfg_i4) == UInt64(102)
+    @test SimDES._dequeue_next_entity!(w_i4, w_i4.zone_states[q_zid], zcfg_i4) == UInt64(103)
+    @test SimDES._dequeue_next_entity!(w_i4, w_i4.zone_states[q_zid], zcfg_i4) == UInt64(101)
 end
 
 

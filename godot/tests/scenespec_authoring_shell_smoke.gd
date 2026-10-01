@@ -547,6 +547,10 @@ func test_authoring_shell_two_view_switching_and_transport() -> void:
 			for sub in child.get_children():
 				if sub is SpinBox:
 					spinbox_count += 1
+				elif sub is VBoxContainer:
+					for sub_child in sub.get_children():
+						if sub_child is SpinBox:
+							spinbox_count += 1
 	_assert(spinbox_count >= 3, "Docked inspector contains editable SpinBoxes for Position (X,Y,Z)")
 	_assert(shell._insp_spin_px != null and shell._insp_spin_py != null and shell._insp_spin_pz != null, "Position SpinBox references initialized")
 

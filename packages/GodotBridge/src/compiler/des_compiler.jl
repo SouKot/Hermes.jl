@@ -48,6 +48,8 @@ function _seed_entity_attributes!(
     for (k_str, raw_v) in default_attrs
         val = if raw_v isa AbstractVector && !isempty(raw_v)
             raw_v[mod1(seq, length(raw_v))]
+        elseif raw_v == "auto_increment"
+            seq
         elseif raw_v isa AbstractDict && haskey(raw_v, "distribution")
             dname = lowercase(string(raw_v["distribution"]))
             if dname == "uniform"
@@ -63,7 +65,7 @@ function _seed_entity_attributes!(
         else
             raw_v
         end
-        if k_str == "due_offset" && val isa Real
+        if (k_str == "due_offset" || k_str == "due_date_offset") && val isa Real
             SimCore.set_entity_attribute!(world, entity_id, "due_date", t + Float64(val))
         end
         SimCore.set_entity_attribute!(world, entity_id, k_str, val)

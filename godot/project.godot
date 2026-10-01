@@ -14,8 +14,8 @@ window/size/window_width_override=1440
 window/size/window_height_override=900
 window/size/resizable=true
 window/subwindows/embed_subwindows=false
-window/stretch/mode="canvas_items"
-window/stretch/aspect="expand"
+window/stretch/mode="disabled"
+window/stretch/aspect="ignore"
 
 [rendering]
 renderer/rendering_method="gl_compatibility"

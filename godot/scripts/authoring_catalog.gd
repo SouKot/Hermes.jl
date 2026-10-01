@@ -364,13 +364,25 @@ func _register_defaults() -> void:
 			"runtime_editable": true,
 			"group": "Infeed Generation",
 			"description": "Stop generation after this many entities (0 = infinite)."
+		},
+		{
+			"key": "priority",
+			"display_name": "Default Priority",
+			"type": "int",
+			"default_value": 1,
+			"unit": "level",
+			"range": [1, 100, 1],
+			"runtime_editable": true,
+			"group": "Infeed Generation",
+			"description": "Default priority level assigned to generated entities (higher = higher priority)."
 		}
 	]
 	source.default_properties = {
 		"interarrival_time": {"type": "exponential", "mean": 3.0},
 		"entity_type": "carton",
 		"batch_size": 1,
-		"max_entities": 0
+		"max_entities": 0,
+		"priority": 1
 	}
 	_entries["source"] = source
 
@@ -760,7 +772,7 @@ func create_element_instance(kind: String, id_val: String, pos: Vector2) -> Scen
 			"bend_angle_deg": 90.0,
 			"sweep_angle_deg": 90.0,
 			"passes": 3,
-			"pitch": 2.4,
+			"pass_spacing": 2.0,
 			"helix_turns": 1.5
 		}
 

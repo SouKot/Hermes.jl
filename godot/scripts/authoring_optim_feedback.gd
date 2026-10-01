@@ -1184,7 +1184,7 @@ func _draw_scenespec_schematic(canvas: Control, spec_dict: Dictionary, zoom: flo
 		var pt := Vector2(px, py)
 		var kind_lc := str(e.get("kind", "")).to_lower()
 		if kind_lc == "conveyor":
-			var pts_m := ConveyorCurve3D.sample_2d_polyline(e, null, 28)
+			var pts_m := ConveyorCurve3D.sample_2d_polyline(e, null, 0)
 			if pts_m.size() >= 2:
 				conv_curves_by_id[eid] = pts_m
 				pt = pts_m[pts_m.size() / 2]

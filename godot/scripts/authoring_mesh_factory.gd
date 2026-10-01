@@ -164,7 +164,7 @@ static func _append_quad(verts: PackedVector3Array, norms: PackedVector3Array, a
 	for _i in range(6):
 		norms.append(n)
 
-static func _extrude_profile_along_frames(centers: PackedVector3Array, rights: PackedVector3Array, half_w: float, half_h: float, mat: Material) -> MeshInstance3D:
+static func _extrude_profile_along_frames(centers: PackedVector3Array, rights: PackedVector3Array, half_w: float, half_h: float, mat: Material, half_widths: PackedFloat32Array = PackedFloat32Array()) -> MeshInstance3D:
 	var n_pts: int = centers.size()
 	var verts := PackedVector3Array()
 	var norms := PackedVector3Array()
@@ -172,8 +172,8 @@ static func _extrude_profile_along_frames(centers: PackedVector3Array, rights: P
 	for i in range(n_pts - 1):
 		var c0 := centers[i]
 		var c1 := centers[i + 1]
-		var r0 := rights[i] * half_w
-		var r1 := rights[i + 1] * half_w
+		var r0 := rights[i] * (half_widths[i] if half_widths.size() == n_pts else half_w)
+		var r1 := rights[i + 1] * (half_widths[i + 1] if half_widths.size() == n_pts else half_w)
 		var u_vec := Vector3(0.0, half_h, 0.0)
 
 		var tl0 := c0 - r0 + u_vec
@@ -216,6 +216,15 @@ static func _extrude_profile_along_frames(centers: PackedVector3Array, rights: P
 	mi.mesh = arr_mesh
 	return mi
 
+static func _transport_sweep_right(previous_right: Vector3, tangent: Vector3) -> Vector3:
+	var heading := tangent.normalized()
+	var right := previous_right - heading * previous_right.dot(heading)
+	if right.length_squared() < 0.0001:
+		right = heading.cross(Vector3.UP)
+		if right.length_squared() < 0.0001:
+			right = heading.cross(Vector3.FORWARD)
+	return right.normalized()
+
 static func _build_conveyor(root: Node3D, elem: SceneTypes.SceneElement, doc_store = null) -> void:
 	var dims := _get_dims(elem, Vector3(8.0, 1.2, 0.2))
 	var width: float = maxf(0.4, dims.y)
@@ -224,7 +233,7 @@ static func _build_conveyor(root: Node3D, elem: SceneTypes.SceneElement, doc_sto
 	var z_end: float = float(elem.geometry.get("elevation_end", z_start))
 
 	var base_pos := elem.transform.position if elem.transform != null else Vector3.ZERO
-	var curve_data := ConveyorCurve3D.sample_world_curve(elem, doc_store, 40)
+	var curve_data := ConveyorCurve3D.sample_world_curve(elem, doc_store, 0)
 	var world_pts: PackedVector3Array = curve_data["points"]
 	var world_tans: PackedVector3Array = curve_data["tangents"]
 	var arc_s: PackedFloat64Array = curve_data["arc_lengths"]
@@ -238,25 +247,25 @@ static func _build_conveyor(root: Node3D, elem: SceneTypes.SceneElement, doc_sto
 	var left_rail_centers := PackedVector3Array()
 	var right_rail_centers := PackedVector3Array()
 	var rights := PackedVector3Array()
+	var belt_half_widths := PackedFloat32Array()
 
-	var rail_offset: float = (width * 0.5) - 0.03
+	var previous_right := Vector3.ZERO
 	for i in range(n_pts):
 		var rel_p: Vector3 = world_pts[i] - base_pos
 		var t_zup: Vector3 = world_tans[i]
 		# Convert Z-up (X East, Y South, Z Up) -> Godot 3D (X East, Y Up, Z = -Y)
 		var g_pos := Vector3(rel_p.x, rel_p.z + z_start, -rel_p.y)
-		var g_tan := Vector3(t_zup.x, t_zup.z, -t_zup.y)
-		var g_tan_flat := Vector3(g_tan.x, 0.0, g_tan.z)
-		if g_tan_flat.length_squared() < 1e-6:
-			g_tan_flat = Vector3(1.0, 0.0, 0.0)
-		else:
-			g_tan_flat = g_tan_flat.normalized()
-		var g_right := g_tan_flat.cross(Vector3.UP).normalized()
+		var g_tan := Vector3(t_zup.x, t_zup.z, -t_zup.y).normalized()
+		var g_right := _transport_sweep_right(previous_right, g_tan)
+		previous_right = g_right
+		var local_width: float = ConveyorCurve3D.width_at_fraction(elem, float(i) / float(n_pts - 1))
+		belt_half_widths.append(local_width * 0.44)
 
 		rights.append(g_right)
 		belt_centers.append(g_pos + Vector3(0.0, bed_thickness * 0.25, 0.0))
-		left_rail_centers.append(g_pos + g_right * rail_offset + Vector3(0.0, bed_thickness * 0.5, 0.0))
-		right_rail_centers.append(g_pos - g_right * rail_offset + Vector3(0.0, bed_thickness * 0.5, 0.0))
+		var local_rail_offset: float = (local_width * 0.5) - 0.03
+		left_rail_centers.append(g_pos + g_right * local_rail_offset + Vector3(0.0, bed_thickness * 0.5, 0.0))
+		right_rail_centers.append(g_pos - g_right * local_rail_offset + Vector3(0.0, bed_thickness * 0.5, 0.0))
 
 	var bed_pivot := Node3D.new()
 	bed_pivot.name = "BedPivot"
@@ -270,7 +279,7 @@ static func _build_conveyor(root: Node3D, elem: SceneTypes.SceneElement, doc_sto
 	bed_pivot.add_child(belt_assembly)
 
 	# 1. Extruded Rubber Belt Surface
-	var belt_inst := _extrude_profile_along_frames(belt_centers, rights, width * 0.44, bed_thickness * 0.25, _mat_belt)
+	var belt_inst := _extrude_profile_along_frames(belt_centers, rights, width * 0.44, bed_thickness * 0.25, _mat_belt, belt_half_widths)
 	belt_inst.name = "BeltMesh"
 	belt_assembly.add_child(belt_inst)
 
@@ -295,15 +304,16 @@ static func _build_conveyor(root: Node3D, elem: SceneTypes.SceneElement, doc_sto
 				break
 		var rel_p: Vector3 = world_pts[s_idx] - base_pos
 		var g_right: Vector3 = rights[s_idx]
-		var z_elev: float = base_pos.z + rel_p.z + z_start
+		var support_width: float = ConveyorCurve3D.width_at_fraction(elem, float(s_idx) / float(n_pts - 1))
+		var z_elev: float = rel_p.z + z_start
 		var leg_height: float = maxf(z_elev, 0.1)
 
 		var leg_assembly := Node3D.new()
-		leg_assembly.position = Vector3(rel_p.x, -base_pos.z, -rel_p.y)
+		leg_assembly.position = Vector3(rel_p.x, 0.0, -rel_p.y)
 		root.add_child(leg_assembly)
 
 		for side_sign in [-1.0, 1.0]:
-			var lat_off: Vector3 = g_right * (side_sign * width * 0.45)
+			var lat_off: Vector3 = g_right * (side_sign * support_width * 0.45)
 			var tube_mesh := BoxMesh.new()
 			tube_mesh.size = Vector3(0.08, leg_height, 0.08)
 			tube_mesh.material = _mat_steel
@@ -441,14 +451,75 @@ static func _build_queue(root: Node3D, elem: SceneTypes.SceneElement) -> void:
 			leg.position = Vector3(dx, height * 0.5, dz)
 			root.add_child(leg)
 
-	# 3. Floor Hazard Staging Pad
+	# 3. Subtle Floor Staging Trim (flush with footprint so contiguous stations don't overlap)
 	var pad := MeshInstance3D.new()
 	var pm := BoxMesh.new()
-	pm.size = Vector3(length + 0.6, 0.01, width + 0.6)
+	pm.size = Vector3(length + 0.08, 0.008, width + 0.08)
 	pm.material = _mat_floor_stripe
 	pad.mesh = pm
-	pad.position = Vector3(length * 0.5, 0.005, 0)
+	pad.position = Vector3(length * 0.5, 0.004, 0)
 	root.add_child(pad)
+
+static func create_transfer_bridge_3d(p_start_2d: Vector2, p_end_2d: Vector2, width: float = 0.85, z_elev: float = 0.80) -> Node3D:
+	_ensure_materials()
+	var root := Node3D.new()
+	root.name = "TransferBridge3D"
+	var dist_2d: float = p_start_2d.distance_to(p_end_2d)
+	if dist_2d < 0.12:
+		return root
+
+	var dir_x: float = 1.0 if p_end_2d.x >= p_start_2d.x else -1.0
+	var t_in := Vector3(dir_x, 0.0, 0.0)
+	var t_out := Vector3(dir_x, 0.0, 0.0)
+	var p0 := Vector3(p_start_2d.x, p_start_2d.y, 0.0)
+	var p3 := Vector3(p_end_2d.x, p_end_2d.y, 0.0)
+	var h_len: float = maxf(0.35, absf(p3.x - p0.x) * 0.45)
+	if absf(p3.x - p0.x) < 0.8:
+		var chord := (p3 - p0).normalized()
+		t_in = chord
+		t_out = chord
+		h_len = dist_2d * 0.33
+
+	var cpts := [
+		{"pos": p0, "in_handle": Vector3.ZERO, "out_handle": t_in * h_len},
+		{"pos": p3, "in_handle": -t_out * h_len, "out_handle": Vector3.ZERO}
+	]
+	var baked := ConveyorCurve3D.bake_control_points("s_curve", cpts, 20)
+	var world_pts: PackedVector3Array = baked["points"]
+	var world_tans: PackedVector3Array = baked["tangents"]
+	var n_pts: int = world_pts.size()
+	if n_pts < 2:
+		return root
+
+	var bed_thickness: float = 0.12
+	var belt_centers := PackedVector3Array()
+	var left_rail_centers := PackedVector3Array()
+	var right_rail_centers := PackedVector3Array()
+	var rights := PackedVector3Array()
+	var rail_offset: float = (width * 0.5) - 0.03
+
+	for i in range(n_pts):
+		var wp: Vector3 = world_pts[i]
+		var wt: Vector3 = world_tans[i]
+		var g_pos := Vector3(wp.x, z_elev, -wp.y)
+		var g_tan_flat := Vector3(wt.x, 0.0, -wt.y)
+		if g_tan_flat.length_squared() < 1e-6:
+			g_tan_flat = Vector3(1.0, 0.0, 0.0)
+		else:
+			g_tan_flat = g_tan_flat.normalized()
+		var g_right := g_tan_flat.cross(Vector3.UP).normalized()
+		rights.append(g_right)
+		belt_centers.append(g_pos + Vector3(0.0, bed_thickness * 0.25, 0.0))
+		left_rail_centers.append(g_pos + g_right * rail_offset + Vector3(0.0, bed_thickness * 0.5, 0.0))
+		right_rail_centers.append(g_pos - g_right * rail_offset + Vector3(0.0, bed_thickness * 0.5, 0.0))
+
+	var belt_inst := _extrude_profile_along_frames(belt_centers, rights, width * 0.44, bed_thickness * 0.25, _mat_belt)
+	root.add_child(belt_inst)
+	var side_left := _extrude_profile_along_frames(left_rail_centers, rights, 0.03, bed_thickness * 0.70, _mat_steel)
+	root.add_child(side_left)
+	var side_right := _extrude_profile_along_frames(right_rail_centers, rights, 0.03, bed_thickness * 0.70, _mat_steel)
+	root.add_child(side_right)
+	return root
 
 static func _build_source(root: Node3D, elem: SceneTypes.SceneElement) -> void:
 	var dims := get_dims(elem, Vector3(2.5, 2.0, 2.0))

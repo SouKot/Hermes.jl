@@ -7,6 +7,69 @@
 using SimCore
 using SimDES
 
+function _compute_queue_slot_position(ir::ExecutionGraphIR, world, zid, elem_id::String, ent_id)::Tuple{Float64, Float64, Float64}
+    base_pos = get(ir.spatial_positions, elem_id, (0.0, 0.0, 0.0))
+    dim = get(ir.spatial_dimensions, elem_id, (2.0, 2.0, 1.0))
+    pos_z = base_pos[3]
+
+    q_idx = 1
+    q_len = 1
+    if haskey(world.zone_states, zid)
+        q_vec = world.zone_states[zid].queue
+        q_len = max(1, length(q_vec))
+        found_idx = findfirst(==(ent_id), q_vec)
+        q_idx = found_idx !== nothing ? found_idx : 1
+    end
+
+    downstreams = get(ir.downstream_conns, elem_id, Tuple{String, String, String, String}[])
+    reverse_dir = false
+
+    if dim[1] >= dim[2]
+        # Horizontal queue along X
+        pos_y = base_pos[2] + dim[2] * 0.5
+        if !isempty(downstreams)
+            dst_id = first(downstreams)[1]
+            if haskey(ir.spatial_positions, dst_id)
+                dst_pos = ir.spatial_positions[dst_id]
+                dst_dim = get(ir.spatial_dimensions, dst_id, (2.0, 2.0, 1.0))
+                if (dst_pos[1] + dst_dim[1] * 0.5) < (base_pos[1] + dim[1] * 0.5)
+                    reverse_dir = true
+                end
+            end
+        end
+        usable_span = max(0.2, dim[1] - 0.8)
+        slot_step = clamp(usable_span / max(1, q_len), 0.20, 0.60)
+        if !reverse_dir
+            raw_x = (base_pos[1] + dim[1] - 0.4) - (q_idx - 1) * slot_step
+        else
+            raw_x = (base_pos[1] + 0.4) + (q_idx - 1) * slot_step
+        end
+        pos_x = clamp(raw_x, base_pos[1] + 0.3, base_pos[1] + dim[1] - 0.3)
+    else
+        # Vertical queue along Y
+        pos_x = base_pos[1] + dim[1] * 0.5
+        if !isempty(downstreams)
+            dst_id = first(downstreams)[1]
+            if haskey(ir.spatial_positions, dst_id)
+                dst_pos = ir.spatial_positions[dst_id]
+                dst_dim = get(ir.spatial_dimensions, dst_id, (2.0, 2.0, 1.0))
+                if (dst_pos[2] + dst_dim[2] * 0.5) < (base_pos[2] + dim[2] * 0.5)
+                    reverse_dir = true
+                end
+            end
+        end
+        usable_span = max(0.2, dim[2] - 0.8)
+        slot_step = clamp(usable_span / max(1, q_len), 0.20, 0.60)
+        if !reverse_dir
+            raw_y = (base_pos[2] + dim[2] - 0.4) - (q_idx - 1) * slot_step
+        else
+            raw_y = (base_pos[2] + 0.4) + (q_idx - 1) * slot_step
+        end
+        pos_y = clamp(raw_y, base_pos[2] + 0.3, base_pos[2] + dim[2] - 0.3)
+    end
+    return (pos_x, pos_y, pos_z)
+end
+
 """
     build_snapshot(instance::SimulationInstance; scene_id::String="active_scene", step_count::UInt64=UInt64(0)) -> DirectSnapshotPayload
 
@@ -173,24 +236,12 @@ function build_snapshot(
                     pos_y = base_pos[2] + dim[2] * 0.5
                     pos_z = base_pos[3]
                 else
-                    # Entity is waiting in queue buffer: compute slot position
+                    # Entity is waiting in queue buffer: compute slot position bounded in buffer
                     elem_id = fused_q.element_id
-                    base_pos = get(ir.spatial_positions, elem_id, (0.0, 0.0, 0.0))
-                    dim = get(ir.spatial_dimensions, elem_id, (2.0, 2.0, 1.0))
-                    # Slot offset along X axis
-                    q_idx = 1
-                    if haskey(world.zone_states, zid)
-                        q_vec = world.zone_states[zid].queue
-                        found_idx = findfirst(==(ent_id), q_vec)
-                        q_idx = found_idx !== nothing ? found_idx : 1
-                    end
-                    slot_dx = (q_idx - 1) * 0.5
-                    pos_x = (base_pos[1] + dim[1] * 0.5) - slot_dx
-                    pos_y = base_pos[2] + dim[2] * 0.5
-                    pos_z = base_pos[3]
+                    pos_x, pos_y, pos_z = _compute_queue_slot_position(ir, world, zid, elem_id, ent_id)
                 end
             else
-                # Single station or conveyor
+                # Single station, queue, or conveyor
                 first_rec = first(recs)
                 elem_id = first_rec.element_id
                 base_pos = get(ir.spatial_positions, elem_id, (0.0, 0.0, 0.0))
@@ -203,63 +254,69 @@ function build_snapshot(
                     elapsed = agent.service_start_time < Inf ? max(0.0, curr_t - agent.service_start_time) : 0.0
                     prog_val = clamp(elapsed / max(0.001, transit_tau), 0.0, 1.0)
 
-                    # Determine orientation and direction from downstream connections
-                    downstreams = get(ir.downstream_conns, elem_id, Tuple{String, String, String, String}[])
-                    
-                    if dim[1] >= dim[2]
-                        # Horizontal conveyor along X
-                        reverse_dir = false
-                        if !isempty(downstreams)
-                            dst_id = first(downstreams)[1]
-                            if haskey(ir.spatial_positions, dst_id)
-                                dst_pos = ir.spatial_positions[dst_id]
-                                dst_dim = get(ir.spatial_dimensions, dst_id, (2.0, 2.0, 1.0))
-                                if (dst_pos[1] + dst_dim[1] * 0.5) < base_pos[1]
-                                    reverse_dir = true
-                                end
-                            end
-                        end
-
-                        if reverse_dir
-                            start_x = base_pos[1] + dim[1]
-                            end_x = base_pos[1]
-                        else
-                            start_x = base_pos[1]
-                            end_x = base_pos[1] + dim[1]
-                        end
-                        start_y = base_pos[2] + dim[2] * 0.5
-                        end_y = start_y
+                    if haskey(ir.conveyor_curves, elem_id)
+                        baked = ir.conveyor_curves[elem_id]
+                        pt, tan_vec = sample_conveyor_curve(baked, prog_val)
+                        pos_x = pt[1]
+                        pos_y = pt[2]
+                        pos_z = pt[3]
+                        spd = (conv_node isa IRConveyorNode) ? conv_node.speed : 1.5
+                        vel_x = tan_vec[1] * spd
+                        vel_y = tan_vec[2] * spd
+                        vel_z = tan_vec[3] * spd
                     else
-                        # Vertical conveyor along Y
-                        reverse_dir = false
-                        if !isempty(downstreams)
-                            dst_id = first(downstreams)[1]
-                            if haskey(ir.spatial_positions, dst_id)
-                                dst_pos = ir.spatial_positions[dst_id]
-                                dst_dim = get(ir.spatial_dimensions, dst_id, (2.0, 2.0, 1.0))
-                                if (dst_pos[2] + dst_dim[2] * 0.5) < base_pos[2]
-                                    reverse_dir = true
+                        downstreams = get(ir.downstream_conns, elem_id, Tuple{String, String, String, String}[])
+                        if dim[1] >= dim[2]
+                            reverse_dir = false
+                            if !isempty(downstreams)
+                                dst_id = first(downstreams)[1]
+                                if haskey(ir.spatial_positions, dst_id)
+                                    dst_pos = ir.spatial_positions[dst_id]
+                                    dst_dim = get(ir.spatial_dimensions, dst_id, (2.0, 2.0, 1.0))
+                                    if (dst_pos[1] + dst_dim[1] * 0.5) < base_pos[1]
+                                        reverse_dir = true
+                                    end
                                 end
                             end
-                        end
-
-                        start_x = base_pos[1] + dim[1] * 0.5
-                        end_x = start_x
-                        if reverse_dir
-                            start_y = base_pos[2] + dim[2]
-                            end_y = base_pos[2]
+                            if reverse_dir
+                                start_x = base_pos[1] + dim[1]
+                                end_x = base_pos[1]
+                            else
+                                start_x = base_pos[1]
+                                end_x = base_pos[1] + dim[1]
+                            end
+                            start_y = base_pos[2] + dim[2] * 0.5
+                            end_y = start_y
                         else
-                            start_y = base_pos[2]
-                            end_y = base_pos[2] + dim[2]
+                            reverse_dir = false
+                            if !isempty(downstreams)
+                                dst_id = first(downstreams)[1]
+                                if haskey(ir.spatial_positions, dst_id)
+                                    dst_pos = ir.spatial_positions[dst_id]
+                                    dst_dim = get(ir.spatial_dimensions, dst_id, (2.0, 2.0, 1.0))
+                                    if (dst_pos[2] + dst_dim[2] * 0.5) < base_pos[2]
+                                        reverse_dir = true
+                                    end
+                                end
+                            end
+                            start_x = base_pos[1] + dim[1] * 0.5
+                            end_x = start_x
+                            if reverse_dir
+                                start_y = base_pos[2] + dim[2]
+                                end_y = base_pos[2]
+                            else
+                                start_y = base_pos[2]
+                                end_y = base_pos[2] + dim[2]
+                            end
                         end
+                        pos_x = start_x + prog_val * (end_x - start_x)
+                        pos_y = start_y + prog_val * (end_y - start_y)
+                        pos_z = base_pos[3]
+                        vel_x = (end_x - start_x) / max(0.001, transit_tau)
+                        vel_y = (end_y - start_y) / max(0.001, transit_tau)
                     end
-
-                    pos_x = start_x + prog_val * (end_x - start_x)
-                    pos_y = start_y + prog_val * (end_y - start_y)
-                    pos_z = base_pos[3]
-
-                    vel_x = (end_x - start_x) / max(0.001, transit_tau)
-                    vel_y = (end_y - start_y) / max(0.001, transit_tau)
+                elseif first_rec.role_in_zone == :queue_buffer
+                    pos_x, pos_y, pos_z = _compute_queue_slot_position(ir, world, zid, elem_id, ent_id)
                 else
                     pos_x = base_pos[1] + dim[1] * 0.5
                     pos_y = base_pos[2] + dim[2] * 0.5
@@ -269,6 +326,9 @@ function build_snapshot(
         end
 
         spd_val = sqrt(vel_x * vel_x + vel_y * vel_y)
+
+        ent_attrs = SimCore.get_entity_attributes(world, ent_id)
+        ent_vis = SimCore.get_entity_visuals(world, ent_id)
 
         props = Dict{String, Any}(
             "x" => pos_x,
@@ -282,8 +342,25 @@ function build_snapshot(
             "element_id" => elem_id,
             "zone_id" => zid,
             "priority" => agent.priority,
-            "in_service" => agent.service_start_time < Inf
+            "in_service" => agent.service_start_time < Inf,
+            "attributes" => ent_attrs
         )
+        if haskey(ent_vis, "color") && ent_vis["color"] isa Tuple
+            rgb = ent_vis["color"]
+            props["color_r"] = rgb[1]
+            props["color_g"] = rgb[2]
+            props["color_b"] = rgb[3]
+        end
+        if haskey(ent_vis, "mesh_type")
+            props["mesh_type"] = string(ent_vis["mesh_type"])
+        elseif haskey(ent_vis, "mesh")
+            props["mesh_type"] = string(ent_vis["mesh"])
+        end
+        if haskey(ent_vis, "size_scale")
+            props["prod_w"] = 0.4 * Float64(ent_vis["size_scale"])
+        elseif haskey(ent_vis, "size")
+            props["prod_w"] = 0.4 * Float64(ent_vis["size"])
+        end
 
         push!(entities, DirectSnapshotEntity(
             string("ent_", ent_id),
@@ -346,10 +423,13 @@ function build_snapshot(
         "wip_total" => act_wip,
         "total_arrivals" => tot_arr,
         "total_departures" => tot_dep,
+        "system_arrivals" => tot_arr,
+        "system_departures" => tot_dep,
         "active_in_queues" => act_q,
         "active_in_service" => act_srv,
         "active_on_conveyors" => act_conv,
         "sojourn_mean" => sojourn_mean,
+        "system_sojourn_mean" => sojourn_mean,
         "wait_mean" => wait_mean,
         "throughput_eff" => th_eff,
         "throughput_per_min" => round(th_eff * 60.0, digits=1),

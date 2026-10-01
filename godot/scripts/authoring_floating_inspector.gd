@@ -8,12 +8,14 @@ const DocumentStore := preload("res://scripts/authoring_document_store.gd")
 const Catalog := preload("res://scripts/authoring_catalog.gd")
 const Inspector := preload("res://scripts/authoring_inspector.gd")
 const ConveyorCurve3D := preload("res://scripts/conveyor_curve_3d.gd")
+const OSWindowHost := preload("res://scripts/authoring_os_window_host.gd")
 
 signal closed
 signal duplicate_requested(elem_id: String)
 signal delete_requested(elem_id: String)
 signal open_rule_builder_requested(conn_id: String)
 signal hook_apply_requested(msg: Dictionary)
+signal conveyor_geometry_mode_requested(elem_id: String)
 
 const BG := Color("#0b121c")
 const PANEL := Color("#121b27")
@@ -260,8 +262,11 @@ func open_for_element(elem_id: String, screen_pos: Vector2 = Vector2.ZERO) -> vo
 	_kind_pill.text = "[%s]" % elem.kind.to_upper()
 	_dot_rect.color = Color(elem.editor.color) if not elem.editor.color.is_empty() else ACCENT
 
-	# Position window near cursor, clamped inside parent viewport
-	if screen_pos != Vector2.ZERO:
+	var p_win := get_parent() as Window
+	if p_win != null and (not is_inside_tree() or p_win != get_tree().root):
+		p_win.title = "SimViz — %s (%s)" % [title_text, elem.kind.to_upper()]
+		position = Vector2.ZERO
+	elif screen_pos != Vector2.ZERO:
 		var target_pos := screen_pos + Vector2(20, -20)
 		var p_size := _get_bounding_area_size()
 		target_pos.x = clamp(target_pos.x, 20.0, max(20.0, p_size.x - custom_minimum_size.x - 20.0))
@@ -691,10 +696,12 @@ func _render_spatial_tab(elem: SceneTypes.SceneElement) -> void:
 				"bend_angle_deg": 90.0,
 				"sweep_angle_deg": 90.0,
 				"passes": 3,
-				"pitch": 2.4,
+				"pass_spacing": 2.0,
 				"helix_turns": 1.5
 			}
 		var sp: Dictionary = elem.geometry["shape_params"]
+		if sp.has("pitch") and not sp.has("pass_spacing"):
+			sp["pass_spacing"] = sp["pitch"]
 		var cur_preset: String = str(elem.geometry.get("shape_preset", "straight")).strip_edges().to_lower()
 
 		var p_row := HBoxContainer.new()
@@ -717,9 +724,62 @@ func _render_spatial_tab(elem: SceneTypes.SceneElement) -> void:
 			if pid == cur_preset:
 				sel_idx = i
 		opt_preset.selected = sel_idx
+		var preset_locks := ConveyorCurve3D.connected_endpoint_locks(elem.id, doc_store)
+		opt_preset.disabled = preset_locks["inlet"] or preset_locks["outlet"]
+		if opt_preset.disabled:
+			opt_preset.tooltip_text = "Disconnect flow to change the conveyor preset"
+		var reset_confirmed := [false]
 		opt_preset.item_selected.connect(func(idx: int):
 			if idx >= 0 and idx < ConveyorCurve3D.PRESET_IDS.size():
-				elem.geometry["shape_preset"] = ConveyorCurve3D.PRESET_IDS[idx]
+				var locks := ConveyorCurve3D.connected_endpoint_locks(elem.id, doc_store)
+				if locks["inlet"] or locks["outlet"]:
+					return
+				var pid: String = ConveyorCurve3D.PRESET_IDS[idx]
+				if pid == str(elem.geometry.get("shape_preset", "straight")):
+					return
+				if cur_preset == "custom_spline" and not reset_confirmed[0]:
+					var confirm := ConfirmationDialog.new()
+					confirm.title = "Reset Conveyor Geometry"
+					confirm.dialog_text = "Replace the editable bends with this preset?"
+					add_child(confirm)
+					confirm.confirmed.connect(func():
+						confirm.queue_free()
+						reset_confirmed[0] = true
+						opt_preset.item_selected.emit(idx)
+						reset_confirmed[0] = false
+					)
+					confirm.canceled.connect(func():
+						opt_preset.select(sel_idx)
+						confirm.queue_free()
+					)
+					confirm.popup_centered()
+					return
+				doc_store._record_undo()
+				var previous_length := float(ConveyorCurve3D.sample_world_curve(elem, doc_store)["total_length"])
+				if pid != str(elem.geometry.get("shape_preset", "straight")):
+					elem.geometry.erase("corner_pos")
+					if elem.geometry.get("shape_params") is Dictionary:
+						elem.geometry["shape_params"].erase("corner_pos")
+				elem.geometry["shape_preset"] = pid
+				if pid == "straight":
+					elem.geometry.erase("inlet_pose")
+					elem.geometry.erase("outlet_pose")
+					if not (elem.geometry.get("dimensions") is Array):
+						elem.geometry["dimensions"] = [previous_length, 1.2, 0.2]
+					else:
+						elem.geometry["dimensions"][0] = previous_length
+				else:
+					if not (elem.geometry.get("shape_params") is Dictionary):
+						elem.geometry["shape_params"] = {}
+					var sp_dict: Dictionary = elem.geometry["shape_params"]
+					if not sp_dict.has("lateral_offset"): sp_dict["lateral_offset"] = 2.5
+					if not sp_dict.has("forward_span"): sp_dict["forward_span"] = 10.0
+					if not sp_dict.has("bend_radius"): sp_dict["bend_radius"] = 2.0
+					if not sp_dict.has("bend_angle_deg"): sp_dict["bend_angle_deg"] = 90.0
+					if not sp_dict.has("turn_direction"): sp_dict["turn_direction"] = "right"
+					if not sp_dict.has("leg1_length"): sp_dict["leg1_length"] = 6.0
+					if not sp_dict.has("leg2_length"): sp_dict["leg2_length"] = 6.0
+					ConveyorCurve3D.sample_world_curve(elem, doc_store)
 				doc_store.is_dirty = true
 				doc_store.validate()
 				doc_store.document_modified.emit()
@@ -728,72 +788,331 @@ func _render_spatial_tab(elem: SceneTypes.SceneElement) -> void:
 		p_row.add_child(opt_preset)
 		_pages_container.add_child(p_row)
 
+		# Belt Width (m) adjustment directly in floating inspector
+		var cur_dims: Array = elem.geometry.get("dimensions", [8.0, 1.2, 0.2]) if (elem.geometry.get("dimensions") is Array) else [8.0, 1.2, 0.2]
+		var conv_belt_w: float = float(cur_dims[1]) if cur_dims.size() >= 2 else 1.2
+		var conv_dim_row := HBoxContainer.new()
+		conv_dim_row.add_theme_constant_override("separation", 6)
+		_create_coord_spin(conv_dim_row, "Belt Width (m)", conv_belt_w, 0.4, 8.0, 0.1, func(v):
+			doc_store._record_undo()
+			if not (elem.geometry.get("dimensions") is Array):
+				elem.geometry["dimensions"] = [8.0, v, 0.2]
+			else:
+				elem.geometry["dimensions"][1] = v
+			ConveyorCurve3D.sample_world_curve(elem, doc_store)
+			doc_store.is_dirty = true
+			doc_store.document_modified.emit()
+		)
+		_pages_container.add_child(conv_dim_row)
+		var width_profile: Array = elem.geometry.get("width_profile", []) if elem.geometry.get("width_profile") is Array else []
+		var profile_row := HBoxContainer.new()
+		var profile_label := Label.new()
+		profile_label.text = "WIDTH ALONG PATH"
+		profile_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		profile_row.add_child(profile_label)
+		var add_width_key := Button.new()
+		add_width_key.text = "+ Width Key"
+		add_width_key.pressed.connect(func():
+			doc_store._record_undo()
+			if not (elem.geometry.get("width_profile") is Array):
+				elem.geometry["width_profile"] = []
+			var keys: Array = elem.geometry["width_profile"]
+			var fraction := ConveyorCurve3D.next_width_key_fraction(elem)
+			keys.append({"fraction": fraction, "scale": 1.0})
+			doc_store.is_dirty = true
+			doc_store.document_modified.emit()
+			call_deferred("refresh")
+		)
+		profile_row.add_child(add_width_key)
+		_pages_container.add_child(profile_row)
+		for key_index in range(width_profile.size()):
+			var width_key = width_profile[key_index]
+			if not (width_key is Dictionary):
+				continue
+			var key_row := HBoxContainer.new()
+			_create_coord_spin(key_row, "Position (%)", float(width_key.get("fraction", 0.5)) * 100.0, 0.0, 100.0, 1.0, func(value):
+				doc_store._record_undo()
+				width_key["fraction"] = value / 100.0
+				doc_store.is_dirty = true
+				doc_store.document_modified.emit()
+			)
+			_create_coord_spin(key_row, "Local Width (m)", ConveyorCurve3D.width_at_fraction(elem, float(width_key.get("fraction", 0.5))), 0.4, 8.0, 0.1, func(value):
+				doc_store._record_undo()
+				width_key["scale"] = value / maxf(0.4, float(elem.geometry["dimensions"][1]))
+				doc_store.is_dirty = true
+				doc_store.document_modified.emit()
+			)
+			var remove_width_key := Button.new()
+			remove_width_key.text = "×"
+			remove_width_key.tooltip_text = "Remove width key"
+			remove_width_key.pressed.connect(func():
+				doc_store._record_undo()
+				(elem.geometry["width_profile"] as Array).erase(width_key)
+				doc_store.is_dirty = true
+				doc_store.document_modified.emit()
+				call_deferred("refresh")
+			)
+			key_row.add_child(remove_width_key)
+			_pages_container.add_child(key_row)
+		var rotation_row := HBoxContainer.new()
+		var rotation_spin := _create_coord_spin(rotation_row, "Rotate (°)", float(elem.transform.rotation.z), -360.0, 360.0, 5.0, func(v):
+			var canvas = get_tree().root.find_child("Authoring2DCanvas", true, false)
+			if canvas != null and canvas.has_method("_rotate_conveyor_element"):
+				var rotation_locks := ConveyorCurve3D.connected_endpoint_locks(elem.id, doc_store)
+				if rotation_locks["inlet"] or rotation_locks["outlet"]:
+					return
+				doc_store._record_undo()
+				canvas._rotate_conveyor_element(elem.id, v - elem.transform.rotation.z, canvas._conveyor_pivot(elem))
+		)
+		rotation_spin.editable = not (preset_locks["inlet"] or preset_locks["outlet"])
+		if not rotation_spin.editable:
+			rotation_spin.tooltip_text = "Disconnect flow to rotate this conveyor"
+		var pivot_select := OptionButton.new()
+		pivot_select.tooltip_text = "Rotation pivot"
+		for label in ["Center", "Inlet", "Outlet"]:
+			pivot_select.add_item(label)
+		var pivot_canvas = get_tree().root.find_child("Authoring2DCanvas", true, false) if is_inside_tree() else null
+		if pivot_canvas != null:
+			pivot_select.selected = ["center", "inlet", "outlet"].find(pivot_canvas.conveyor_rotation_pivot_mode)
+		pivot_select.item_selected.connect(func(index: int):
+			var canvas = get_tree().root.find_child("Authoring2DCanvas", true, false)
+			if canvas != null:
+				canvas.conveyor_rotation_pivot_mode = ["center", "inlet", "outlet"][index]
+		)
+		rotation_row.add_child(pivot_select)
+		if cur_preset == "straight":
+			var length_spin := _create_coord_spin(rotation_row, "Length (m)", float(cur_dims[0]), 1.0, 500.0, 0.5, func(v):
+				if ConveyorCurve3D.connected_endpoint_locks(elem.id, doc_store)["outlet"]:
+					return
+				doc_store._record_undo()
+				elem.geometry["dimensions"][0] = v
+				doc_store.is_dirty = true
+				doc_store.document_modified.emit()
+			)
+			length_spin.editable = not preset_locks["outlet"]
+			if not length_spin.editable:
+				length_spin.tooltip_text = "Disconnect outlet flow to change length"
+		_pages_container.add_child(rotation_row)
+
+		# Dedicated Conveyor Geometry Mode Button (Ports Hidden)
+		var btn_edit_geom := Button.new()
+		btn_edit_geom.text = "📐 Edit Conveyor Geometry (Shift+G)"
+		btn_edit_geom.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn_edit_geom.add_theme_font_size_override("font_size", 10)
+		btn_edit_geom.add_theme_color_override("font_color", Color("#2ecc71"))
+		btn_edit_geom.pressed.connect(func():
+			conveyor_geometry_mode_requested.emit(elem.id)
+			var canvas = get_tree().root.find_child("Authoring2DCanvas", true, false)
+			if canvas != null and canvas.has_method("enter_conveyor_geometry_mode"):
+				canvas.enter_conveyor_geometry_mode(elem.id)
+		)
+		_pages_container.add_child(btn_edit_geom)
+
 		var chk_join := CheckBox.new()
 		chk_join.text = "Auto-Join Connected Conveyors (C¹ Smooth)"
-		chk_join.button_pressed = bool(elem.geometry.get("auto_join", true))
+		chk_join.button_pressed = bool(sp.get("auto_join", elem.geometry.get("auto_join", true)))
 		chk_join.add_theme_font_size_override("font_size", 10)
 		chk_join.toggled.connect(func(on: bool):
-			elem.geometry["auto_join"] = on
+			ConveyorCurve3D.update_shape_parameter(elem, "auto_join", on, doc_store)
 			doc_store.is_dirty = true
 			doc_store.validate()
 			doc_store.document_modified.emit()
 		)
 		_pages_container.add_child(chk_join)
 
-		var param_row := HBoxContainer.new()
-		param_row.add_theme_constant_override("separation", 6)
-		var has_params := false
-
-		if cur_preset in ["l_bend", "u_turn", "circular_arc", "serpentine", "spiral_helix"]:
-			has_params = true
-			_create_coord_spin(param_row, "Radius (m)", float(sp.get("bend_radius", 2.0)), 0.3, 25.0, 0.1, func(v):
-				sp["bend_radius"] = v
+		# Progressive disclosure of preset parameters
+		if cur_preset == "l_bend":
+			var row1 := HBoxContainer.new()
+			row1.add_theme_constant_override("separation", 6)
+			_create_coord_spin(row1, "Radius (m)", float(sp.get("bend_radius", 2.0)), 0.3, 25.0, 0.1, func(v):
+				ConveyorCurve3D.update_shape_parameter(elem, "bend_radius", v, doc_store)
 				doc_store.is_dirty = true
 				doc_store.document_modified.emit()
 			)
-
-		if cur_preset in ["l_bend", "circular_arc"]:
-			has_params = true
-			_create_coord_spin(param_row, "Angle (°)", float(sp.get("sweep_angle_deg", sp.get("bend_angle_deg", 90.0))), -360.0, 360.0, 5.0, func(v):
-				sp["sweep_angle_deg"] = v
-				sp["bend_angle_deg"] = v
+			_create_coord_spin(row1, "Bend Angle (°)", float(sp.get("bend_angle_deg", 90.0)), 15.0, 165.0, 5.0, func(v):
+				ConveyorCurve3D.update_shape_parameter(elem, "bend_angle_deg", v, doc_store)
 				doc_store.is_dirty = true
 				doc_store.document_modified.emit()
 			)
-
-		if cur_preset == "s_curve":
-			has_params = true
-			_create_coord_spin(param_row, "Offset (m)", float(sp.get("lateral_offset", 2.4)), -20.0, 20.0, 0.2, func(v):
-				sp["lateral_offset"] = v
+			var dir_vbox := VBoxContainer.new()
+			dir_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			var dir_lbl := Label.new()
+			dir_lbl.text = "Turn Direction"
+			dir_lbl.add_theme_font_size_override("font_size", 8)
+			dir_lbl.add_theme_color_override("font_color", MUTED)
+			dir_vbox.add_child(dir_lbl)
+			var dir_opt := OptionButton.new()
+			dir_opt.add_item("Right", 0)
+			dir_opt.add_item("Left", 1)
+			dir_opt.selected = 1 if str(sp.get("turn_direction", "right")).to_lower() == "left" else 0
+			dir_opt.item_selected.connect(func(idx: int):
+				ConveyorCurve3D.update_shape_parameter(elem, "turn_direction", "left" if idx == 1 else "right", doc_store)
 				doc_store.is_dirty = true
 				doc_store.document_modified.emit()
 			)
+			dir_vbox.add_child(dir_opt)
+			row1.add_child(dir_vbox)
+			_pages_container.add_child(row1)
 
-		if cur_preset == "serpentine":
-			has_params = true
-			_create_coord_spin(param_row, "Passes", float(sp.get("passes", 3)), 2.0, 12.0, 1.0, func(v):
-				sp["passes"] = int(round(v))
+			var row2 := HBoxContainer.new()
+			row2.add_theme_constant_override("separation", 6)
+			_create_coord_spin(row2, "Leg 1 / Infeed (m)", float(sp.get("leg1_length", 5.0)), 1.0, 100.0, 0.5, func(v):
+				ConveyorCurve3D.update_shape_parameter(elem, "leg1_length", v, doc_store)
 				doc_store.is_dirty = true
 				doc_store.document_modified.emit()
 			)
-			_create_coord_spin(param_row, "Pitch (m)", float(sp.get("pitch", 2.4)), 0.8, 10.0, 0.2, func(v):
-				sp["pitch"] = v
+			_create_coord_spin(row2, "Leg 2 / Outfeed (m)", float(sp.get("leg2_length", 5.0)), 1.0, 100.0, 0.5, func(v):
+				ConveyorCurve3D.update_shape_parameter(elem, "leg2_length", v, doc_store)
 				doc_store.is_dirty = true
 				doc_store.document_modified.emit()
 			)
+			_pages_container.add_child(row2)
 
-		if cur_preset == "spiral_helix":
-			has_params = true
-			_create_coord_spin(param_row, "Turns", float(sp.get("helix_turns", 1.5)), 0.5, 8.0, 0.25, func(v):
-				sp["helix_turns"] = v
+		elif cur_preset == "s_curve":
+			var s_row := HBoxContainer.new()
+			s_row.add_theme_constant_override("separation", 6)
+			_create_coord_spin(s_row, "Lateral Offset (m)", float(sp.get("lateral_offset", 2.5)), -50.0, 50.0, 0.2, func(v):
+				ConveyorCurve3D.update_shape_parameter(elem, "lateral_offset", v, doc_store)
 				doc_store.is_dirty = true
 				doc_store.document_modified.emit()
 			)
+			_create_coord_spin(s_row, "Forward Span (m)", float(sp.get("forward_span", 8.0)), 2.0, 100.0, 0.5, func(v):
+				ConveyorCurve3D.update_shape_parameter(elem, "forward_span", v, doc_store)
+				doc_store.is_dirty = true
+				doc_store.document_modified.emit()
+			)
+			_create_coord_spin(s_row, "Tangent Scale", float(sp.get("tangent_scale", 0.42)), 0.1, 1.5, 0.05, func(v):
+				ConveyorCurve3D.update_shape_parameter(elem, "tangent_scale", v, doc_store)
+				doc_store.is_dirty = true
+				doc_store.document_modified.emit()
+			)
+			_pages_container.add_child(s_row)
 
-		if has_params:
+		elif cur_preset == "custom_spline":
+			var spl_row := HBoxContainer.new()
+			spl_row.add_theme_constant_override("separation", 6)
+			var cpts = sp.get("control_points", [])
+			var n_cpts: int = cpts.size() if (cpts is Array) else 0
+			var c_lbl := Label.new()
+			c_lbl.text = "Spline Vertices: %d" % n_cpts
+			c_lbl.add_theme_font_size_override("font_size", 10)
+			c_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			spl_row.add_child(c_lbl)
+
+			var btn_add := Button.new()
+			btn_add.text = "+ Add Point"
+			btn_add.add_theme_font_size_override("font_size", 9)
+			btn_add.pressed.connect(func():
+				doc_store._record_undo()
+				if not (sp.get("control_points") is Array):
+					sp["control_points"] = []
+				var arr: Array = sp["control_points"]
+				var last_p := Vector3(10, 0, 0)
+				if arr.size() > 0:
+					var item = arr[arr.size() - 1]
+					if item is Dictionary and item.has("pos") and item["pos"] is Array and item["pos"].size() >= 3:
+						last_p = Vector3(float(item["pos"][0]) + 3.0, float(item["pos"][1]), float(item["pos"][2]))
+				arr.append({"pos": [last_p.x, last_p.y, last_p.z]})
+				ConveyorCurve3D.sample_world_curve(elem, doc_store)
+				doc_store.is_dirty = true
+				doc_store.document_modified.emit()
+				call_deferred("refresh")
+			)
+			spl_row.add_child(btn_add)
+
+			var btn_del := Button.new()
+			btn_del.text = "✕ Remove Last"
+			btn_del.add_theme_font_size_override("font_size", 9)
+			btn_del.pressed.connect(func():
+				if sp.get("control_points") is Array and (sp["control_points"] as Array).size() > 2:
+					doc_store._record_undo()
+					(sp["control_points"] as Array).pop_back()
+					ConveyorCurve3D.sample_world_curve(elem, doc_store)
+					doc_store.is_dirty = true
+					doc_store.document_modified.emit()
+					call_deferred("refresh")
+			)
+			spl_row.add_child(btn_del)
+			_pages_container.add_child(spl_row)
+
+		elif cur_preset in ["u_turn", "circular_arc", "serpentine", "spiral_helix"]:
+			var param_row := HBoxContainer.new()
+			param_row.add_theme_constant_override("separation", 6)
+			var radius_key := "helix_radius" if cur_preset == "spiral_helix" else "pass_spacing" if cur_preset == "serpentine" else "bend_radius"
+			_create_coord_spin(param_row, "Radius (m)" if cur_preset != "serpentine" else "Lane C-C (m)", float(sp.get(radius_key, 2.5 if cur_preset == "spiral_helix" else 2.0)), 1.2 if cur_preset == "serpentine" else 1.0 if cur_preset == "spiral_helix" else 0.5, 25.0, 0.1, func(v):
+				ConveyorCurve3D.update_shape_parameter(elem, radius_key, v, doc_store)
+				doc_store.is_dirty = true
+				doc_store.document_modified.emit()
+			)
+			if cur_preset == "circular_arc":
+				_create_coord_spin(param_row, "Sweep (°)", float(sp.get("sweep_angle_deg", 90.0)), -350.0, 350.0, 5.0, func(v):
+					ConveyorCurve3D.update_shape_parameter(elem, "sweep_angle_deg", v, doc_store)
+					doc_store.is_dirty = true
+					doc_store.document_modified.emit()
+				)
+			elif cur_preset == "serpentine":
+				_create_coord_spin(param_row, "Bends", float(sp.get("passes", 3)) - 1.0, 1.0, 11.0, 1.0, func(v):
+					ConveyorCurve3D.update_shape_parameter(elem, "passes", int(round(v)) + 1, doc_store)
+					doc_store.is_dirty = true
+					doc_store.document_modified.emit()
+				)
+				_create_coord_spin(param_row, "Pass Length (m)", float(sp.get("pass_length", float(cur_dims[0]))), 3.0, 100.0, 0.2, func(v):
+					ConveyorCurve3D.update_shape_parameter(elem, "pass_length", v, doc_store)
+					doc_store.is_dirty = true
+					doc_store.document_modified.emit()
+				)
+			elif cur_preset == "spiral_helix":
+				_create_coord_spin(param_row, "Turns", float(sp.get("helix_turns", 1.5)), 0.25, 6.0, 0.25, func(v):
+					ConveyorCurve3D.update_shape_parameter(elem, "helix_turns", v, doc_store)
+					doc_store.is_dirty = true
+					doc_store.document_modified.emit()
+				)
+				_create_coord_spin(param_row, "Rise (m)", float(sp.get("elevation_gain", 2.4)), -20.0, 20.0, 0.1, func(v):
+					ConveyorCurve3D.update_shape_parameter(elem, "elevation_gain", v, doc_store)
+					doc_store.is_dirty = true
+					doc_store.document_modified.emit()
+				)
+				_create_coord_spin(param_row, "Pitch (m/turn)", float(sp.get("elevation_gain", 2.4)) / maxf(0.25, float(sp.get("helix_turns", 1.5))), -20.0, 20.0, 0.1, func(v):
+					ConveyorCurve3D.update_shape_parameter(elem, "elevation_gain", v * float(elem.geometry["shape_params"].get("helix_turns", 1.5)), doc_store)
+					doc_store.is_dirty = true
+					doc_store.document_modified.emit()
+				)
+			elif cur_preset == "u_turn":
+				_create_coord_spin(param_row, "Leg Length (m)", float(sp.get("leg_length", 6.0)), 1.5, 100.0, 0.5, func(v):
+					ConveyorCurve3D.update_shape_parameter(elem, "leg_length", v, doc_store)
+					doc_store.is_dirty = true
+					doc_store.document_modified.emit()
+				)
+				_create_coord_spin(param_row, "Return Leg (m)", float(sp.get("return_leg_length", sp.get("leg_length", 6.0))), 1.5, 100.0, 0.5, func(v):
+					ConveyorCurve3D.update_shape_parameter(elem, "return_leg_length", v, doc_store)
+					doc_store.is_dirty = true
+					doc_store.document_modified.emit()
+				)
 			_pages_container.add_child(param_row)
-		else:
-			param_row.queue_free()
+			if cur_preset == "serpentine":
+				var spacing: float = float(sp.get("pass_spacing", 2.0))
+				var widest: float = ConveyorCurve3D.maximum_width(elem)
+				var gap_label := Label.new()
+				gap_label.text = "Footprint: %.2f m  |  Min lane gap: %.2f m" % [(float(sp.get("passes", 3)) - 1.0) * spacing + widest, spacing - widest]
+				gap_label.add_theme_font_size_override("font_size", 9)
+				gap_label.add_theme_color_override("font_color", Color("#f39c12") if spacing < widest else MUTED)
+				_pages_container.add_child(gap_label)
+
+		# Convert to Editable Spline Button (available for all non-custom presets)
+		if cur_preset != "custom_spline":
+			var btn_convert := Button.new()
+			btn_convert.text = "✏ Convert to Editable Spline"
+			btn_convert.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			btn_convert.add_theme_font_size_override("font_size", 10)
+			btn_convert.pressed.connect(func():
+				doc_store._record_undo()
+				ConveyorCurve3D.convert_element_to_custom_spline(elem, doc_store)
+				doc_store.is_dirty = true
+				doc_store.validate()
+				doc_store.document_modified.emit()
+				call_deferred("refresh")
+			)
+			_pages_container.add_child(btn_convert)
 
 
 # ============================================================================
@@ -1263,6 +1582,9 @@ func _add_mini_spin(parent: Control, label: String, val: float, on_change: Calla
 # Dragging & Mouse Events
 # ============================================================================
 func _on_header_gui_input(event: InputEvent) -> void:
+	if OSWindowHost.handle_header_drag(self, event):
+		accept_event()
+		return
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT:

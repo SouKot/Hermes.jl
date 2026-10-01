@@ -24,6 +24,7 @@ const AuthoringOutliner := preload("res://scripts/authoring_outliner.gd")
 const ExamplesCatalog := preload("res://scripts/authoring_examples_catalog.gd")
 const OptimSetup := preload("res://scripts/authoring_optim_setup.gd")
 const OptimFeedback := preload("res://scripts/authoring_optim_feedback.gd")
+const OSWindowHost := preload("res://scripts/authoring_os_window_host.gd")
 
 enum ViewMode { VIEW_2D, VIEW_3D }
 
@@ -199,6 +200,10 @@ func _connect_signals() -> void:
 		)
 	if _viewport_3d != null:
 		_viewport_3d.floating_properties_requested.connect(_on_floating_properties_requested)
+		_viewport_3d.conveyor_geometry_mode_requested.connect(func(elem_id: String):
+			if _canvas_2d != null:
+				_canvas_2d.toggle_conveyor_geometry_mode(elem_id)
+		)
 	if _inspector_panel != null:
 		_inspector_panel.open_floating_requested.connect(_on_floating_properties_requested)
 
@@ -237,6 +242,7 @@ func _build_ui() -> void:
 	_inner_split = HSplitContainer.new()
 	_inner_split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_inner_split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_inner_split.split_offset = -240
 	_outer_split.add_child(_inner_split)
 
 	# Center Viewport Area
@@ -270,6 +276,7 @@ func _build_ui() -> void:
 	center_split.add_child(view_area)
 
 	_canvas_2d = Canvas2D.new(doc_store)
+	_canvas_2d.name = "Authoring2DCanvas"
 	_canvas_2d.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	view_area.add_child(_canvas_2d)
 
@@ -277,6 +284,9 @@ func _build_ui() -> void:
 	_viewport_3d.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_viewport_3d.visible = false
 	view_area.add_child(_viewport_3d)
+	_canvas_2d.conveyor_geometry_mode_changed.connect(func(elem_id: String):
+		_viewport_3d.geometry_mode_elem_id = elem_id
+	)
 
 	_plot_studio = PlotStudio.new(doc_store)
 	_plot_studio.visible = false
@@ -304,6 +314,10 @@ func _build_ui() -> void:
 			_inspector_panel.refresh()
 	)
 	add_child(_rule_builder)
+	OSWindowHost.attach(_rule_builder, "SimViz — Routing Rule Builder", Vector2i(420, 480), Vector2i(340, 380), func():
+		_rule_builder.visible = false
+		_rule_builder.closed.emit()
+	, Vector2i(180, 110))
 
 	# 5. Floating / Modal Tabbed Inspector Window
 	_floating_inspector = FloatingInspector.new(doc_store, catalog)
@@ -315,13 +329,24 @@ func _build_ui() -> void:
 	_floating_inspector.hook_apply_requested.connect(func(msg: Dictionary):
 		command_requested.emit(msg)
 	)
+	_floating_inspector.conveyor_geometry_mode_requested.connect(func(eid: String):
+		if _canvas_2d != null:
+			_canvas_2d.enter_conveyor_geometry_mode(eid)
+	)
 	add_child(_floating_inspector)
+	OSWindowHost.attach(_floating_inspector, "SimViz — Entity Properties & Hooks", Vector2i(540, 560), Vector2i(460, 400), func():
+		_floating_inspector.close()
+	, Vector2i(140, 90))
 
 	# 6. Floating / Modal ABM & Hybrid Configuration Dialog
 	_abm_dialog = ABMDialog.new(doc_store)
 	_abm_dialog.visible = false
 	_abm_dialog.closed.connect(func(): _abm_dialog.visible = false)
 	add_child(_abm_dialog)
+	OSWindowHost.attach(_abm_dialog, "SimViz — ABM & Crowd Physics Configuration", Vector2i(620, 620), Vector2i(480, 440), func():
+		_abm_dialog.visible = false
+		_abm_dialog.closed.emit()
+	, Vector2i(160, 100))
 
 	# 7. Floating / Modal Template Packaging Dialog
 	_template_dialog = TemplateDialog.new(doc_store)
@@ -333,6 +358,10 @@ func _build_ui() -> void:
 		if _canvas_2d != null: _canvas_2d.rebuild_blocks()
 	)
 	add_child(_template_dialog)
+	OSWindowHost.attach(_template_dialog, "SimViz — Package Subsystem Template", Vector2i(500, 480), Vector2i(440, 400), func():
+		_template_dialog.visible = false
+		_template_dialog.closed.emit()
+	, Vector2i(180, 110))
 
 	# 8. Diff Dialog
 	_diff_dialog = DiffDialog.new()
@@ -408,6 +437,14 @@ func _build_ui() -> void:
 		})
 	)
 	add_child(_optim_setup)
+	if _optim_setup._setup_panel != null:
+		OSWindowHost.attach(_optim_setup._setup_panel, "SimViz — Optimization Setup (SimOptim)", Vector2i(740, 600), Vector2i(620, 480), func():
+			_optim_setup.close_setup()
+		, Vector2i(90, 70))
+	if _optim_setup._progress_panel != null:
+		OSWindowHost.attach(_optim_setup._progress_panel, "SimViz — Optimization Live Progress", Vector2i(440, 230), Vector2i(380, 190), func():
+			_optim_setup._progress_panel.visible = false
+		, Vector2i(260, 110))
 
 	# 13. SimOptim Window 2 (Optimization Report & Live Feedback + Lightbox Modal)
 	_optim_feedback = OptimFeedback.new(doc_store)
@@ -441,45 +478,44 @@ func _build_ui() -> void:
 			if _btn_opt_report != null: _btn_opt_report.modulate = ACCENT
 	)
 	add_child(_optim_feedback)
+	if _optim_feedback._report_panel != null:
+		OSWindowHost.attach(_optim_feedback._report_panel, "SimViz — Optimization Report & Live Feedback", Vector2i(920, 660), Vector2i(700, 500), func():
+			_optim_feedback.close_report()
+		, Vector2i(140, 80))
+	if _optim_feedback._lightbox_panel != null:
+		OSWindowHost.attach(_optim_feedback._lightbox_panel, "SimViz — Candidate 2D Schematic Snapshot", Vector2i(960, 680), Vector2i(640, 480), func():
+			_optim_feedback.close_lightbox()
+		, Vector2i(160, 90))
 
 func _build_header() -> Control:
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size.y = 52
 	var style := StyleBoxFlat.new()
 	style.bg_color = PANEL
 	style.border_color = BORDER
 	style.border_width_bottom = 1
 	panel.add_theme_stylebox_override("panel", style)
 
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 12)
-	row.add_theme_constant_override("margin_left", 14)
-	row.add_theme_constant_override("margin_right", 14)
-	panel.add_child(row)
+	var header_vbox := VBoxContainer.new()
+	header_vbox.add_theme_constant_override("separation", 2)
+	header_vbox.add_theme_constant_override("margin_top", 4)
+	header_vbox.add_theme_constant_override("margin_bottom", 4)
+	panel.add_child(header_vbox)
+
+	# ── Row 1: Menus, Document Info & 2D/3D View Switcher ──────────────────
+	var row1 := HBoxContainer.new()
+	row1.add_theme_constant_override("separation", 10)
+	row1.add_theme_constant_override("margin_left", 14)
+	row1.add_theme_constant_override("margin_right", 14)
+	header_vbox.add_child(row1)
 
 	# App Title
 	var title := Label.new()
 	title.text = "ANTIGRAVITY / SIMVIZ"
-	title.add_theme_font_size_override("font_size", 16)
+	title.add_theme_font_size_override("font_size", 14)
 	title.add_theme_color_override("font_color", TEXT)
-	row.add_child(title)
+	row1.add_child(title)
 
-	# Document Name & Dirty Star
-	_doc_title_label = Label.new()
-	_doc_title_label.text = "Untitled Simulation"
-	_doc_title_label.add_theme_font_size_override("font_size", 13)
-	_doc_title_label.add_theme_color_override("font_color", Color("#d8dee9"))
-	_doc_title_label.tooltip_text = "Current simulation file and scene name. Select empty canvas to view and edit Scene Properties."
-	row.add_child(_doc_title_label)
-
-	# Autosave Status
-	_autosave_status_label = Label.new()
-	_autosave_status_label.text = ""
-	_autosave_status_label.add_theme_font_size_override("font_size", 11)
-	_autosave_status_label.add_theme_color_override("font_color", Color("#52c7a5"))
-	row.add_child(_autosave_status_label)
-
-	row.add_child(VSeparator.new())
+	row1.add_child(VSeparator.new())
 
 	# File MenuButton
 	_file_menu = MenuButton.new()
@@ -508,7 +544,7 @@ func _build_header() -> Control:
 
 	popup.id_pressed.connect(_on_file_menu_id_pressed)
 	popup.about_to_popup.connect(_refresh_recent_menu)
-	row.add_child(_file_menu)
+	row1.add_child(_file_menu)
 
 	# Examples MenuButton (DES, ABM & Hybrid, Optimization)
 	_examples_menu = MenuButton.new()
@@ -516,14 +552,18 @@ func _build_header() -> Control:
 	_examples_menu.flat = false
 	_examples_menu.tooltip_text = "Load built-in DES, ABM/Hybrid, and SimOptim benchmark models"
 	var ex_popup: PopupMenu = _examples_menu.get_popup()
+	ex_popup.add_item("🌟 4-Zone Smart Fulfillment & Vision QA Plant (Showcase)", 100)
+	ex_popup.add_separator()
 
 	var des_sub := PopupMenu.new()
 	des_sub.name = "DESExamplesMenu"
+	des_sub.add_item("4-Zone Smart Fulfillment & Vision QA Plant (Showcase)", 100)
 	des_sub.add_item("Tandem Manufacturing Cell", 101)
 	des_sub.add_item("M/M/c Station with Failures", 102)
 	des_sub.id_pressed.connect(_on_example_menu_id_pressed)
 	ex_popup.add_child(des_sub)
-	ex_popup.add_submenu_item("DES Models", "DESExamplesMenu", 100)
+	ex_popup.add_submenu_item("DES Models", "DESExamplesMenu", 10)
+	ex_popup.id_pressed.connect(_on_example_menu_id_pressed)
 
 	var abm_sub := PopupMenu.new()
 	abm_sub.name = "ABMExamplesMenu"
@@ -544,36 +584,89 @@ func _build_header() -> Control:
 	ex_popup.add_child(opt_sub)
 	ex_popup.add_submenu_item("Optimization Problems", "OptimizationExamplesMenu", 300)
 
-	row.add_child(_examples_menu)
+	row1.add_child(_examples_menu)
 
 	var btn_val := Button.new()
-	btn_val.text = "Validate"
+	btn_val.text = "✓ Validate"
 	btn_val.pressed.connect(func(): doc_store.validate())
-	row.add_child(btn_val)
+	row1.add_child(btn_val)
 
-	row.add_child(VSeparator.new())
+	row1.add_child(VSeparator.new())
+
+	# Document Name & Dirty Star
+	_doc_title_label = Label.new()
+	_doc_title_label.text = "Untitled Simulation"
+	_doc_title_label.add_theme_font_size_override("font_size", 12)
+	_doc_title_label.add_theme_color_override("font_color", Color("#d8dee9"))
+	_doc_title_label.tooltip_text = "Current simulation file and scene name. Select empty canvas to view and edit Scene Properties."
+	row1.add_child(_doc_title_label)
+
+	# Autosave Status
+	_autosave_status_label = Label.new()
+	_autosave_status_label.text = ""
+	_autosave_status_label.add_theme_font_size_override("font_size", 11)
+	_autosave_status_label.add_theme_color_override("font_color", Color("#52c7a5"))
+	row1.add_child(_autosave_status_label)
+
+	var spacer1 := Control.new()
+	spacer1.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row1.add_child(spacer1)
+
+	# ABM Status & Settings
+	_abm_status_pill = Label.new()
+	_abm_status_pill.text = "[○ ABM: OFF]"
+	_abm_status_pill.add_theme_font_size_override("font_size", 11)
+	_abm_status_pill.add_theme_color_override("font_color", MUTED)
+	row1.add_child(_abm_status_pill)
+
+	_btn_abm = Button.new()
+	_btn_abm.text = "⚙ ABM Settings"
+	_btn_abm.pressed.connect(_on_abm_button_pressed)
+	row1.add_child(_btn_abm)
+
+	row1.add_child(VSeparator.new())
+
+	# TWO-VIEW SYSTEM TOGGLE BUTTONS
+	var toggle_box := HBoxContainer.new()
+	toggle_box.add_theme_constant_override("separation", 0)
+	row1.add_child(toggle_box)
+
+	_btn_view_2d = Button.new()
+	_btn_view_2d.text = "  [ 2D LAYOUT ]  "
+	_btn_view_2d.pressed.connect(func(): switch_view(ViewMode.VIEW_2D))
+	toggle_box.add_child(_btn_view_2d)
+
+	_btn_view_3d = Button.new()
+	_btn_view_3d.text = "  [ 3D LAYOUT ]  "
+	_btn_view_3d.pressed.connect(func(): switch_view(ViewMode.VIEW_3D))
+	toggle_box.add_child(_btn_view_3d)
+
+	# ── Row 2: Canvas Authoring, Wire Routing, Telemetry & Optimization Toolbar ──
+	var row2 := HBoxContainer.new()
+	row2.add_theme_constant_override("separation", 8)
+	row2.add_theme_constant_override("margin_left", 14)
+	row2.add_theme_constant_override("margin_right", 14)
+	header_vbox.add_child(row2)
 
 	_btn_group = Button.new()
 	_btn_group.text = "⚏ Group"
 	_btn_group.tooltip_text = "Group selection into compound subsystem (Ctrl+G)"
 	_btn_group.pressed.connect(_on_group_clicked)
-	row.add_child(_btn_group)
+	row2.add_child(_btn_group)
 
 	_btn_ungroup = Button.new()
 	_btn_ungroup.text = "✕ Ungroup"
 	_btn_ungroup.tooltip_text = "Ungroup selected compound subsystem (Ctrl+Shift+G)"
 	_btn_ungroup.pressed.connect(_on_ungroup_clicked)
-	row.add_child(_btn_ungroup)
+	row2.add_child(_btn_ungroup)
 
 	_btn_template = Button.new()
 	_btn_template.text = "📦 Template"
 	_btn_template.tooltip_text = "Package selected elements into reusable catalog template"
 	_btn_template.pressed.connect(_on_package_template_clicked)
-	row.add_child(_btn_template)
+	row2.add_child(_btn_template)
 
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(spacer)
+	row2.add_child(VSeparator.new())
 
 	# Auto-Layout DAG button
 	var btn_layout := Button.new()
@@ -585,7 +678,7 @@ func _build_header() -> Control:
 			_viewport_3d.rebuild_3d_scene()
 			_viewport_3d.frame_scene()
 	)
-	row.add_child(btn_layout)
+	row2.add_child(btn_layout)
 
 	# Frame All button
 	var btn_frame := Button.new()
@@ -596,7 +689,7 @@ func _build_header() -> Control:
 		elif current_view == ViewMode.VIEW_3D and _viewport_3d != null:
 			_viewport_3d.frame_scene()
 	)
-	row.add_child(btn_frame)
+	row2.add_child(btn_frame)
 
 	# Wire Visibility 3-mode toggle button (All | Focus | Off)
 	_btn_wires = Button.new()
@@ -607,7 +700,7 @@ func _build_header() -> Control:
 			_canvas_2d.cycle_wire_visibility_mode()
 			_btn_wires.text = "🔗 Wires: %s (W)" % _canvas_2d.get_wire_visibility_label()
 	)
-	row.add_child(_btn_wires)
+	row2.add_child(_btn_wires)
 
 	# Universal Scene-Wide Default Wire Shape OptionButton
 	_opt_wire_shape = OptionButton.new()
@@ -620,7 +713,11 @@ func _build_header() -> Control:
 			if _canvas_2d != null:
 				_canvas_2d._redraw_all()
 	)
-	row.add_child(_opt_wire_shape)
+	row2.add_child(_opt_wire_shape)
+
+	var spacer2 := Control.new()
+	spacer2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row2.add_child(spacer2)
 
 	_btn_plots = Button.new()
 	_btn_plots.text = "📈 Charts"
@@ -630,7 +727,7 @@ func _build_header() -> Control:
 			_plot_studio.toggle_visibility()
 			_btn_plots.modulate = ACCENT if _plot_studio.visible else Color.WHITE
 	)
-	row.add_child(_btn_plots)
+	row2.add_child(_btn_plots)
 
 	_btn_optimize = Button.new()
 	_btn_optimize.text = "⚡ Optimize"
@@ -640,7 +737,7 @@ func _build_header() -> Control:
 			_optim_setup.toggle_setup()
 			_btn_optimize.modulate = ACCENT if _optim_setup.is_setup_visible() else Color.WHITE
 	)
-	row.add_child(_btn_optimize)
+	row2.add_child(_btn_optimize)
 
 	_btn_opt_report = Button.new()
 	_btn_opt_report.text = "📋 Report"
@@ -650,38 +747,7 @@ func _build_header() -> Control:
 			_optim_feedback.toggle_report()
 			_btn_opt_report.modulate = ACCENT if _optim_feedback.is_report_visible() else Color.WHITE
 	)
-	row.add_child(_btn_opt_report)
-
-	row.add_child(VSeparator.new())
-
-	# ABM Status & Settings
-	_abm_status_pill = Label.new()
-	_abm_status_pill.text = "[○ ABM: OFF]"
-	_abm_status_pill.add_theme_font_size_override("font_size", 11)
-	_abm_status_pill.add_theme_color_override("font_color", MUTED)
-	row.add_child(_abm_status_pill)
-
-	_btn_abm = Button.new()
-	_btn_abm.text = "⚙ ABM Settings"
-	_btn_abm.pressed.connect(_on_abm_button_pressed)
-	row.add_child(_btn_abm)
-
-	row.add_child(VSeparator.new())
-
-	# TWO-VIEW SYSTEM TOGGLE BUTTONS
-	var toggle_box := HBoxContainer.new()
-	toggle_box.add_theme_constant_override("separation", 0)
-	row.add_child(toggle_box)
-
-	_btn_view_2d = Button.new()
-	_btn_view_2d.text = "  [ 2D LAYOUT ]  "
-	_btn_view_2d.pressed.connect(func(): switch_view(ViewMode.VIEW_2D))
-	toggle_box.add_child(_btn_view_2d)
-
-	_btn_view_3d = Button.new()
-	_btn_view_3d.text = "  [ 3D LAYOUT ]  "
-	_btn_view_3d.pressed.connect(func(): switch_view(ViewMode.VIEW_3D))
-	toggle_box.add_child(_btn_view_3d)
+	row2.add_child(_btn_opt_report)
 
 	return panel
 
@@ -776,6 +842,9 @@ func _build_left_dock() -> Control:
 	var catalog_wrap := VBoxContainer.new()
 	catalog_wrap.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	vbox.add_child(catalog_wrap)
+	set_meta("_left_catalog_wrap", catalog_wrap)
+	set_meta("_left_btn_catalog", btn_catalog)
+	set_meta("_left_btn_outliner", btn_outliner)
 
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -819,6 +888,22 @@ func _build_left_dock() -> Control:
 
 	return panel
 
+func set_left_dock_tab(tab_idx: int) -> void:
+	var c_wrap = get_meta("_left_catalog_wrap", null)
+	var b_cat = get_meta("_left_btn_catalog", null)
+	var b_out = get_meta("_left_btn_outliner", null)
+	if tab_idx == 1:
+		if c_wrap != null: c_wrap.visible = false
+		if _outliner != null: _outliner.visible = true
+		if b_cat != null: b_cat.button_pressed = false
+		if b_out != null: b_out.button_pressed = true
+	else:
+		if c_wrap != null: c_wrap.visible = true
+		if _outliner != null: _outliner.visible = false
+		if b_cat != null: b_cat.button_pressed = true
+		if b_out != null: b_out.button_pressed = false
+
+
 
 func _build_right_dock() -> Control:
 	var panel := PanelContainer.new()
@@ -845,6 +930,10 @@ func _build_right_dock() -> Control:
 	_inspector_panel.delete_requested.connect(_delete_element)
 	_inspector_panel.rule_builder_requested.connect(func(conn_id: String):
 		_open_rule_builder(conn_id)
+	)
+	_inspector_panel.conveyor_geometry_mode_requested.connect(func(eid: String):
+		if _canvas_2d != null:
+			_canvas_2d.enter_conveyor_geometry_mode(eid)
 	)
 	vbox.add_child(_inspector_panel)
 
@@ -951,11 +1040,9 @@ func _build_transport() -> Control:
 	_kpi_strip_label.text = "WIP: 0  |  In: 0  |  Out: 0  |  Rate: 0.00/s  |  Flow: ● BALANCED"
 	_kpi_strip_label.add_theme_font_size_override("font_size", 11)
 	_kpi_strip_label.add_theme_color_override("font_color", ACCENT)
+	_kpi_strip_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_kpi_strip_label.clip_text = true
 	row.add_child(_kpi_strip_label)
-
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(spacer)
 
 	_speed_label = Label.new()
 	_speed_label.text = "Speed: 1.00x"
@@ -1625,6 +1712,7 @@ func _on_unsaved_action_canceled(_action_context: Dictionary) -> void:
 
 func _on_example_menu_id_pressed(id: int) -> void:
 	var ex_map := {
+		100: "des_4zone_fulfillment_showcase",
 		101: "des_tandem_cell",
 		102: "des_mmc_failures",
 		201: "abm_corridor_crowd",

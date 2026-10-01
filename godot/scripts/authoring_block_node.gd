@@ -11,6 +11,7 @@ class_name SimVizAuthoringBlockNode
 extends Control
 
 const SceneTypes := preload("res://scripts/scenespec_types.gd")
+const ConveyorCurve3D := preload("res://scripts/conveyor_curve_3d.gd")
 
 signal block_selected(element_id: String)
 signal block_moved(element_id: String, new_pos: Vector2)
@@ -25,6 +26,7 @@ signal element_resized(element_id: String, new_dims: Vector3)
 signal element_resize_committed(element_id: String, new_dims: Vector3)
 signal floating_properties_requested(element_id: String, screen_pos: Vector2)
 signal subgraph_drilldown_requested(subgraph_id: String)
+signal conveyor_geometry_mode_toggled(element_id: String)
 
 const BG_NORMAL := Color("#121b27")
 const BG_SELECTED := Color("#17263c")
@@ -75,6 +77,7 @@ var signal_values: Dictionary = {}
 var signal_history: Array = []
 const MAX_SPARKLINE_POINTS: int = 40
 var hovered_port_id: String = ""
+var is_geometry_mode_active: bool = false
 var _dragging: bool = false
 var _drag_offset: Vector2 = Vector2.ZERO
 var _drag_start_node_pos: Vector2 = Vector2.ZERO
@@ -131,10 +134,10 @@ func get_node_id() -> String:
 func _is_curved_or_joined_conveyor() -> bool:
 	if element == null or element.kind != "conveyor":
 		return false
-	if element.geometry.has("inlet_pose") or element.geometry.has("outlet_pose"):
-		return true
-	var preset: String = str(element.geometry.get("shape_preset", "straight")).to_lower()
-	return preset != "straight" and not preset.is_empty()
+	var preset: String = str(element.geometry.get("shape_preset", element.properties.get("shape_preset", "straight"))).to_lower()
+	if preset == "straight" or preset.is_empty():
+		return false
+	return true
 
 func uses_floating_nameplate() -> bool:
 	if element != null and element.kind == "conveyor":
@@ -144,6 +147,8 @@ func uses_floating_nameplate() -> bool:
 	return size.x < 68.0
 
 func should_show_port_socket(port_id: String) -> bool:
+	if is_geometry_mode_active:
+		return false
 	if is_selected or is_multi_selected or is_block_hovered or is_wire_drag_active or hovered_port_id == port_id:
 		return true
 	var conn_count: int = int(port_connection_counts.get(port_id, 0))
@@ -331,8 +336,8 @@ func _recalculate_size() -> void:
 	var min_h: float = 36.0
 
 	if element != null and element.kind == "conveyor":
-		min_w = 40.0
-		min_h = 24.0
+		min_w = 20.0
+		min_h = 8.0
 	elif element != null and element.kind in ["chart_station", "scope_2d", "digital_meter", "histogram_sink", "state_space_3d", "xy_scatter"]:
 		var n_sub: int = element.properties.get("subplots", []).size() if element.properties.has("subplots") else 1
 		min_w = max(min_w, 180.0)
@@ -435,6 +440,8 @@ func _get_metric_ports() -> Array:
 	return res
 
 func _gui_input(event: InputEvent) -> void:
+	if is_geometry_mode_active:
+		return
 	var nid := get_node_id()
 	if nid.is_empty():
 		return
@@ -489,12 +496,17 @@ func _gui_input(event: InputEvent) -> void:
 						return
 
 				# 4. Center body clicked -> drag block
-				_dragging = true
-				_drag_offset = mb.position
-				_drag_start_node_pos = position
-				_drag_start_canvas_mouse = _event_canvas_mouse_pos(mb.position, mb.global_position)
-				block_selected.emit(nid)
-				accept_event()
+				if not _is_curved_or_joined_conveyor():
+					_dragging = true
+					_drag_offset = mb.position
+					_drag_start_node_pos = position
+					_drag_start_canvas_mouse = _event_canvas_mouse_pos(mb.position, mb.global_position)
+					block_selected.emit(nid)
+					accept_event()
+				else:
+					# For curved/joined conveyors, emit selection but DO NOT consume event so Canvas2D can hit-test gizmos & track!
+					block_selected.emit(nid)
+					return
 			else:
 				if _resizing:
 					_resizing = false
@@ -504,6 +516,13 @@ func _gui_input(event: InputEvent) -> void:
 				elif _dragging:
 					_dragging = false
 					accept_event()
+
+		elif mb.button_index == MOUSE_BUTTON_MIDDLE:
+			if mb.pressed:
+				if element != null and element.kind == "conveyor":
+					conveyor_geometry_mode_toggled.emit(nid)
+					accept_event()
+					return
 
 		elif mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
 			var hit_port := _hit_test_port(mb.position)
@@ -650,6 +669,8 @@ func hit_test_port(local_pos: Vector2) -> String:
 	return _hit_test_port(local_pos)
 
 func _hit_test_port(local_pos: Vector2) -> String:
+	if is_geometry_mode_active:
+		return ""
 	if _port_sockets.is_empty():
 		calculate_sockets()
 	var socket_r: float = 6.0
@@ -786,19 +807,34 @@ func _draw_straight_conveyor_belt(rect: Rect2, is_highlighted: bool) -> void:
 	var title: String = element.name if not element.name.is_empty() else element.id
 
 	# Selection glow halo
-	if is_highlighted:
-		draw_rect(rect.grow(3.0), Color(0.0, 0.82, 1.0, 0.22), true)
+	if is_highlighted or is_geometry_mode_active:
+		draw_rect(rect.grow(3.0), Color(0.0, 0.82, 1.0, 0.30), true)
+	if is_geometry_mode_active:
+		draw_rect(rect.grow(1.5), Color("#00d2ff"), false, 2.0)
 
 	# 1. Dark rubber belt bed
 	var bed_col := Color("#172736") if is_highlighted else Color("#121b26")
-	draw_rect(rect, bed_col, true)
+	var has_width_keys: bool = element.geometry.get("width_profile") is Array and not element.geometry["width_profile"].is_empty()
+	var top_edge := PackedVector2Array()
+	var bottom_edge := PackedVector2Array()
+	if has_width_keys:
+		for index in range(33):
+			var fraction := float(index) / 32.0
+			var half_width: float = ConveyorCurve3D.width_at_fraction(element, fraction) * 10.0
+			top_edge.append(Vector2(fraction * size.x, size.y * 0.5 - half_width))
+			bottom_edge.append(Vector2(fraction * size.x, size.y * 0.5 + half_width))
+		for index in range(32):
+			draw_colored_polygon(PackedVector2Array([top_edge[index], top_edge[index + 1], bottom_edge[index + 1], bottom_edge[index]]), bed_col)
+	else:
+		draw_rect(rect, bed_col, true)
 
 	# 2. Vertical roller crossbars along belt length
 	var roller_step := 14.0
 	var roller_col := Color(0.22, 0.34, 0.45, 0.55)
 	var rx := 10.0
 	while rx < size.x - 8.0:
-		draw_line(Vector2(rx, 2.0), Vector2(rx, size.y - 2.0), roller_col, 1.0)
+		var width_here: float = ConveyorCurve3D.width_at_fraction(element, rx / maxf(size.x, 1.0)) * 10.0
+		draw_line(Vector2(rx, size.y * 0.5 - width_here + 2.0), Vector2(rx, size.y * 0.5 + width_here - 2.0), roller_col, 1.0)
 		rx += roller_step
 
 	# 3. Directional flow chevrons (>>>) along belt centerline
@@ -816,8 +852,18 @@ func _draw_straight_conveyor_belt(rect: Rect2, is_highlighted: bool) -> void:
 
 	# 4. Top & Bottom Steel Side Rails
 	var rail_col := Color("#52c7a5") if is_highlighted else Color("#2a9d8f")
-	draw_line(Vector2(0.0, 1.0), Vector2(size.x, 1.0), rail_col, 2.2)
-	draw_line(Vector2(0.0, size.y - 1.0), Vector2(size.x, size.y - 1.0), rail_col, 2.2)
+	if has_width_keys:
+		draw_polyline(top_edge, rail_col, 2.2, true)
+		draw_polyline(bottom_edge, rail_col, 2.2, true)
+	else:
+		draw_line(Vector2(0.0, 1.0), Vector2(size.x, 1.0), rail_col, 2.2)
+		draw_line(Vector2(0.0, size.y - 1.0), Vector2(size.x, size.y - 1.0), rail_col, 2.2)
+	if has_width_keys and is_geometry_mode_active:
+		for item in element.geometry["width_profile"]:
+			if item is Dictionary:
+				var fraction := clampf(float(item.get("fraction", 0.5)), 0.0, 1.0)
+				var rail_y: float = size.y * 0.5 - ConveyorCurve3D.width_at_fraction(element, fraction) * 10.0
+				draw_circle(Vector2(fraction * size.x, rail_y), 6.0, Color("#e6b85c"))
 	draw_line(Vector2(0.5, 0.0), Vector2(0.5, size.y), Color(rail_col.r, rail_col.g, rail_col.b, 0.6), 1.2)
 	draw_line(Vector2(size.x - 0.5, 0.0), Vector2(size.x - 0.5, size.y), Color(rail_col.r, rail_col.g, rail_col.b, 0.6), 1.2)
 

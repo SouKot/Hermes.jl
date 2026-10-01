@@ -5,8 +5,10 @@
 
 using Test
 using GodotBridge
+using GodotBridge: Pose3D, sample_conveyor_curve, CONVEYOR_SHAPE_PRESETS, bake_conveyor_curve, register_conveyor_shape_preset!
 using SimOptim
 using Graphs
+using JSON
 
 @testset "General Parametric Conveyor Curve & Junction Alignment Suite" begin
 
@@ -55,6 +57,50 @@ using Graphs
         ])
         @test haskey(CONVEYOR_SHAPE_PRESETS, :dogleg_test)
         delete!(CONVEYOR_SHAPE_PRESETS, :dogleg_test)
+
+        controlled = [
+            Dict("pos" => [0.0, 0.0, 0.0], "out_handle" => [3.0, 5.0, 0.0]),
+            Dict("pos" => [10.0, 0.0, 0.0], "in_handle" => [-3.0, 5.0, 0.0])
+        ]
+        freeform = CONVEYOR_SHAPE_PRESETS[:custom_spline](inlet, outlet, Dict("control_points" => controlled))
+        @test freeform[1].out_handle == (3.0, 5.0, 0.0)
+        @test freeform[2].in_handle == (-3.0, 5.0, 0.0)
+        freeform_baked = bake_conveyor_curve(:custom_spline, freeform)
+        @test sample_conveyor_curve(freeform_baked, 0.5)[1][2] > 3.0
+
+        short = CONVEYOR_SHAPE_PRESETS[:serpentine](inlet, outlet, Dict("passes" => 3, "pass_length" => 8.0))
+        long = CONVEYOR_SHAPE_PRESETS[:serpentine](inlet, outlet, Dict("passes" => 3, "pass_length" => 12.0))
+        @test bake_conveyor_curve(:serpentine, long).total_length > bake_conveyor_curve(:serpentine, short).total_length + 10.0
+        @test length(CONVEYOR_SHAPE_PRESETS[:serpentine](inlet, outlet, Dict("passes" => 12, "pass_spacing" => 2.0, "pass_length" => 8.0))) == 35
+        legacy_serp = CONVEYOR_SHAPE_PRESETS[:serpentine](inlet, outlet, Dict("passes" => 3, "pitch" => 2.4, "pass_length" => 8.0))
+        @test isapprox(legacy_serp[end].pos[2] - inlet.pos[2], 4.8; atol=1e-6)
+        turn_base = CONVEYOR_SHAPE_PRESETS[:u_turn](inlet, outlet, Dict("leg_length" => 6.0, "bend_radius" => 2.0))
+        turn_short_return = CONVEYOR_SHAPE_PRESETS[:u_turn](inlet, outlet, Dict("leg_length" => 6.0, "return_leg_length" => 3.0, "bend_radius" => 2.0))
+        @test isapprox(turn_short_return[end].pos[1] - turn_base[end].pos[1], 3.0; atol=1e-6)
+        @test turn_short_return[3].pos == turn_base[3].pos
+        flat_helix = CONVEYOR_SHAPE_PRESETS[:spiral_helix](inlet, outlet, Dict("helix_radius" => 2.0, "helix_turns" => 1.5, "elevation_gain" => 0.0))
+        @test abs(flat_helix[end].pos[3] - inlet.pos[3]) < 1e-6
+
+        fixed_end = CONVEYOR_SHAPE_PRESETS[:s_curve](inlet, outlet, Dict("preserve_endpoints" => true, "lateral_offset" => 5.0))
+        @test fixed_end[end].pos == outlet.pos
+        @test fixed_end[end].in_handle[2] < 0.0
+
+        parity_cases = JSON.parsefile(joinpath(@__DIR__, "../../../godot/tests/conveyor_geometry_parity.json"))
+        for case in parity_cases
+            to_vec3(value) = (Float64(value[1]), Float64(value[2]), Float64(value[3]))
+            in_pose = Pose3D(to_vec3(case["inlet"]), to_vec3(case["inlet_tangent"]))
+            out_pose = Pose3D(to_vec3(case["outlet"]), to_vec3(case["outlet_tangent"]))
+            preset = Symbol(case["preset"])
+            curve = bake_conveyor_curve(preset, CONVEYOR_SHAPE_PRESETS[preset](in_pose, out_pose, case["params"]); num_samples=64)
+            mid_pos, _ = sample_conveyor_curve(curve, 0.5)
+            end_pos, _ = sample_conveyor_curve(curve, 1.0)
+            @test sum((mid_pos[i] - case["midpoint"][i])^2 for i in 1:3) < 0.01
+            @test sum((end_pos[i] - case["end"][i])^2 for i in 1:3) < 1e-4
+            if haskey(case, "end_tangent")
+                _, end_tangent = sample_conveyor_curve(curve, 1.0)
+                @test sum(end_tangent[i] * case["end_tangent"][i] for i in 1:3) > 0.995
+            end
+        end
     end
 
     @testset "2. Constant-Speed Arc-Length Parameterization & Zero-Allocation Lookup" begin

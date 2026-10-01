@@ -271,14 +271,21 @@ Smooth C¹ Cubic Hermite / Bézier S-curve connecting `inlet` and `outlet` while
 function generate_preset_s_curve(inlet::Pose3D, outlet::Pose3D, params::AbstractDict)::Vector{SplineControlPoint3D}
     t_in = inlet.tangent
     t_out = outlet.tangent
-    out_pos = outlet.pos
-    dx = out_pos[1] - inlet.pos[1]
-    dy = out_pos[2] - inlet.pos[2]
-    cross_z = abs(dx * t_in[2] - dy * t_in[1])
-    if !Bool(get(params, "auto_join", false)) && cross_z < 0.05 && _v3_dot(t_in, t_out) > 0.99
-        lat_off = Float64(get(params, "lateral_offset", 2.4))
+    lat_off = if haskey(params, "lateral_offset")
+        Float64(params["lateral_offset"])
+    else
+        2.5
+    end
+    f_span = Float64(get(params, "forward_span", 0.0))
+    if f_span < 1.0
+        f_span = max(4.0, _v3_dist(inlet.pos, outlet.pos))
+    end
+    if get(params, "preserve_endpoints", false)
+        out_pos = outlet.pos
+    else
         n_in = (-t_in[2], t_in[1], 0.0)
-        out_pos = _v3_add(out_pos, _v3_scale(n_in, lat_off))
+        out_pos = _v3_add(_v3_add(inlet.pos, _v3_scale(t_in, f_span)), _v3_scale(n_in, lat_off))
+        t_out = t_in
     end
     dist = _v3_dist(inlet.pos, out_pos)
     t_scale = Float64(get(params, "tangent_scale", 0.42))
@@ -295,9 +302,8 @@ end
     generate_preset_l_bend(inlet::Pose3D, outlet::Pose3D, params::AbstractDict) -> Vector{SplineControlPoint3D}
 
 Generates a straight-plus-filleted-corner conveyor (L-Bend / Elbow) between `inlet` and `outlet`.
-If `corner_pos` is provided in `params`, fillets around `corner_pos` with `bend_radius`.
-Otherwise computes the intersection of the `inlet` ray and `outlet` line (or orthogonal corner)
-and inscribes a tangent circular arc approximated by a cubic Bézier segment.
+Supports unequal leg lengths (leg1_length, leg2_length), arbitrary bend angles (bend_angle_deg),
+turn directions (turn_direction), or explicit corner_pos.
 """
 function generate_preset_l_bend(inlet::Pose3D, outlet::Pose3D, params::AbstractDict)::Vector{SplineControlPoint3D}
     R = max(0.3, Float64(get(params, "bend_radius", 2.5)))
@@ -310,6 +316,28 @@ function generate_preset_l_bend(inlet::Pose3D, outlet::Pose3D, params::AbstractD
     corner = if haskey(params, "corner_pos") && length(params["corner_pos"]) >= 3
         cp = params["corner_pos"]
         (Float64(cp[1]), Float64(cp[2]), Float64(cp[3]))
+    elseif haskey(params, "leg1_length") || haskey(params, "leg2_length") || haskey(params, "bend_angle_deg") || haskey(params, "turn_direction")
+        l1 = max(0.5, Float64(get(params, "leg1_length", 5.0)))
+        l2 = max(0.5, Float64(get(params, "leg2_length", 5.0)))
+        ang_deg = Float64(get(params, "bend_angle_deg", 90.0))
+        turn_dir_str = lowercase(string(get(params, "turn_direction", "right")))
+        sign_ang = if turn_dir_str == "left"
+            1.0
+        elseif turn_dir_str == "right"
+            -1.0
+        else
+            ang_deg >= 0.0 ? 1.0 : -1.0
+        end
+        ang_rad = deg2rad(abs(ang_deg)) * sign_ang
+        c = _v3_add(p_in, _v3_scale(t_in, l1))
+        turned_dir = _v3_normalize((
+            t_in[1] * cos(ang_rad) - t_in[2] * sin(ang_rad),
+            t_in[1] * sin(ang_rad) + t_in[2] * cos(ang_rad),
+            0.0
+        ), (1.0, 0.0, 0.0))
+        p_out = _v3_add(c, _v3_scale(turned_dir, l2))
+        t_out = turned_dir
+        c
     else
         # Intersect 2D rays p_in + s * t_in and p_out - u * t_out
         det = t_in[1] * (-t_out[2]) - t_in[2] * (-t_out[1])
@@ -348,13 +376,18 @@ function generate_preset_l_bend(inlet::Pose3D, outlet::Pose3D, params::AbstractD
     end
 
     tan_half = tan(theta * 0.5)
-    max_trim = 0.85 * min(L1, L2)
+    max_trim = 0.90 * min(L1, L2)
     d_trim = min(R * tan_half, max_trim)
     r_eff = d_trim / max(1e-4, tan_half)
 
     b_start = _v3_sub(corner, _v3_scale(u1, d_trim))
     b_end   = _v3_add(corner, _v3_scale(u2, d_trim))
-    hlen    = r_eff * _bezier_arc_kappa(theta)
+    cross_z = u1[1] * u2[2] - u1[2] * u2[1]
+    n_arc_segs = max(1, Int(ceil(theta / (0.5 * π))))
+    signed_step = theta * (cross_z >= 0.0 ? 1.0 : -1.0) / Float64(n_arc_segs)
+    hlen = r_eff * _bezier_arc_kappa(abs(signed_step))
+    center = _v3_add(b_start, _v3_scale((-u1[2], u1[1], 0.0), r_eff * (cross_z >= 0.0 ? 1.0 : -1.0)))
+    start_radius = _v3_sub(b_start, center)
 
     cpts = SplineControlPoint3D[]
     if _v3_dist(p_in, b_start) > 0.05
@@ -362,12 +395,20 @@ function generate_preset_l_bend(inlet::Pose3D, outlet::Pose3D, params::AbstractD
     else
         b_start = p_in
     end
-    push!(cpts, SplineControlPoint3D(b_start, (0.0, 0.0, 0.0), _v3_scale(u1, hlen), inlet.up))
+    for index in 0:n_arc_segs
+        angle = Float64(index) * signed_step
+        ca, sa = cos(angle), sin(angle)
+        radial = (start_radius[1] * ca - start_radius[2] * sa, start_radius[1] * sa + start_radius[2] * ca, 0.0)
+        tangent = (u1[1] * ca - u1[2] * sa, u1[1] * sa + u1[2] * ca, 0.0)
+        pos = index == n_arc_segs ? b_end : _v3_add(center, radial)
+        in_h = index > 0 ? _v3_scale(tangent, -hlen) : (0.0, 0.0, 0.0)
+        out_h = index < n_arc_segs ? _v3_scale(tangent, hlen) : (0.0, 0.0, 0.0)
+        push!(cpts, SplineControlPoint3D(pos, in_h, out_h, inlet.up))
+    end
     if _v3_dist(b_end, p_out) > 0.05
-        push!(cpts, SplineControlPoint3D(b_end, _v3_scale(u2, -hlen), (0.0, 0.0, 0.0), outlet.up))
         push!(cpts, SplineControlPoint3D(p_out, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), outlet.up))
     else
-        push!(cpts, SplineControlPoint3D(p_out, _v3_scale(u2, -hlen), (0.0, 0.0, 0.0), outlet.up))
+        cpts[end] = SplineControlPoint3D(p_out, cpts[end].in_handle, (0.0, 0.0, 0.0), outlet.up)
     end
     return cpts
 end
@@ -379,7 +420,8 @@ Generates a 180° U-turn conveyor loop with straight legs and a semicircular tur
 """
 function generate_preset_u_turn(inlet::Pose3D, outlet::Pose3D, params::AbstractDict)::Vector{SplineControlPoint3D}
     R = max(0.5, Float64(get(params, "bend_radius", 2.0)))
-    leg_len = max(1.0, Float64(get(params, "leg_length", 4.0)))
+    leg_len = max(1.5, Float64(get(params, "leg_length", 6.0)))
+    return_len = max(1.5, Float64(get(params, "return_leg_length", leg_len)))
     dir = _v3_normalize((inlet.tangent[1], inlet.tangent[2], 0.0), (1.0, 0.0, 0.0))
     perp = (-dir[2], dir[1], 0.0) # 90° lateral offset
 
@@ -387,15 +429,16 @@ function generate_preset_u_turn(inlet::Pose3D, outlet::Pose3D, params::AbstractD
     p1 = _v3_add(p0, _v3_scale(dir, leg_len))
     apex = _v3_add(_v3_add(p1, _v3_scale(dir, R)), _v3_scale(perp, R))
     p2 = _v3_add(p1, _v3_scale(perp, 2.0 * R))
-    p3 = _v3_dist(inlet.pos, outlet.pos) > 0.5 ? outlet.pos : _v3_add(p0, _v3_scale(perp, 2.0 * R))
+    p3 = get(params, "preserve_endpoints", false) ? outlet.pos : _v3_sub(p2, _v3_scale(dir, return_len))
 
     k90 = R * _bezier_arc_kappa(0.5 * π)
+    end_handle = get(params, "preserve_endpoints", false) ? clamp(_v3_dist(p2, p3) * 0.25, 0.4, 2.0) : 0.0
     return [
         SplineControlPoint3D(p0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), inlet.up),
         SplineControlPoint3D(p1, (0.0, 0.0, 0.0), _v3_scale(dir, k90), inlet.up),
         SplineControlPoint3D(apex, _v3_scale(perp, -k90), _v3_scale(perp, k90), inlet.up),
-        SplineControlPoint3D(p2, _v3_scale(dir, k90), (0.0, 0.0, 0.0), outlet.up),
-        SplineControlPoint3D(p3, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), outlet.up)
+        SplineControlPoint3D(p2, _v3_scale(dir, k90), _v3_scale(dir, -end_handle), outlet.up),
+        SplineControlPoint3D(p3, _v3_scale(outlet.tangent, -end_handle), (0.0, 0.0, 0.0), outlet.up)
     ]
 end
 
@@ -448,13 +491,13 @@ end
 Generates a multi-pass switchback accumulation conveyor between `inlet` and `outlet`.
 """
 function generate_preset_serpentine(inlet::Pose3D, outlet::Pose3D, params::AbstractDict)::Vector{SplineControlPoint3D}
-    passes = clamp(Int(round(Float64(get(params, "passes", 3)))), 2, 8)
-    pitch  = max(1.2, Float64(get(params, "pass_spacing", 2.0)))
+    passes = clamp(Int(round(Float64(get(params, "passes", 3)))), 2, 12)
+    pitch  = max(1.2, Float64(get(params, "pass_spacing", get(params, "pitch", 2.0))))
     R      = 0.5 * pitch
-    span   = max(3.0, _v3_dist(inlet.pos, outlet.pos))
+    span   = max(3.0, Float64(get(params, "pass_length", _v3_dist(inlet.pos, outlet.pos))))
     dir    = _v3_normalize((inlet.tangent[1], inlet.tangent[2], 0.0), (1.0, 0.0, 0.0))
     perp   = (-dir[2], dir[1], 0.0)
-    k180   = R * 1.333333
+    k90    = R * _bezier_arc_kappa(0.5 * π)
 
     cpts = SplineControlPoint3D[]
     for p in 1:passes
@@ -466,10 +509,14 @@ function generate_preset_serpentine(inlet::Pose3D, outlet::Pose3D, params::Abstr
         e_pt = fwd ? base_end   : base_start
         t_dir = fwd ? dir : _v3_scale(dir, -1.0)
 
-        in_h_start = (p == 1) ? (0.0, 0.0, 0.0) : _v3_scale(t_dir, -k180)
-        out_h_end  = (p == passes) ? (0.0, 0.0, 0.0) : _v3_scale(t_dir, k180)
+        in_h_start = (p == 1) ? (0.0, 0.0, 0.0) : _v3_scale(t_dir, -k90)
+        out_h_end  = (p == passes) ? (0.0, 0.0, 0.0) : _v3_scale(t_dir, k90)
         push!(cpts, SplineControlPoint3D(s_pt, in_h_start, (0.0, 0.0, 0.0), inlet.up))
         push!(cpts, SplineControlPoint3D(e_pt, (0.0, 0.0, 0.0), out_h_end, inlet.up))
+        if p < passes
+            apex = _v3_add(_v3_add(e_pt, _v3_scale(t_dir, R)), _v3_scale(perp, R))
+            push!(cpts, SplineControlPoint3D(apex, _v3_scale(perp, -k90), _v3_scale(perp, k90), inlet.up))
+        end
     end
     return cpts
 end
@@ -483,7 +530,7 @@ function generate_preset_spiral_helix(inlet::Pose3D, outlet::Pose3D, params::Abs
     R = max(1.0, Float64(get(params, "helix_radius", 2.5)))
     turns = clamp(Float64(get(params, "helix_turns", 1.5)), 0.25, 6.0)
     dz = Float64(get(params, "elevation_gain", outlet.pos[3] - inlet.pos[3]))
-    abs(dz) < 0.1 && (dz = 2.4)
+    !haskey(params, "elevation_gain") && abs(dz) < 0.1 && (dz = 2.4)
 
     total_rad = turns * 2.0 * π
     n_segs = max(4, Int(ceil(turns * 4.0)))
@@ -521,20 +568,25 @@ Builds a smooth Catmull-Rom / Cubic Bézier spline through arbitrary control poi
 """
 function generate_preset_custom_spline(inlet::Pose3D, outlet::Pose3D, params::AbstractDict)::Vector{SplineControlPoint3D}
     raw_pts = get(params, "control_points", nothing)
-    if !(raw_pts isa AbstractVector) || length(raw_pts) < 2
-        return generate_preset_s_curve(inlet, outlet, params)
-    end
-
     pts = Vec3[]
-    for item in raw_pts
-        if item isa AbstractDict && haskey(item, "pos")
-            p = item["pos"]
-            length(p) >= 3 && push!(pts, (Float64(p[1]), Float64(p[2]), Float64(p[3])))
-        elseif (item isa AbstractVector || item isa Tuple) && length(item) >= 3
-            push!(pts, (Float64(item[1]), Float64(item[2]), Float64(item[3])))
+    if (raw_pts isa AbstractVector) && length(raw_pts) >= 2
+        for item in raw_pts
+            if item isa AbstractDict && haskey(item, "pos")
+                p = item["pos"]
+                length(p) >= 3 && push!(pts, (Float64(p[1]), Float64(p[2]), Float64(p[3])))
+            elseif (item isa AbstractVector || item isa Tuple) && length(item) >= 3
+                push!(pts, (Float64(item[1]), Float64(item[2]), Float64(item[3])))
+            end
         end
     end
-    length(pts) < 2 && return generate_preset_s_curve(inlet, outlet, params)
+
+    if length(pts) < 2
+        mid = _v3_scale(_v3_add(inlet.pos, outlet.pos), 0.5)
+        dir = _v3_normalize(_v3_sub(outlet.pos, inlet.pos), inlet.tangent)
+        perp = (-dir[2], dir[1], 0.0)
+        p1 = _v3_add(mid, _v3_scale(perp, 2.5))
+        pts = [inlet.pos, p1, outlet.pos]
+    end
 
     M = length(pts)
     cpts = Vector{SplineControlPoint3D}(undef, M)
@@ -552,10 +604,15 @@ function generate_preset_custom_spline(inlet::Pose3D, outlet::Pose3D, params::Ab
         end
         d_in  = i > 1 ? 0.33 * _v3_dist(p_prev, p_curr) : 0.0
         d_out = i < M ? 0.33 * _v3_dist(p_curr, p_next) : 0.0
+        item = (raw_pts isa AbstractVector && i <= length(raw_pts)) ? raw_pts[i] : nothing
+        in_handle = item isa AbstractDict && haskey(item, "in_handle") && length(item["in_handle"]) >= 3 ?
+            (Float64(item["in_handle"][1]), Float64(item["in_handle"][2]), Float64(item["in_handle"][3])) : _v3_scale(t_dir, -d_in)
+        out_handle = item isa AbstractDict && haskey(item, "out_handle") && length(item["out_handle"]) >= 3 ?
+            (Float64(item["out_handle"][1]), Float64(item["out_handle"][2]), Float64(item["out_handle"][3])) : _v3_scale(t_dir, d_out)
         cpts[i] = SplineControlPoint3D(
             p_curr,
-            _v3_scale(t_dir, -d_in),
-            _v3_scale(t_dir, d_out),
+            in_handle,
+            out_handle,
             (0.0, 0.0, 1.0)
         )
     end
@@ -589,7 +646,7 @@ end
 
 function _parse_pose3d(raw, default_pos::Vec3, default_tan::Vec3)::Pose3D
     if raw isa AbstractDict
-        p_raw = get(raw, "pos", get(raw, :pos, default_pos))
+        p_raw = get(raw, "pos", get(raw, :pos, get(raw, "position", get(raw, :position, default_pos))))
         t_raw = get(raw, "tangent", get(raw, :tangent, default_tan))
         p = (length(p_raw) >= 3) ? (Float64(p_raw[1]), Float64(p_raw[2]), Float64(p_raw[3])) : default_pos
         t = (length(t_raw) >= 3) ? (Float64(t_raw[1]), Float64(t_raw[2]), Float64(t_raw[3])) : default_tan
@@ -706,8 +763,10 @@ function bake_all_conveyor_curves!(ir::ExecutionGraphIR, flat_spec::TypedSceneSp
                 sp[string(k)] = v
             end
         end
-        for k in ("bend_radius", "sweep_angle_deg", "passes", "pass_spacing", "helix_radius", "helix_turns", "corner_pos", "control_points", "tangent_scale", "auto_join", "lateral_offset")
-            if haskey(ext, k)
+        for k in ("bend_radius", "sweep_angle_deg", "passes", "pass_spacing", "pass_length", "helix_radius", "helix_turns", "elevation_gain", "corner_pos", "control_points", "tangent_scale", "leg_length", "return_leg_length", "auto_join", "lateral_offset")
+            if haskey(sp, k)
+                continue
+            elseif haskey(ext, k)
                 sp[k] = ext[k]
             elseif haskey(props, k)
                 sp[k] = props[k]
@@ -726,6 +785,9 @@ function bake_all_conveyor_curves!(ir::ExecutionGraphIR, flat_spec::TypedSceneSp
             out_p = _parse_pose3d(ext["outlet_pose"], _v3_add(pos, _v3_scale(default_dir, visual_span)), default_dir)
             if !haskey(sp, "auto_join")
                 sp["auto_join"] = true
+            end
+            if !(ext["outlet_pose"] isa AbstractDict) || !get(ext["outlet_pose"], "_derived", false)
+                sp["preserve_endpoints"] = true
             end
             inlet_poses[cid]  = in_p
             outlet_poses[cid] = out_p
@@ -746,6 +808,7 @@ function bake_all_conveyor_curves!(ir::ExecutionGraphIR, flat_spec::TypedSceneSp
                 if !haskey(sp, "auto_join")
                     sp["auto_join"] = true
                 end
+                sp["preserve_endpoints"] = true
                 inlet_poses[cid]  = Pose3D(pos, dir_to_dst)
                 outlet_poses[cid] = Pose3D(dst_pos, dir_to_dst)
                 presets[cid]      = preset_sym

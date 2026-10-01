@@ -4,8 +4,8 @@ extends VBoxContainer
 
 signal rule_changed(element_id: String, property_path: String, value)
 
-const DISCIPLINE_OPTIONS := ["FIFO", "LIFO", "Priority (HOL)", "EDD", "SPT"]
-const DISCIPLINE_VALUES  := ["fifo", "lifo", "priority", "edd", "spt"]
+const DISCIPLINE_OPTIONS := ["FIFO", "LIFO", "Priority (HOL)", "EDD", "SPT", "Custom (Comparator)"]
+const DISCIPLINE_VALUES  := ["FIFO", "LIFO", "Priority", "EDD", "SPT", "Custom"]
 const ROUTING_OPTIONS    := ["Fixed", "Probabilistic", "Shortest Queue", "Round Robin"]
 const ROUTING_VALUES     := ["fixed", "prob", "shortest_queue", "round_robin"]
 
@@ -14,6 +14,8 @@ var _kind: String = ""  # "queue", "server", "connection"
 
 var _discipline_row: HBoxContainer = null
 var _discipline_option: OptionButton = null
+var _custom_disc_box: VBoxContainer = null
+var _custom_disc_edit: LineEdit = null
 var _routing_row: HBoxContainer = null
 var _routing_option: OptionButton = null
 
@@ -45,6 +47,25 @@ func _ensure_rows() -> void:
 	_discipline_row.add_child(_discipline_option)
 	add_child(_discipline_row)
 
+	# ── Custom Comparator Editor (shown when Custom discipline is active) ─
+	_custom_disc_box = VBoxContainer.new()
+	_custom_disc_box.add_theme_constant_override("separation", 3)
+	_custom_disc_box.visible = false
+	var lbl_c := Label.new()
+	lbl_c.text = "Comparator (a before b):"
+	lbl_c.add_theme_font_size_override("font_size", 10)
+	lbl_c.add_theme_color_override("font_color", Color("#93c5fd"))
+	_custom_disc_box.add_child(lbl_c)
+	_custom_disc_edit = LineEdit.new()
+	_custom_disc_edit.placeholder_text = "get_attribute(a, \"due_date\", Inf) < get_attribute(b, \"due_date\", Inf)"
+	_custom_disc_edit.add_theme_font_size_override("font_size", 10)
+	_custom_disc_edit.text_submitted.connect(func(txt: String):
+		if not _element_id.is_empty():
+			rule_changed.emit(_element_id, "custom_discipline", txt)
+	)
+	_custom_disc_box.add_child(_custom_disc_edit)
+	add_child(_custom_disc_box)
+
 	# ── Routing row (for Server/Connection blocks) ────────────────────────
 	_routing_row = HBoxContainer.new()
 	_routing_row.add_theme_constant_override("separation", 8)
@@ -73,9 +94,17 @@ func configure(element_id: String, kind: String, props: Dictionary) -> void:
 
 	# Set current values from props
 	if kind == "queue":
-		var disc: String = str(props.get("discipline", "fifo")).to_lower()
-		var idx := DISCIPLINE_VALUES.find(disc)
-		_discipline_option.selected = max(0, idx)
+		var disc_raw: String = str(props.get("discipline", "FIFO")).strip_edges().to_lower()
+		var idx: int = 0
+		for i in range(DISCIPLINE_VALUES.size()):
+			if DISCIPLINE_VALUES[i].to_lower() == disc_raw:
+				idx = i
+				break
+		_discipline_option.selected = idx
+		_custom_disc_box.visible = (DISCIPLINE_VALUES[idx] == "Custom")
+		_custom_disc_edit.text = str(props.get("custom_discipline", ""))
+	else:
+		_custom_disc_box.visible = false
 
 	if kind in ["server", "connection"]:
 		var routing: String = str(props.get("routing_rule", "fixed")).to_lower()
@@ -84,7 +113,10 @@ func configure(element_id: String, kind: String, props: Dictionary) -> void:
 
 func _on_discipline_selected(idx: int) -> void:
 	if _element_id.is_empty(): return
-	rule_changed.emit(_element_id, "discipline", DISCIPLINE_VALUES[idx])
+	var val: String = DISCIPLINE_VALUES[idx]
+	if _custom_disc_box != null:
+		_custom_disc_box.visible = (val == "Custom")
+	rule_changed.emit(_element_id, "discipline", val)
 
 func _on_routing_selected(idx: int) -> void:
 	if _element_id.is_empty(): return

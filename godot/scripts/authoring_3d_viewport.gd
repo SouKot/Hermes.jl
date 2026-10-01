@@ -6,10 +6,22 @@ extends SubViewportContainer
 const SceneTypes := preload("res://scripts/scenespec_types.gd")
 const DocumentStore := preload("res://scripts/authoring_document_store.gd")
 const MeshFactory := preload("res://scripts/authoring_mesh_factory.gd")
+const ConveyorCurve3D := preload("res://scripts/conveyor_curve_3d.gd")
 
 signal floating_properties_requested(elem_id: String, screen_pos: Vector2)
+signal conveyor_geometry_mode_requested(elem_id: String)
 
 var doc_store: DocumentStore
+var geometry_mode_elem_id: String = "":
+	set(value):
+		geometry_mode_elem_id = value
+		_geometry_drag.clear()
+		_geometry_warning = ""
+		if _geometry_overlay != null:
+			_geometry_overlay.queue_redraw()
+var _geometry_overlay: Control
+var _geometry_drag: Dictionary = {}
+var _geometry_warning: String = ""
 
 var _sub_viewport: SubViewport
 var _world_root: Node3D
@@ -136,6 +148,10 @@ func _setup_3d_world() -> void:
 	_entities_root.name = "EntitiesRoot"
 	_world_root.add_child(_entities_root)
 
+	var bridges_root := Node3D.new()
+	bridges_root.name = "BridgesRoot"
+	_world_root.add_child(bridges_root)
+
 	# 5. Agent MultiMesh Container (Hardware-accelerated crowd rendering)
 	_agents_multimesh_instance = MultiMeshInstance3D.new()
 	_agents_multimesh_instance.name = "AgentsMultiMesh"
@@ -155,6 +171,11 @@ func _setup_3d_world() -> void:
 	_world_root.add_child(_agents_root)
 
 func _setup_ui_overlay() -> void:
+	_geometry_overlay = Control.new()
+	_geometry_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_geometry_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_geometry_overlay.draw.connect(_draw_geometry_handles)
+	add_child(_geometry_overlay)
 	var overlay := MarginContainer.new()
 	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -164,11 +185,13 @@ func _setup_ui_overlay() -> void:
 
 	var hbox := HBoxContainer.new()
 	hbox.alignment = BoxContainer.ALIGNMENT_END
+	hbox.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 	hbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	overlay.add_child(hbox)
 
 	var ortho_btn := Button.new()
 	ortho_btn.text = "Perspective"
+	ortho_btn.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 	ortho_btn.add_theme_font_size_override("font_size", 11)
 	ortho_btn.mouse_filter = Control.MOUSE_FILTER_STOP
 	ortho_btn.pressed.connect(func():
@@ -185,10 +208,31 @@ func _setup_ui_overlay() -> void:
 
 	var reset_btn := Button.new()
 	reset_btn.text = "⛶ Frame All / Reset View"
+	reset_btn.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 	reset_btn.add_theme_font_size_override("font_size", 11)
 	reset_btn.mouse_filter = Control.MOUSE_FILTER_STOP
 	reset_btn.pressed.connect(func(): frame_scene())
 	hbox.add_child(reset_btn)
+
+func _is_pose_or_curved_conveyor(elem: SceneTypes.SceneElement) -> bool:
+	if elem == null or elem.kind != "conveyor":
+		return false
+	if elem.geometry.has("inlet_pose") or elem.geometry.has("outlet_pose"):
+		return true
+	var preset: String = str(elem.geometry.get("shape_preset", elem.properties.get("shape_preset", "straight"))).to_lower()
+	return preset != "straight" and not preset.is_empty()
+
+func _get_elem_flow_endpoint_2d(elem: SceneTypes.SceneElement, is_output: bool) -> Vector2:
+	if elem == null:
+		return Vector2.ZERO
+	if _is_pose_or_curved_conveyor(elem):
+		var pts := MeshFactory.ConveyorCurve3D.sample_2d_polyline(elem, doc_store, 16)
+		if pts.size() >= 2:
+			return pts[pts.size() - 1] if is_output else pts[0]
+	var px: float = float(elem.transform.position[0])
+	var py: float = float(elem.transform.position[1])
+	var dims: Vector3 = MeshFactory.get_dims(elem, Vector3(2.0, 1.5, 1.0))
+	return Vector2(px + dims.x if is_output else px, py + dims.y * 0.5)
 
 func rebuild_3d_scene() -> void:
 	_ensure_setup()
@@ -198,6 +242,12 @@ func rebuild_3d_scene() -> void:
 	for child in _entities_root.get_children():
 		_entities_root.remove_child(child)
 		child.queue_free()
+
+	var bridges_root: Node3D = _world_root.get_node_or_null("BridgesRoot") if _world_root != null else null
+	if bridges_root != null:
+		for child in bridges_root.get_children():
+			bridges_root.remove_child(child)
+			child.queue_free()
 
 	if doc_store == null or doc_store.active_document == null:
 		return
@@ -211,15 +261,33 @@ func rebuild_3d_scene() -> void:
 		var py: float = float(elem.transform.position[1])
 		var pz: float = float(elem.transform.position[2])
 		var dims: Vector3 = MeshFactory.get_dims(elem, Vector3(2.0, 1.5, 1.0))
-		anchor.position = Vector3(px, pz, -py)
+		var anchor_y: float = 0.0 if pz <= 1.05 else (pz - 0.8)
+		anchor.position = Vector3(px, anchor_y, -py)
 		anchor.rotation_degrees.y = -float(elem.transform.rotation.z)
 
-		var node_3d := MeshFactory.create_3d_node_for_element(elem)
+		var node_3d := MeshFactory.create_3d_node_for_element(elem, doc_store)
 		node_3d.name = "Elem3D_" + elem.id
-		node_3d.position = Vector3(0, 0, -dims.y * 0.5)
+		node_3d.position = Vector3.ZERO if _is_pose_or_curved_conveyor(elem) else Vector3(0, 0, -dims.y * 0.5)
 		anchor.add_child(node_3d)
 
 		_entities_root.add_child(anchor)
+
+	# Build 3D Steel Roller Transfer Bridges across flow connections so no gaps appear between stations
+	if bridges_root != null:
+		for conn in doc_store.active_document.connections:
+			if conn.link_type != "flow":
+				continue
+			var src_elem := doc_store.get_element(conn.source_element)
+			var dst_elem := doc_store.get_element(conn.target_element)
+			if src_elem == null or dst_elem == null:
+				continue
+			var p_out := _get_elem_flow_endpoint_2d(src_elem, true)
+			var p_in := _get_elem_flow_endpoint_2d(dst_elem, false)
+			var gap_m: float = p_out.distance_to(p_in)
+			if gap_m > 0.12 and gap_m < 18.0:
+				var bridge := MeshFactory.create_transfer_bridge_3d(p_out, p_in, 0.85, 0.80)
+				bridge.name = "Bridge3D_" + str(conn.id)
+				bridges_root.add_child(bridge)
 
 	_update_selection_indicator()
 
@@ -305,9 +373,13 @@ func _on_document_reloaded(_doc: SceneTypes.SceneDocument) -> void:
 
 func _on_document_modified() -> void:
 	rebuild_3d_scene()
+	if _geometry_overlay != null:
+		_geometry_overlay.queue_redraw()
 
 func _on_selection_changed(_sel_id: String, _sel_type: String) -> void:
 	_update_selection_indicator()
+	if _geometry_overlay != null:
+		_geometry_overlay.queue_redraw()
 
 func _update_selection_indicator() -> void:
 	if _selection_indicator != null:
@@ -431,10 +503,145 @@ func _update_camera_transform() -> void:
 	_camera.look_at_from_position(eye_pos, target_pos, Vector3.UP)
 	if _camera.projection == Camera3D.PROJECTION_ORTHOGONAL:
 		_camera.size = _cam_distance * 0.75
+	if _geometry_overlay != null:
+		_geometry_overlay.queue_redraw()
+
+func _geometry_handles() -> Array:
+	if geometry_mode_elem_id.is_empty() or doc_store == null or _camera == null or not _camera.is_inside_tree():
+		return []
+	var elem := doc_store.get_element(geometry_mode_elem_id)
+	if elem == null or elem.kind != "conveyor":
+		return []
+	var baked := ConveyorCurve3D.sample_world_curve(elem, doc_store, 40)
+	var pts: PackedVector3Array = baked.get("points", PackedVector3Array())
+	if pts.size() < 2:
+		return []
+	var handles: Array = []
+	var anchor: Node3D = _entities_root.get_node_or_null("ElemAnchor_" + elem.id) if _entities_root != null else null
+	if anchor == null or not anchor.is_inside_tree():
+		return []
+	var preset := str(elem.geometry.get("shape_preset", "straight"))
+	if preset == "spiral_helix":
+		var quarter: Vector3 = pts[pts.size() / 4]
+		var end: Vector3 = pts[pts.size() - 1]
+		handles.append({"type": "radius", "world": Vector3(quarter.x, quarter.z, -quarter.y), "label": "Radius"})
+		handles.append({"type": "rise", "world": Vector3(end.x, end.z, -end.y), "label": "Rise"})
+		handles.append({"type": "turns", "world": Vector3(end.x, end.z, -end.y), "offset": Vector2(0, -36), "label": "Turns"})
+	elif preset == "custom_spline":
+		var params: Dictionary = elem.geometry.get("shape_params", {})
+		var stations: Array = params.get("control_points", [])
+		for index in range(stations.size()):
+			var station = stations[index]
+			if station is Dictionary and station.get("pos") is Array and station["pos"].size() >= 3:
+				var pos: Array = station["pos"]
+				handles.append({"type": "station", "index": index, "world": Vector3(float(pos[0]), float(pos[2]), -float(pos[1])), "label": "Z%d" % (index + 1)})
+	for handle in handles:
+		var point: Vector3 = handle["world"]
+		handle["screen"] = _project_conveyor_point(elem, Vector3(point.x, -point.z, point.y), anchor) + handle.get("offset", Vector2.ZERO)
+	return handles
+
+func _project_conveyor_point(elem: SceneTypes.SceneElement, path_pos: Vector3, anchor: Node3D) -> Vector2:
+	var element_pos: Vector3 = elem.transform.position
+	var bed_height: float = float(elem.geometry.get("elevation_start", 0.8))
+	var local_pos := Vector3(path_pos.x - element_pos.x, path_pos.z - element_pos.z + bed_height, element_pos.y - path_pos.y)
+	var rendered_pos: Vector3 = anchor.global_transform * local_pos
+	return Vector2(-1000, -1000) if _camera.is_position_behind(rendered_pos) else _camera.unproject_position(rendered_pos)
+
+func _pick_conveyor_curve(screen_pos: Vector2) -> String:
+	if doc_store == null or doc_store.active_document == null or _camera == null or not _camera.is_inside_tree():
+		return ""
+	var closest := 14.0
+	var picked := ""
+	for elem in doc_store.active_document.elements:
+		if elem.kind != "conveyor":
+			continue
+		var anchor: Node3D = _entities_root.get_node_or_null("ElemAnchor_" + elem.id)
+		if anchor == null or not anchor.is_inside_tree():
+			continue
+		var baked := ConveyorCurve3D.sample_world_curve(elem, doc_store, 32)
+		var points: PackedVector3Array = baked.get("points", PackedVector3Array())
+		for index in range(points.size() - 1):
+			var start := _project_conveyor_point(elem, points[index], anchor)
+			var finish := _project_conveyor_point(elem, points[index + 1], anchor)
+			if start.x < 0 or finish.x < 0:
+				continue
+			var segment := finish - start
+			var ratio: float = clampf((screen_pos - start).dot(segment) / maxf(segment.length_squared(), 0.001), 0.0, 1.0)
+			var distance := screen_pos.distance_to(start + segment * ratio)
+			if distance < closest:
+				closest = distance
+				picked = elem.id
+	return picked
+
+func _draw_geometry_handles() -> void:
+	if _geometry_overlay == null:
+		return
+	if not _geometry_warning.is_empty():
+		_geometry_overlay.draw_string(ThemeDB.fallback_font, Vector2(16, 66), _geometry_warning, HORIZONTAL_ALIGNMENT_LEFT, int(size.x - 32), 13, Color("#f39c12"))
+	for handle in _geometry_handles():
+		var pos: Vector2 = handle["screen"]
+		if pos.x < 0 or pos.y < 0 or pos.x > size.x or pos.y > size.y:
+			continue
+		_geometry_overlay.draw_circle(pos, 9.0, Color("#00d2ff"))
+		_geometry_overlay.draw_arc(pos, 11.0, 0, TAU, 20, Color.WHITE, 1.5)
+		_geometry_overlay.draw_string(ThemeDB.fallback_font, pos + Vector2(13, 4), str(handle["label"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color.WHITE)
+
+func _hit_geometry_handle(screen_pos: Vector2) -> Dictionary:
+	var nearest: Dictionary = {}
+	var nearest_distance := 15.0
+	for handle in _geometry_handles():
+		var distance: float = (handle["screen"] as Vector2).distance_to(screen_pos)
+		if distance < nearest_distance:
+			nearest = handle
+			nearest_distance = distance
+	return nearest
+
+func _drag_geometry_handle(screen_pos: Vector2) -> void:
+	if _geometry_drag.is_empty() or doc_store == null:
+		return
+	var elem := doc_store.get_element(geometry_mode_elem_id)
+	if elem == null:
+		return
+	var locks := ConveyorCurve3D.connected_endpoint_locks(elem.id, doc_store)
+	var before := ConveyorCurve3D.sample_world_curve(elem, doc_store) if locks["inlet"] or locks["outlet"] else {}
+	var original_geometry: Dictionary = elem.geometry.duplicate(true)
+	var delta := screen_pos - (_geometry_drag["start_screen"] as Vector2)
+	var kind: String = _geometry_drag["type"]
+	if kind == "station":
+		var points: Array = elem.geometry["shape_params"]["control_points"]
+		var index: int = _geometry_drag["index"]
+		if index < 0 or index >= points.size():
+			return
+		points[index]["pos"][2] = snapped(float(_geometry_drag["start_value"]) - delta.y * _cam_distance / maxf(size.y, 1.0), 0.05)
+	else:
+		var params: Dictionary = elem.geometry["shape_params"]
+		match kind:
+			"rise":
+				params["elevation_gain"] = snapped(clampf(float(_geometry_drag["start_value"]) - delta.y * _cam_distance / maxf(size.y, 1.0), -20.0, 20.0), 0.05)
+			"turns":
+				params["helix_turns"] = snapped(clampf(float(_geometry_drag["start_value"]) + delta.x / 80.0, 0.25, 6.0), 0.05)
+			"radius":
+				params["helix_radius"] = snapped(clampf(float(_geometry_drag["start_value"]) + delta.x * _cam_distance / maxf(size.x, 1.0), 1.0, 25.0), 0.05)
+	if not before.is_empty() and not ConveyorCurve3D.connected_endpoints_unchanged(before, ConveyorCurve3D.sample_world_curve(elem, doc_store), locks):
+		elem.geometry = original_geometry
+		_geometry_warning = "Connected endpoint is locked; edit reverted"
+		_geometry_drag.clear()
+		_geometry_overlay.queue_redraw()
+		return
+	_geometry_warning = ""
+	doc_store.is_dirty = true
+	doc_store.document_modified.emit()
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventKey:
 		var ik := event as InputEventKey
+		if ik.pressed and ik.keycode == KEY_ESCAPE and not _geometry_drag.is_empty():
+			_geometry_drag.clear()
+			doc_store.undo()
+			_geometry_warning = "Edit cancelled"
+			_geometry_overlay.queue_redraw()
+			accept_event()
+			return
 		if ik.pressed and ik.keycode == KEY_F:
 			frame_selection()
 			accept_event()
@@ -444,9 +651,38 @@ func _gui_input(event: InputEvent) -> void:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT:
 			if mb.pressed:
+				var handle := _hit_geometry_handle(mb.position)
+				if not handle.is_empty():
+					var elem := doc_store.get_element(geometry_mode_elem_id)
+					var params: Dictionary = elem.geometry.get("shape_params", {})
+					var kind: String = handle["type"]
+					var initial: float = 0.0
+					match kind:
+						"radius": initial = float(params.get("helix_radius", 2.5))
+						"rise": initial = float(params.get("elevation_gain", 2.4))
+						"turns": initial = float(params.get("helix_turns", 1.5))
+						"station": initial = float(params["control_points"][handle["index"]]["pos"][2])
+					doc_store._record_undo()
+					_geometry_drag = {"type": kind, "index": handle.get("index", -1), "start_value": initial, "start_screen": mb.position}
+					accept_event()
+					return
 				_last_mouse_pos = mb.position
 				accept_event()
 			else:
+				if not _geometry_drag.is_empty():
+					_geometry_drag.clear()
+					var elem := doc_store.get_element(geometry_mode_elem_id)
+					if elem != null:
+						var diagnostics := ConveyorCurve3D.geometry_diagnostics(elem, doc_store)
+						if not str(diagnostics["error"]).is_empty():
+							doc_store.undo()
+							_geometry_warning = diagnostics["error"]
+						else:
+							_geometry_warning = str(diagnostics["warning"])
+							doc_store.validate()
+						_geometry_overlay.queue_redraw()
+					accept_event()
+					return
 				# Click without drag (threshold 6px) -> Pick element
 				if mb.position.distance_to(_last_mouse_pos) < 6.0:
 					var hit_elem := pick_element_at(mb.position)
@@ -467,6 +703,12 @@ func _gui_input(event: InputEvent) -> void:
 			_last_mouse_pos = mb.position
 			accept_event()
 		elif mb.button_index == MOUSE_BUTTON_MIDDLE:
+			if mb.pressed:
+				var conveyor_id := _pick_conveyor_curve(mb.position)
+				if not conveyor_id.is_empty():
+					conveyor_geometry_mode_requested.emit(conveyor_id)
+					accept_event()
+					return
 			_is_panning = mb.pressed
 			_last_mouse_pos = mb.position
 			accept_event()
@@ -485,6 +727,10 @@ func _gui_input(event: InputEvent) -> void:
 
 	elif event is InputEventMouseMotion:
 		var mm := event as InputEventMouseMotion
+		if not _geometry_drag.is_empty():
+			_drag_geometry_handle(mm.position)
+			accept_event()
+			return
 		var delta := mm.position - _last_mouse_pos
 		_last_mouse_pos = mm.position
 
@@ -597,8 +843,33 @@ func update_agent_telemetry(agents: Array) -> void:
 			px = raw_pos.x
 			py = raw_pos.y
 
-		# Coordinates: SceneSpec Z-up (X East, Y North, Z Up) -> Godot (X, Z+0.85, -Y)
-		var g_pos := Vector3(px, pz + 0.85, -py)
+		var elem_id_ag: String = str(agent.get("zone", ""))
+		if elem_id_ag.is_empty() and agent.has("properties") and agent.properties is Dictionary:
+			elem_id_ag = str(agent.properties.get("element_id", ""))
+		if not elem_id_ag.is_empty() and doc_store != null:
+			var target_elem := doc_store.get_element(elem_id_ag)
+			if target_elem != null:
+				if target_elem.kind == "conveyor" and not _is_pose_or_curved_conveyor(target_elem):
+					if is_zero_approx(float(target_elem.transform.rotation.z)):
+						var base_y_m: float = float(target_elem.transform.position[1])
+						var dims_c: Vector3 = MeshFactory.get_dims(target_elem, Vector3(8.0, 1.2, 0.8))
+						var half_h_m: float = dims_c.y * 0.5
+						if absf(py - base_y_m) < 0.05 or absf(py - (base_y_m + half_h_m)) < half_h_m + 0.1:
+							py = base_y_m + half_h_m
+				elif target_elem.kind == "queue":
+					var base_x_m: float = float(target_elem.transform.position[0])
+					var base_y_m: float = float(target_elem.transform.position[1])
+					var dims_q: Vector3 = MeshFactory.get_dims(target_elem, Vector3(4.0, 2.0, 0.8))
+					if dims_q.x >= dims_q.y:
+						py = base_y_m + dims_q.y * 0.5
+						px = clampf(px, base_x_m + 0.35, base_x_m + dims_q.x - 0.35)
+					else:
+						px = base_x_m + dims_q.x * 0.5
+						py = clampf(py, base_y_m + 0.35, base_y_m + dims_q.y - 0.35)
+
+		# Coordinates: SceneSpec Z-up (X East, Y North, Z Up) -> Godot (X, Y_up, -Y)
+		var elev_y: float = (pz + 0.20) if pz > 0.4 else (pz + 0.85)
+		var g_pos := Vector3(px, elev_y, -py)
 
 		var vel = agent.get("velocity", [0.0, 0.0])
 		var vx: float = 0.0
@@ -632,13 +903,20 @@ func update_agent_telemetry(agents: Array) -> void:
 		var kind: String = str(agent.get("kind", "product"))
 		var is_product: bool = (kind == "product" or kind == "carton" or kind == "item")
 		var in_service: bool = false
+		var has_custom_col: bool = false
+		var custom_col := Color("#f39c12")
 		if agent.has("properties") and agent.properties is Dictionary:
 			in_service = bool(agent.properties.get("in_service", false))
+			if agent.properties.has("color_r") and agent.properties.has("color_g") and agent.properties.has("color_b"):
+				has_custom_col = true
+				custom_col = Color(float(agent.properties.color_r), float(agent.properties.color_g), float(agent.properties.color_b), 1.0)
 		var state: String = str(agent.get("state", "walking"))
 
 		var col := Color("#2ecc71") # green
 		if is_product:
-			if in_service:
+			if has_custom_col:
+				col = custom_col
+			elif in_service:
 				col = Color("#2ecc71") # being serviced emerald green
 			elif state == "queuing" or (agent.has("current_location") and "q" in str(agent.current_location)):
 				col = Color("#00d2ff") # waiting in queue bright cyan

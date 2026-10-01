@@ -378,6 +378,7 @@ func _ready() -> void:
 	_refresh_tabs()
 
 func _build_ui() -> void:
+	z_index = 240
 	var style := StyleBoxFlat.new()
 	style.bg_color = BG
 	style.border_color = BORDER
@@ -515,6 +516,7 @@ func _build_ui() -> void:
 	toolbar.add_child(tw_lbl)
 
 	_time_option = OptionButton.new()
+	_time_option.fit_to_longest_item = false
 	_time_option.add_item("Fit All (0 → Now) [Squeeze]", 0)
 	_time_option.add_item("15s (Rolling)", 15)
 	_time_option.add_item("30s (Rolling)", 30)
@@ -532,6 +534,7 @@ func _build_ui() -> void:
 	toolbar.add_child(lay_lbl)
 
 	_layout_option = OptionButton.new()
+	_layout_option.fit_to_longest_item = false
 	_layout_option.add_item("⊞ 2x2 Grid", 0)
 	_layout_option.add_item("☰ Vertical Stack", 1)
 	_layout_option.add_item("◫ Split Left + 2 Right + Bottom", 2)
@@ -1529,7 +1532,18 @@ func feed_telemetry(t: float, elements_by_id: Dictionary, _global_kpis: Dictiona
 	# 1. Store entity-specific telemetry for ANY entity and ANY metric
 	for e_id in elements_by_id.keys():
 		var src_elem = elements_by_id[e_id]
-		var src_metrics: Dictionary = src_elem.get("metrics", src_elem.get("custom_metrics", {}))
+		if not (src_elem is Dictionary):
+			continue
+		var src_metrics: Dictionary = {}
+		if src_elem.get("metrics") is Dictionary:
+			src_metrics = (src_elem["metrics"] as Dictionary).duplicate()
+		elif src_elem.get("custom_metrics") is Dictionary:
+			src_metrics = (src_elem["custom_metrics"] as Dictionary).duplicate()
+		for top_k in src_elem.keys():
+			if top_k in ["metrics", "custom_metrics", "id", "kind", "name", "state"]:
+				continue
+			if not src_metrics.has(top_k):
+				src_metrics[top_k] = src_elem[top_k]
 
 		# Batch observation samples (empirical event tally: service times, wait times)
 		if src_metrics.has("recent_service_samples"):
@@ -1559,9 +1573,9 @@ func feed_telemetry(t: float, elements_by_id: Dictionary, _global_kpis: Dictiona
 		var tgt_id: String = str(conn.target_element)
 		var tgt_port: String = str(conn.target_port)
 
-		if elements_by_id.has(src_id):
-			var src_elem = elements_by_id[src_id]
-			var src_metrics: Dictionary = src_elem.get("metrics", src_elem.get("custom_metrics", {}))
+		if elements_by_id.has(src_id) and elements_by_id[src_id] is Dictionary:
+			var src_elem: Dictionary = elements_by_id[src_id]
+			var src_metrics: Dictionary = src_elem.get("metrics", src_elem.get("custom_metrics", {})) if (src_elem.get("metrics") is Dictionary or src_elem.get("custom_metrics") is Dictionary) else src_elem
 			var val: float = _resolve_metric_value(src_port, src_metrics)
 			var key := "%s/%s/%s:%s" % [tgt_id, tgt_port, src_id, src_port]
 			_feed_buffer_point(key, t, val)
@@ -1766,6 +1780,8 @@ func _toggle_detached() -> void:
 
 func detach_to_os_window() -> void:
 	if _is_detached: return
+	if OS.has_feature("movie") or "--write-movie" in OS.get_cmdline_args() or "--write-movie" in OS.get_cmdline_user_args():
+		return
 	_shell_parent = get_parent()
 	if _shell_parent == null: return
 
@@ -2102,19 +2118,34 @@ class UnifiedVectorCanvas extends Control:
 					draw_rect(Rect2(plot_area.position.x + float(bi) * b_w, plot_area.position.y + plot_area.size.y - 4.0, b_w - 2.0, 4.0), Color("#1b2533"))
 		else:
 			# Axes grid lines
+			draw_line(Vector2(plot_area.position.x, plot_area.position.y), Vector2(plot_area.position.x + plot_area.size.x, plot_area.position.y), Color(0.2, 0.3, 0.4, 0.2))
 			draw_line(Vector2(plot_area.position.x, plot_area.position.y + plot_area.size.y * 0.5), Vector2(plot_area.position.x + plot_area.size.x, plot_area.position.y + plot_area.size.y * 0.5), Color(0.2, 0.3, 0.4, 0.25))
-			draw_line(Vector2(plot_area.position.x, plot_area.position.y + plot_area.size.y), Vector2(plot_area.position.x + plot_area.size.x, plot_area.position.y + plot_area.size.y), Color(0.2, 0.3, 0.4, 0.4))
+			draw_line(Vector2(plot_area.position.x, plot_area.position.y + plot_area.size.y), Vector2(plot_area.position.x + plot_area.size.x, plot_area.position.y + plot_area.size.y), Color(0.2, 0.3, 0.4, 0.45))
 
+			var shared_max: float = float(sp.get("y_max", 1.0)) if not bool(sp.get("autoscale", true)) else 1.0
+			for s_i in range(series_data.size()):
+				var arr: Array = series_data[s_i]
+				for pt in arr:
+					shared_max = max(shared_max, float(pt.get("val", 0.0)) * 1.08)
+
+			draw_string(ThemeDB.fallback_font, Vector2(cell.position.x + 4.0, plot_area.position.y + 8.0), "%.0f" % shared_max, HORIZONTAL_ALIGNMENT_RIGHT, 28, 8, Color("#8b949e"))
+			draw_string(ThemeDB.fallback_font, Vector2(cell.position.x + 4.0, plot_area.position.y + plot_area.size.y * 0.5 + 3.0), "%.0f" % (shared_max * 0.5), HORIZONTAL_ALIGNMENT_RIGHT, 28, 8, Color("#8b949e"))
+			draw_string(ThemeDB.fallback_font, Vector2(cell.position.x + 4.0, plot_area.position.y + plot_area.size.y), "0", HORIZONTAL_ALIGNMENT_RIGHT, 28, 8, Color("#8b949e"))
+
+			var leg_x: float = plot_area.position.x + 6.0
 			for s_i in range(series_data.size()):
 				var arr: Array = series_data[s_i]
 				if arr.size() < 2: continue
 				var col: Color = SERIES_COLORS[s_i % SERIES_COLORS.size()]
 				var pts := PackedVector2Array()
-				var s_max: float = 1.0
-				for pt in arr: s_max = max(s_max, float(pt.get("val", 0.0)))
 				for j in range(arr.size()):
 					var sx: float = plot_area.position.x + (float(j) / max(1.0, float(arr.size() - 1))) * plot_area.size.x
-					var sy: float = plot_area.position.y + plot_area.size.y - (clamp(float(arr[j].get("val", 0.0)) / max(0.001, s_max), 0.0, 1.0) * plot_area.size.y)
+					var sy: float = plot_area.position.y + plot_area.size.y - (clamp(float(arr[j].get("val", 0.0)) / max(0.001, shared_max), 0.0, 1.0) * plot_area.size.y)
 					pts.append(Vector2(sx, sy))
-				draw_polyline(pts, col, 1.5, true)
-				draw_circle(pts[-1], 2.5, col)
+				draw_polyline(pts, col, 2.0, true)
+				draw_circle(pts[-1], 3.0, col)
+				if s_i < explicit_signals.size():
+					var sig_lbl: String = str(explicit_signals[s_i].get("label", explicit_signals[s_i].get("entity_id", "")))
+					if not sig_lbl.is_empty():
+						draw_string(ThemeDB.fallback_font, Vector2(leg_x, plot_area.position.y + 12.0), "━ " + sig_lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, col)
+						leg_x += float(sig_lbl.length()) * 5.6 + 24.0

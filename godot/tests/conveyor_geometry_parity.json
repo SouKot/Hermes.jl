@@ -1,0 +1,108 @@
+[
+  {
+    "preset": "straight",
+    "inlet": [0.0, 0.0, 0.0],
+    "outlet": [10.0, 5.0, 0.0],
+    "inlet_tangent": [1.0, 0.0, 0.0],
+    "outlet_tangent": [0.0, 1.0, 0.0],
+    "params": {},
+    "midpoint": [5.0, 2.5, 0.0],
+    "end": [10.0, 5.0, 0.0]
+  },
+  {
+    "preset": "s_curve",
+    "inlet": [0.0, 0.0, 0.0],
+    "outlet": [10.0, 5.0, 0.0],
+    "inlet_tangent": [1.0, 0.0, 0.0],
+    "outlet_tangent": [0.0, 1.0, 0.0],
+    "params": {"forward_span": 10.0, "lateral_offset": 2.5},
+    "midpoint": [5.0, 1.25, 0.0],
+    "end": [10.0, 2.5, 0.0]
+  },
+  {
+    "preset": "l_bend",
+    "inlet": [0.0, 0.0, 0.0],
+    "outlet": [10.0, 5.0, 0.0],
+    "inlet_tangent": [1.0, 0.0, 0.0],
+    "outlet_tangent": [0.0, 1.0, 0.0],
+    "params": {"leg1_length": 8.0, "leg2_length": 4.0, "bend_angle_deg": 60.0, "bend_radius": 2.0, "turn_direction": "left"},
+    "midpoint": [5.892484, 0.0, 0.0],
+    "end": [10.0, 3.464102, 0.0]
+  },
+  {
+    "preset": "l_bend",
+    "inlet": [0.0, 0.0, 0.0],
+    "outlet": [8.0, 4.0, 0.0],
+    "inlet_tangent": [1.0, 0.0, 0.0],
+    "outlet_tangent": [1.0, 0.0, 0.0],
+    "params": {"leg1_length": 8.0, "leg2_length": 4.0, "bend_angle_deg": 135.0, "bend_radius": 2.0, "turn_direction": "left"},
+    "midpoint": [4.156686, 0.0, 0.0],
+    "end": [5.171573, 2.828427, 0.0]
+  },
+  {
+    "preset": "u_turn",
+    "inlet": [0.0, 0.0, 0.0],
+    "outlet": [10.0, 5.0, 0.0],
+    "inlet_tangent": [1.0, 0.0, 0.0],
+    "outlet_tangent": [0.0, 1.0, 0.0],
+    "params": {"bend_radius": 2.0, "leg_length": 6.0},
+    "midpoint": [8.0, 2.0, 0.0],
+    "end": [0.0, 4.0, 0.0]
+  },
+  {
+    "preset": "u_turn",
+    "inlet": [0.0, 0.0, 0.0],
+    "outlet": [10.0, 5.0, 0.0],
+    "inlet_tangent": [1.0, 0.0, 0.0],
+    "outlet_tangent": [0.0, 1.0, 0.0],
+    "params": {"bend_radius": 2.0, "leg_length": 6.0, "preserve_endpoints": true},
+    "midpoint": [7.873852, 1.300189, 0.0],
+    "end": [10.0, 5.0, 0.0],
+    "end_tangent": [0.0, 1.0, 0.0]
+  },
+  {
+    "preset": "circular_arc",
+    "inlet": [0.0, 0.0, 0.0],
+    "outlet": [10.0, 5.0, 0.0],
+    "inlet_tangent": [1.0, 0.0, 0.0],
+    "outlet_tangent": [0.0, 1.0, 0.0],
+    "params": {"bend_radius": 3.0, "sweep_angle_deg": 90.0},
+    "midpoint": [2.121320, 0.878680, 0.0],
+    "end": [3.0, 3.0, 0.0]
+  },
+  {
+    "preset": "serpentine",
+    "inlet": [0.0, 0.0, 0.0],
+    "outlet": [10.0, 5.0, 0.0],
+    "inlet_tangent": [1.0, 0.0, 0.0],
+    "outlet_tangent": [0.0, 1.0, 0.0],
+    "params": {"passes": 3, "pass_spacing": 2.0, "pass_length": 8.0},
+    "midpoint": [4.0, 2.0, 0.0],
+    "end": [8.0, 4.0, 0.0]
+  },
+  {
+    "preset": "custom_spline",
+    "inlet": [0.0, 0.0, 0.0],
+    "outlet": [10.0, 0.0, 2.0],
+    "inlet_tangent": [1.0, 0.0, 0.0],
+    "outlet_tangent": [1.0, 0.0, 0.0],
+    "params": {
+      "control_points": [
+        {"pos": [0.0, 0.0, 0.0], "out_handle": [3.0, 5.0, 0.6]},
+        {"pos": [10.0, 0.0, 2.0], "in_handle": [-3.0, 5.0, -0.6]}
+      ]
+    },
+    "midpoint": [5.0, 3.75, 1.0],
+    "end": [10.0, 0.0, 2.0]
+  },
+  {
+    "preset": "spiral_helix",
+    "inlet": [0.0, 0.0, 0.0],
+    "outlet": [0.0, 4.0, 3.0],
+    "inlet_tangent": [1.0, 0.0, 0.0],
+    "outlet_tangent": [1.0, 0.0, 0.0],
+    "params": {"helix_radius": 2.0, "helix_turns": 1.5, "elevation_gain": 3.0},
+    "midpoint": [-2.0, 2.0, 1.5],
+    "end": [0.0, 4.0, 3.0]
+  }
+]

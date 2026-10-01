@@ -7,6 +7,7 @@ extends Control
 
 const SceneTypes := preload("res://scripts/scenespec_types.gd")
 const DocumentStore := preload("res://scripts/authoring_document_store.gd")
+const OSWindowHost := preload("res://scripts/authoring_os_window_host.gd")
 
 signal closed
 signal start_optimization_requested(scenespec: Dictionary, open_feedback: bool)
@@ -151,6 +152,7 @@ func _build_ui() -> void:
 func _build_setup_window() -> void:
 	_setup_panel = PanelContainer.new()
 	_setup_panel.visible = false
+	_setup_panel.z_index = 250
 	_setup_panel.custom_minimum_size = Vector2(700, 560)
 	_setup_panel.size = Vector2(700, 560)
 	_setup_panel.position = Vector2(140, 70)
@@ -817,6 +819,8 @@ func is_progress_visible() -> bool:
 	return _progress_panel != null and _progress_panel.visible
 
 func _on_setup_header_gui_input(event: InputEvent) -> void:
+	if OSWindowHost.handle_header_drag(_setup_panel, event):
+		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			_dragging_setup = true
@@ -828,6 +832,8 @@ func _on_setup_header_gui_input(event: InputEvent) -> void:
 		_setup_panel.global_position = event.global_position + _drag_offset_setup
 
 func _on_progress_header_gui_input(event: InputEvent) -> void:
+	if OSWindowHost.handle_header_drag(_progress_panel, event):
+		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			_dragging_progress = true

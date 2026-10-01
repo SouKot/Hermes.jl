@@ -1,0 +1,3200 @@
+{
+  "spec_version": "1.0.0",
+  "scene": {
+    "author": "Antigravity SimViz",
+    "cad_zones": [
+      {
+        "label": "ZONE 1: MULTI-DOCK RECEIVING & INDUCTION",
+        "rect": [
+          1.5,
+          1.5,
+          16.5,
+          16.5
+        ]
+      },
+      {
+        "label": "ZONE 2A: S-CURVE EXPRESS BYPASS",
+        "rect": [
+          18.0,
+          1.5,
+          19.5,
+          5.0
+        ]
+      },
+      {
+        "label": "ZONE 2B: MAINLINE & PARALLEL CNC CELLS",
+        "rect": [
+          18.0,
+          6.8,
+          19.5,
+          7.8
+        ]
+      },
+      {
+        "label": "ZONE 3: VISION QA & REWORK",
+        "rect": [
+          37.5,
+          1.5,
+          7.5,
+          16.5
+        ]
+      },
+      {
+        "label": "ZONE 4: OUTBOUND, SHIPPING & TELEMETRY",
+        "rect": [
+          45.0,
+          1.5,
+          22.0,
+          16.5
+        ]
+      }
+    ],
+    "id": "untitled_scene",
+    "name": "4-Zone Smart Fulfillment, CNC Assembly & Vision QA Plant"
+  },
+  "simulation": {
+    "max_duration": 3600.0,
+    "mode": "des_only",
+    "time_unit": "seconds",
+    "warmup_time": 0.0
+  },
+  "abm_config": {
+    "enabled": false,
+    "model_name": "SFM",
+    "parameters": {},
+    "pedestrian_profiles": []
+  },
+  "spatial": {
+    "bounds": [
+      -50.0,
+      -50.0,
+      0.0,
+      50.0,
+      50.0,
+      10.0
+    ],
+    "levels": [
+      {
+        "default_height": 4.5,
+        "elevation": 0.0,
+        "id": "level_0",
+        "name": "Ground Floor",
+        "visible": true
+      }
+    ]
+  },
+  "elements": [
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#1f6feb",
+        "graph_position": [
+          1180.0,
+          116.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          8.0,
+          5.0,
+          1.2
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "chart_hub",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "P1",
+          "kind": "signal",
+          "name": "Port 1 (Subplot 1)",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "P2",
+          "kind": "signal",
+          "name": "Port 2 (Subplot 2)",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "P3",
+          "kind": "signal",
+          "name": "Port 3 (Subplot 3)",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "P4",
+          "kind": "signal",
+          "name": "Port 4 (Subplot 4)",
+          "required": true
+        }
+      ],
+      "kind": "chart_station",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [],
+      "name": "Plant Live Telemetry",
+      "output_ports": [],
+      "properties": {
+        "grid_columns": 2,
+        "grid_rows": 2,
+        "subplots": [
+          {
+            "autoscale": true,
+            "grid": {
+              "col": 0,
+              "col_span": 1,
+              "row": 0,
+              "row_span": 1
+            },
+            "id": "sp_1",
+            "mode": "overlay",
+            "port_id": "P1",
+            "signals": [
+              {
+                "entity_id": "q_vip",
+                "label": "VIP Priority Q",
+                "x_metric": "__time__",
+                "y_metric": "queue_length"
+              },
+              {
+                "entity_id": "q_ecom",
+                "label": "E-Commerce Q",
+                "x_metric": "__time__",
+                "y_metric": "queue_length"
+              },
+              {
+                "entity_id": "q_bulk",
+                "label": "Bulk Pallet Q",
+                "x_metric": "__time__",
+                "y_metric": "queue_length"
+              }
+            ],
+            "title": "1. Receiving Queue Buffer Lengths (VIP, E-Com, Bulk)",
+            "type": "time_series",
+            "y_label": "Items (Lq)",
+            "y_max": 15.0,
+            "y_min": 0.0
+          },
+          {
+            "autoscale": false,
+            "grid": {
+              "col": 1,
+              "col_span": 1,
+              "row": 0,
+              "row_span": 1
+            },
+            "id": "sp_2",
+            "mode": "overlay",
+            "port_id": "P2",
+            "signals": [
+              {
+                "entity_id": "srv_express",
+                "label": "Express Robot %",
+                "x_metric": "__time__",
+                "y_metric": "utilization_pct"
+              },
+              {
+                "entity_id": "srv_cnc_a",
+                "label": "CNC Cell A %",
+                "x_metric": "__time__",
+                "y_metric": "utilization_pct"
+              },
+              {
+                "entity_id": "srv_qa",
+                "label": "Vision QA %",
+                "x_metric": "__time__",
+                "y_metric": "utilization_pct"
+              }
+            ],
+            "title": "2. Station Utilization % (Express Robot, CNC A, Vision QA)",
+            "type": "time_series",
+            "y_label": "Util (%)",
+            "y_max": 100.0,
+            "y_min": 0.0
+          },
+          {
+            "autoscale": true,
+            "grid": {
+              "col": 0,
+              "col_span": 1,
+              "row": 1,
+              "row_span": 1
+            },
+            "id": "sp_3",
+            "mode": "overlay",
+            "port_id": "P3",
+            "signals": [
+              {
+                "entity_id": "q_ecom",
+                "label": "Wait Time Wq (s)",
+                "x_metric": "__time__",
+                "y_metric": "wait_time"
+              }
+            ],
+            "title": "3. Customer Waiting Time Distribution (Wq Histogram)",
+            "type": "histogram",
+            "y_label": "Count",
+            "y_max": 50.0,
+            "y_min": 0.0
+          },
+          {
+            "autoscale": true,
+            "grid": {
+              "col": 1,
+              "col_span": 1,
+              "row": 1,
+              "row_span": 1
+            },
+            "id": "sp_4",
+            "mode": "overlay",
+            "port_id": "P4",
+            "signals": [
+              {
+                "entity_id": "snk_express",
+                "label": "Throughput (items/s)",
+                "x_metric": "__time__",
+                "y_metric": "throughput_per_sec"
+              },
+              {
+                "entity_id": "conv_rework",
+                "label": "Rework Loop WIP",
+                "x_metric": "__time__",
+                "y_metric": "items_in_transit"
+              }
+            ],
+            "title": "4. Outbound Throughput Rate & Rework Loop WIP",
+            "type": "time_series",
+            "y_label": "Rate / WIP",
+            "y_max": 10.0,
+            "y_min": 0.0
+          }
+        ],
+        "time_window": 60.0,
+        "title": "4-Zone Plant Real-Time Telemetry"
+      },
+      "transform": {
+        "position": [
+          59.0,
+          5.8,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#2ecc71",
+        "graph_position": [
+          350.0,
+          130.0
+        ]
+      },
+      "geometry": {
+        "auto_join": true,
+        "dimensions": [
+          8.0,
+          1.2,
+          0.8
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "inlet_pose": {
+          "position": [
+            17.5,
+            9.1,
+            0.8
+          ],
+          "tangent": [
+            1.0,
+            0.0,
+            0.0
+          ]
+        },
+        "outlet_pose": {
+          "position": [
+            25.5,
+            3.8,
+            0.8
+          ],
+          "tangent": [
+            1.0,
+            0.0,
+            0.0
+          ]
+        },
+        "shape": "box",
+        "shape_params": {
+          "bend_angle_deg": 90.0,
+          "bend_radius": 2.0,
+          "helix_turns": 1.5,
+          "passes": 3,
+          "pitch": 2.4,
+          "sweep_angle_deg": 90.0
+        },
+        "shape_preset": "s_curve"
+      },
+      "id": "conv_express_in",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        },
+        {
+          "cardinality": "one",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "speed_signal",
+          "kind": "signal",
+          "name": "Speed Signal",
+          "required": true
+        }
+      ],
+      "kind": "conveyor",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "in_transit",
+          "kind": "metric",
+          "name": "In-Transit Count",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "occupancy",
+          "kind": "metric",
+          "name": "Occupancy",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "speed",
+          "kind": "metric",
+          "name": "Speed",
+          "required": true
+        }
+      ],
+      "name": "S-Curve Express Bypass",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "acceleration": 2.0,
+        "accumulation_pitch": 0.5,
+        "capacity": 10,
+        "conveyor_mode": "free_flow",
+        "index_interval": 1.0,
+        "reversible": false,
+        "shape_preset": "s_curve",
+        "speed": 2.8
+      },
+      "transform": {
+        "position": [
+          17.5,
+          6.5,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#2ecc71",
+        "graph_position": [
+          570.0,
+          76.0
+        ]
+      },
+      "geometry": {
+        "auto_join": true,
+        "dimensions": [
+          8.0,
+          1.2,
+          0.8
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "inlet_pose": {
+          "position": [
+            28.5,
+            3.8,
+            0.8
+          ],
+          "tangent": [
+            1.0,
+            0.0,
+            0.0
+          ]
+        },
+        "outlet_pose": {
+          "position": [
+            37.5,
+            9.1,
+            0.8
+          ],
+          "tangent": [
+            1.0,
+            0.0,
+            0.0
+          ]
+        },
+        "shape": "box",
+        "shape_params": {
+          "bend_angle_deg": 90.0,
+          "bend_radius": 2.0,
+          "helix_turns": 1.5,
+          "passes": 3,
+          "pitch": 2.4,
+          "sweep_angle_deg": 90.0
+        },
+        "shape_preset": "s_curve"
+      },
+      "id": "conv_express_out",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        },
+        {
+          "cardinality": "one",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "speed_signal",
+          "kind": "signal",
+          "name": "Speed Signal",
+          "required": true
+        }
+      ],
+      "kind": "conveyor",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "in_transit",
+          "kind": "metric",
+          "name": "In-Transit Count",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "occupancy",
+          "kind": "metric",
+          "name": "Occupancy",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "speed",
+          "kind": "metric",
+          "name": "Speed",
+          "required": true
+        }
+      ],
+      "name": "S-Curve QA Merge",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "acceleration": 2.0,
+        "accumulation_pitch": 0.5,
+        "capacity": 10,
+        "conveyor_mode": "free_flow",
+        "index_interval": 1.0,
+        "reversible": false,
+        "shape_preset": "s_curve",
+        "speed": 2.6
+      },
+      "transform": {
+        "position": [
+          28.5,
+          3.8,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#2ecc71",
+        "graph_position": [
+          350.0,
+          178.0
+        ]
+      },
+      "geometry": {
+        "auto_join": true,
+        "dimensions": [
+          8.0,
+          1.2,
+          0.8
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box",
+        "shape_params": {
+          "bend_angle_deg": 90.0,
+          "bend_radius": 2.0,
+          "helix_turns": 1.5,
+          "passes": 3,
+          "pitch": 2.4,
+          "sweep_angle_deg": 90.0
+        },
+        "shape_preset": "straight"
+      },
+      "id": "conv_main",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        },
+        {
+          "cardinality": "one",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "speed_signal",
+          "kind": "signal",
+          "name": "Speed Signal",
+          "required": true
+        }
+      ],
+      "kind": "conveyor",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "in_transit",
+          "kind": "metric",
+          "name": "In-Transit Count",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "occupancy",
+          "kind": "metric",
+          "name": "Occupancy",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "speed",
+          "kind": "metric",
+          "name": "Speed",
+          "required": true
+        }
+      ],
+      "name": "Accumulating Mainline Belt",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "acceleration": 2.0,
+        "accumulation_pitch": 0.5,
+        "capacity": 10,
+        "conveyor_mode": "accumulating",
+        "index_interval": 1.0,
+        "length": 8.0,
+        "reversible": false,
+        "speed": 1.6
+      },
+      "transform": {
+        "position": [
+          17.5,
+          8.9,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#2ecc71",
+        "graph_position": [
+          890.0,
+          178.0
+        ]
+      },
+      "geometry": {
+        "auto_join": true,
+        "dimensions": [
+          5.0,
+          1.2,
+          0.8
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box",
+        "shape_params": {
+          "bend_angle_deg": 90.0,
+          "bend_radius": 2.0,
+          "helix_turns": 1.5,
+          "passes": 3,
+          "pitch": 2.4,
+          "sweep_angle_deg": 90.0
+        },
+        "shape_preset": "straight"
+      },
+      "id": "conv_out",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        },
+        {
+          "cardinality": "one",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "speed_signal",
+          "kind": "signal",
+          "name": "Speed Signal",
+          "required": true
+        }
+      ],
+      "kind": "conveyor",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "in_transit",
+          "kind": "metric",
+          "name": "In-Transit Count",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "occupancy",
+          "kind": "metric",
+          "name": "Occupancy",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "speed",
+          "kind": "metric",
+          "name": "Speed",
+          "required": true
+        }
+      ],
+      "name": "Outbound Takeaway",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "acceleration": 2.0,
+        "accumulation_pitch": 0.5,
+        "capacity": 10,
+        "conveyor_mode": "free_flow",
+        "index_interval": 1.0,
+        "length": 5.0,
+        "reversible": false,
+        "speed": 2.2
+      },
+      "transform": {
+        "position": [
+          44.5,
+          8.9,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#2ecc71",
+        "graph_position": [
+          800.0,
+          310.0
+        ]
+      },
+      "geometry": {
+        "auto_join": true,
+        "dimensions": [
+          8.0,
+          1.2,
+          0.8
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "inlet_pose": {
+          "position": [
+            44.5,
+            10.0,
+            0.8
+          ],
+          "tangent": [
+            -1.0,
+            0.2,
+            0.0
+          ]
+        },
+        "outlet_pose": {
+          "position": [
+            36.5,
+            16.5,
+            0.8
+          ],
+          "tangent": [
+            -1.0,
+            0.0,
+            0.0
+          ]
+        },
+        "shape": "box",
+        "shape_params": {
+          "bend_angle_deg": 90.0,
+          "bend_radius": 2.0,
+          "helix_turns": 1.5,
+          "passes": 3,
+          "pitch": 2.4,
+          "sweep_angle_deg": 90.0
+        },
+        "shape_preset": "s_curve"
+      },
+      "id": "conv_rework",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        },
+        {
+          "cardinality": "one",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "speed_signal",
+          "kind": "signal",
+          "name": "Speed Signal",
+          "required": true
+        }
+      ],
+      "kind": "conveyor",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "in_transit",
+          "kind": "metric",
+          "name": "In-Transit Count",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "occupancy",
+          "kind": "metric",
+          "name": "Occupancy",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "speed",
+          "kind": "metric",
+          "name": "Speed",
+          "required": true
+        }
+      ],
+      "name": "Curved Rework Return Belt",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "acceleration": 2.0,
+        "accumulation_pitch": 0.5,
+        "capacity": 10,
+        "conveyor_mode": "free_flow",
+        "index_interval": 1.0,
+        "reversible": false,
+        "shape_preset": "s_curve",
+        "speed": 1.5
+      },
+      "transform": {
+        "position": [
+          40.0,
+          15.5,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#3498db",
+        "graph_position": [
+          90.0,
+          280.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          4.0,
+          2.0,
+          0.85
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "q_bulk",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        },
+        {
+          "cardinality": "one",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "release_signal",
+          "kind": "signal",
+          "name": "Release / Gate Signal",
+          "required": true
+        }
+      ],
+      "kind": "queue",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "length",
+          "kind": "metric",
+          "name": "Queue Length",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "occupancy",
+          "kind": "metric",
+          "name": "Buffer Occupancy",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "wait_time",
+          "kind": "metric",
+          "name": "Avg Wait Time",
+          "required": true
+        }
+      ],
+      "name": "Wholesale Pallet Q",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "capacity": 40,
+        "custom_discipline": "",
+        "discipline": "FIFO",
+        "max_wait_time": 300.0
+      },
+      "transform": {
+        "position": [
+          4.5,
+          14.0,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#3498db",
+        "graph_position": [
+          550.0,
+          144.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          4.0,
+          2.0,
+          0.85
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "q_cnc_a",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        },
+        {
+          "cardinality": "one",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "release_signal",
+          "kind": "signal",
+          "name": "Release / Gate Signal",
+          "required": true
+        }
+      ],
+      "kind": "queue",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "length",
+          "kind": "metric",
+          "name": "Queue Length",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "occupancy",
+          "kind": "metric",
+          "name": "Buffer Occupancy",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "wait_time",
+          "kind": "metric",
+          "name": "Avg Wait Time",
+          "required": true
+        }
+      ],
+      "name": "CNC A Buffer",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "capacity": 20,
+        "custom_discipline": "",
+        "discipline": "FIFO",
+        "max_wait_time": 300.0
+      },
+      "transform": {
+        "position": [
+          27.5,
+          7.2,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#3498db",
+        "graph_position": [
+          550.0,
+          228.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          4.0,
+          2.0,
+          0.85
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "q_cnc_b",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        },
+        {
+          "cardinality": "one",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "release_signal",
+          "kind": "signal",
+          "name": "Release / Gate Signal",
+          "required": true
+        }
+      ],
+      "kind": "queue",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "length",
+          "kind": "metric",
+          "name": "Queue Length",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "occupancy",
+          "kind": "metric",
+          "name": "Buffer Occupancy",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "wait_time",
+          "kind": "metric",
+          "name": "Avg Wait Time",
+          "required": true
+        }
+      ],
+      "name": "CNC B Buffer",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "capacity": 20,
+        "custom_discipline": "",
+        "discipline": "FIFO",
+        "max_wait_time": 300.0
+      },
+      "transform": {
+        "position": [
+          27.5,
+          11.4,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#3498db",
+        "graph_position": [
+          90.0,
+          170.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          4.0,
+          2.0,
+          0.85
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "q_ecom",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        },
+        {
+          "cardinality": "one",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "release_signal",
+          "kind": "signal",
+          "name": "Release / Gate Signal",
+          "required": true
+        }
+      ],
+      "kind": "queue",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "length",
+          "kind": "metric",
+          "name": "Queue Length",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "occupancy",
+          "kind": "metric",
+          "name": "Buffer Occupancy",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "wait_time",
+          "kind": "metric",
+          "name": "Avg Wait Time",
+          "required": true
+        }
+      ],
+      "name": "E-Commerce Staging",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "capacity": 30,
+        "custom_discipline": "get_attribute(a, \"due_date\", Inf) < get_attribute(b, \"due_date\", Inf)",
+        "discipline": "Custom",
+        "max_wait_time": 300.0
+      },
+      "transform": {
+        "position": [
+          4.5,
+          8.5,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#3498db",
+        "graph_position": [
+          750.0,
+          170.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          4.0,
+          2.0,
+          0.85
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "q_qa",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        },
+        {
+          "cardinality": "one",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "release_signal",
+          "kind": "signal",
+          "name": "Release / Gate Signal",
+          "required": true
+        }
+      ],
+      "kind": "queue",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "length",
+          "kind": "metric",
+          "name": "Queue Length",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "occupancy",
+          "kind": "metric",
+          "name": "Buffer Occupancy",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "wait_time",
+          "kind": "metric",
+          "name": "Avg Wait Time",
+          "required": true
+        }
+      ],
+      "name": "QA Inspection Q",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "capacity": 20,
+        "custom_discipline": "",
+        "discipline": "FIFO",
+        "max_wait_time": 300.0
+      },
+      "transform": {
+        "position": [
+          37.5,
+          8.5,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#3498db",
+        "graph_position": [
+          90.0,
+          60.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          4.0,
+          2.0,
+          0.85
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "q_vip",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        },
+        {
+          "cardinality": "one",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "release_signal",
+          "kind": "signal",
+          "name": "Release / Gate Signal",
+          "required": true
+        }
+      ],
+      "kind": "queue",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "length",
+          "kind": "metric",
+          "name": "Queue Length",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "occupancy",
+          "kind": "metric",
+          "name": "Buffer Occupancy",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "wait_time",
+          "kind": "metric",
+          "name": "Avg Wait Time",
+          "required": true
+        }
+      ],
+      "name": "VIP Priority Buffer",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "capacity": 20,
+        "custom_discipline": "",
+        "discipline": "Priority",
+        "max_wait_time": 300.0
+      },
+      "transform": {
+        "position": [
+          4.5,
+          3.0,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#8e44ad",
+        "graph_position": [
+          1090.0,
+          116.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          2.5,
+          2.0,
+          1.2
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "snk_express",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        }
+      ],
+      "kind": "sink",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "completed_count",
+          "kind": "metric",
+          "name": "Completed Count",
+          "required": true
+        }
+      ],
+      "name": "Express Courier",
+      "output_ports": [],
+      "properties": {
+        "collect_metrics": true
+      },
+      "transform": {
+        "position": [
+          54.5,
+          5.8,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#8e44ad",
+        "graph_position": [
+          1090.0,
+          224.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          2.5,
+          2.0,
+          1.2
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "snk_freight",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        }
+      ],
+      "kind": "sink",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "completed_count",
+          "kind": "metric",
+          "name": "Completed Count",
+          "required": true
+        }
+      ],
+      "name": "Freight Dock",
+      "output_ports": [],
+      "properties": {
+        "collect_metrics": true
+      },
+      "transform": {
+        "position": [
+          54.5,
+          11.2,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#27ae60",
+        "graph_position": [
+          50.0,
+          280.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          2.0,
+          2.0,
+          1.8
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "src_bulk",
+      "input_ports": [],
+      "kind": "source",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "generation_count",
+          "kind": "metric",
+          "name": "Generated Count",
+          "required": true
+        }
+      ],
+      "name": "Bulk Wholesale",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "batch_size": 1,
+        "default_attributes": {
+          "batch_size": 12,
+          "order_tier": "WHOLESALE"
+        },
+        "entity_type": "carton",
+        "interarrival_time": {
+          "mean": 3.0,
+          "type": "exponential"
+        },
+        "max_entities": 0,
+        "priority": 1
+      },
+      "transform": {
+        "position": [
+          2.5,
+          14.0,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#27ae60",
+        "graph_position": [
+          50.0,
+          170.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          2.0,
+          2.0,
+          1.8
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "src_ecom",
+      "input_ports": [],
+      "kind": "source",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "generation_count",
+          "kind": "metric",
+          "name": "Generated Count",
+          "required": true
+        }
+      ],
+      "name": "E-Commerce Dock",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "batch_size": 1,
+        "default_attributes": {
+          "due_offset": 55.0,
+          "order_tier": "ECOM_STD"
+        },
+        "entity_type": "carton",
+        "interarrival_time": {
+          "mean": 3.0,
+          "type": "exponential"
+        },
+        "max_entities": 0,
+        "priority": 5
+      },
+      "transform": {
+        "position": [
+          2.5,
+          8.5,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#27ae60",
+        "graph_position": [
+          50.0,
+          60.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          2.0,
+          2.0,
+          1.8
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "src_vip",
+      "input_ports": [],
+      "kind": "source",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "generation_count",
+          "kind": "metric",
+          "name": "Generated Count",
+          "required": true
+        }
+      ],
+      "name": "VIP Air-Freight",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "batch_size": 1,
+        "default_attributes": {
+          "due_offset": 25.0,
+          "fragile": true,
+          "order_tier": "VIP_AIR"
+        },
+        "entity_type": "carton",
+        "interarrival_time": {
+          "mean": 3.0,
+          "type": "exponential"
+        },
+        "max_entities": 0,
+        "priority": 10
+      },
+      "transform": {
+        "position": [
+          2.5,
+          3.0,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#e67e22",
+        "graph_position": [
+          630.0,
+          144.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          3.0,
+          2.0,
+          1.8
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "srv_cnc_a",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        },
+        {
+          "cardinality": "one",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "pause_signal",
+          "kind": "signal",
+          "name": "Pause Signal",
+          "required": true
+        }
+      ],
+      "kind": "server",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "state",
+          "kind": "metric",
+          "name": "State",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "utilization",
+          "kind": "metric",
+          "name": "Utilization",
+          "required": true
+        }
+      ],
+      "name": "CNC Assembly Cell A",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "failure_model": "None",
+        "failure_rate": 0.001,
+        "intake_mode": "slot_order",
+        "mtbf": 3600.0,
+        "mttr": 120.0,
+        "process_mode": "standard",
+        "servers": 1,
+        "service_time": {
+          "max": 7.0,
+          "min": 2.0,
+          "mode": 4.5,
+          "type": "triangular"
+        }
+      },
+      "transform": {
+        "position": [
+          31.5,
+          7.2,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#e67e22",
+        "graph_position": [
+          630.0,
+          228.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          3.0,
+          2.0,
+          1.8
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "srv_cnc_b",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        },
+        {
+          "cardinality": "one",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "pause_signal",
+          "kind": "signal",
+          "name": "Pause Signal",
+          "required": true
+        }
+      ],
+      "kind": "server",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "state",
+          "kind": "metric",
+          "name": "State",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "utilization",
+          "kind": "metric",
+          "name": "Utilization",
+          "required": true
+        }
+      ],
+      "name": "CNC Assembly Cell B",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "failure_model": "None",
+        "failure_rate": 0.001,
+        "intake_mode": "slot_order",
+        "mtbf": 3600.0,
+        "mttr": 120.0,
+        "process_mode": "standard",
+        "servers": 1,
+        "service_time": {
+          "max": 7.0,
+          "min": 2.0,
+          "mode": 4.5,
+          "type": "triangular"
+        }
+      },
+      "transform": {
+        "position": [
+          31.5,
+          11.4,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#e67e22",
+        "graph_position": [
+          510.0,
+          56.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          3.0,
+          2.0,
+          1.8
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "srv_express",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        },
+        {
+          "cardinality": "one",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "pause_signal",
+          "kind": "signal",
+          "name": "Pause Signal",
+          "required": true
+        }
+      ],
+      "kind": "server",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "state",
+          "kind": "metric",
+          "name": "State",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "utilization",
+          "kind": "metric",
+          "name": "Utilization",
+          "required": true
+        }
+      ],
+      "name": "High-Speed Robotic Cell",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "failure_model": "None",
+        "failure_rate": 0.001,
+        "intake_mode": "slot_order",
+        "mtbf": 3600.0,
+        "mttr": 120.0,
+        "process_mode": "standard",
+        "servers": 2,
+        "service_time": {
+          "max": 7.0,
+          "min": 2.0,
+          "mode": 4.5,
+          "type": "triangular"
+        }
+      },
+      "transform": {
+        "position": [
+          25.5,
+          2.8,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#e67e22",
+        "graph_position": [
+          290.0,
+          170.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          3.0,
+          2.0,
+          1.8
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "srv_induct",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        },
+        {
+          "cardinality": "one",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "pause_signal",
+          "kind": "signal",
+          "name": "Pause Signal",
+          "required": true
+        }
+      ],
+      "kind": "server",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "state",
+          "kind": "metric",
+          "name": "State",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "utilization",
+          "kind": "metric",
+          "name": "Utilization",
+          "required": true
+        }
+      ],
+      "name": "Automated Sorter Hub",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "failure_model": "None",
+        "failure_rate": 0.001,
+        "hooks": {
+          "on_entry": "wait_s = wait_time()\nif wait_s > 25.0\n    set_color!(:red)\nelseif priority() >= 8\n    set_color!(:cyan)\nelse\n    set_color!(:green)\nend\nrecord_metric!(\"sorter_wip\", queue_length() + in_service())",
+          "on_pull": "# M-1 Multi-Queue Priority Pull with Aging\npull_from_port_argmax!(:in_flow, c -> c.priority * 10.0 + c.wait_time)",
+          "on_service_start": "if last_processed_attr(:order_tier, \"\") != str_attr(:order_tier, \"\")\n    add_setup_time!(1.2)\nend"
+        },
+        "intake_mode": "custom",
+        "mtbf": 3600.0,
+        "mttr": 120.0,
+        "process_mode": "standard",
+        "servers": 2,
+        "service_time": {
+          "max": 7.0,
+          "min": 2.0,
+          "mode": 4.5,
+          "type": "triangular"
+        }
+      },
+      "transform": {
+        "position": [
+          14.5,
+          8.5,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#e67e22",
+        "graph_position": [
+          990.0,
+          170.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          3.0,
+          2.0,
+          1.8
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "srv_pack",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        },
+        {
+          "cardinality": "one",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "pause_signal",
+          "kind": "signal",
+          "name": "Pause Signal",
+          "required": true
+        }
+      ],
+      "kind": "server",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "state",
+          "kind": "metric",
+          "name": "State",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "utilization",
+          "kind": "metric",
+          "name": "Utilization",
+          "required": true
+        }
+      ],
+      "name": "Auto-Palletizer",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "failure_model": "None",
+        "failure_rate": 0.001,
+        "intake_mode": "slot_order",
+        "mtbf": 3600.0,
+        "mttr": 120.0,
+        "process_mode": "standard",
+        "servers": 1,
+        "service_time": {
+          "max": 7.0,
+          "min": 2.0,
+          "mode": 4.5,
+          "type": "triangular"
+        }
+      },
+      "transform": {
+        "position": [
+          49.5,
+          8.5,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#e67e22",
+        "graph_position": [
+          830.0,
+          170.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          3.0,
+          2.0,
+          1.8
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "srv_qa",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        },
+        {
+          "cardinality": "one",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "pause_signal",
+          "kind": "signal",
+          "name": "Pause Signal",
+          "required": true
+        }
+      ],
+      "kind": "server",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "state",
+          "kind": "metric",
+          "name": "State",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "utilization",
+          "kind": "metric",
+          "name": "Utilization",
+          "required": true
+        }
+      ],
+      "name": "Optical Vision QA",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "failure_model": "None",
+        "failure_rate": 0.001,
+        "intake_mode": "slot_order",
+        "mtbf": 3600.0,
+        "mttr": 120.0,
+        "process_mode": "standard",
+        "routing_rule": "prob",
+        "servers": 1,
+        "service_time": {
+          "max": 7.0,
+          "min": 2.0,
+          "mode": 4.5,
+          "type": "triangular"
+        }
+      },
+      "transform": {
+        "position": [
+          41.5,
+          8.5,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "editor": {
+        "collapsed": false,
+        "color": "#e67e22",
+        "graph_position": [
+          670.0,
+          310.0
+        ]
+      },
+      "geometry": {
+        "dimensions": [
+          3.0,
+          2.0,
+          1.8
+        ],
+        "elevation_end": 0.8,
+        "elevation_start": 0.8,
+        "shape": "box"
+      },
+      "id": "srv_rework",
+      "input_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "flow_in",
+          "kind": "flow",
+          "name": "Flow In",
+          "required": true
+        },
+        {
+          "cardinality": "one",
+          "data_type": "entity",
+          "direction": "input",
+          "id": "pause_signal",
+          "kind": "signal",
+          "name": "Pause Signal",
+          "required": true
+        }
+      ],
+      "kind": "server",
+      "level_id": "",
+      "library": "",
+      "library_version": "",
+      "metric_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "state",
+          "kind": "metric",
+          "name": "State",
+          "required": true
+        },
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "utilization",
+          "kind": "metric",
+          "name": "Utilization",
+          "required": true
+        }
+      ],
+      "name": "Rework Calibration Bench",
+      "output_ports": [
+        {
+          "cardinality": "many",
+          "data_type": "entity",
+          "direction": "output",
+          "id": "flow_out",
+          "kind": "flow",
+          "name": "Flow Out",
+          "required": true
+        }
+      ],
+      "properties": {
+        "failure_model": "None",
+        "failure_rate": 0.001,
+        "intake_mode": "slot_order",
+        "mtbf": 3600.0,
+        "mttr": 120.0,
+        "process_mode": "standard",
+        "servers": 1,
+        "service_time": {
+          "max": 7.0,
+          "min": 2.0,
+          "mode": 4.5,
+          "type": "triangular"
+        }
+      },
+      "transform": {
+        "position": [
+          33.5,
+          15.5,
+          0.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": "c_a_qa",
+      "source_element": "srv_cnc_a",
+      "source_port": "flow_out",
+      "target_element": "q_qa",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 2
+    },
+    {
+      "id": "c_a_srv",
+      "source_element": "q_cnc_a",
+      "source_port": "flow_out",
+      "target_element": "srv_cnc_a",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "c_b_qa",
+      "source_element": "srv_cnc_b",
+      "source_port": "flow_out",
+      "target_element": "q_qa",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 3
+    },
+    {
+      "id": "c_b_srv",
+      "source_element": "q_cnc_b",
+      "source_port": "flow_out",
+      "target_element": "srv_cnc_b",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "c_bypass_in",
+      "source_element": "srv_induct",
+      "source_port": "flow_out",
+      "target_element": "conv_express_in",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "c_exp_out",
+      "source_element": "srv_express",
+      "source_port": "flow_out",
+      "target_element": "conv_express_out",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "c_exp_qa",
+      "source_element": "conv_express_out",
+      "source_port": "flow_out",
+      "target_element": "q_qa",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "c_exp_srv",
+      "source_element": "conv_express_in",
+      "source_port": "flow_out",
+      "target_element": "srv_express",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "c_in_1",
+      "source_element": "q_vip",
+      "source_port": "flow_out",
+      "target_element": "srv_induct",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "c_in_2",
+      "source_element": "q_ecom",
+      "source_port": "flow_out",
+      "target_element": "srv_induct",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 2
+    },
+    {
+      "id": "c_in_3",
+      "source_element": "q_bulk",
+      "source_port": "flow_out",
+      "target_element": "srv_induct",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 3,
+      "visual": {
+        "waypoints": [
+          [
+            11.0,
+            14.8
+          ],
+          [
+            12.5,
+            11.2
+          ]
+        ]
+      }
+    },
+    {
+      "id": "c_m_a",
+      "source_element": "conv_main",
+      "source_port": "flow_out",
+      "target_element": "q_cnc_a",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "c_m_b",
+      "source_element": "conv_main",
+      "source_port": "flow_out",
+      "target_element": "q_cnc_b",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 2
+    },
+    {
+      "id": "c_main_in",
+      "source_element": "srv_induct",
+      "source_port": "flow_out",
+      "target_element": "conv_main",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 2
+    },
+    {
+      "id": "c_out_pack",
+      "source_element": "conv_out",
+      "source_port": "flow_out",
+      "target_element": "srv_pack",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "c_pack_exp",
+      "source_element": "srv_pack",
+      "source_port": "flow_out",
+      "target_element": "snk_express",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "c_pack_frt",
+      "source_element": "srv_pack",
+      "source_port": "flow_out",
+      "target_element": "snk_freight",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 2
+    },
+    {
+      "id": "c_qa_in",
+      "source_element": "q_qa",
+      "source_port": "flow_out",
+      "target_element": "srv_qa",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "c_qa_pass",
+      "source_element": "srv_qa",
+      "source_port": "flow_out",
+      "target_element": "conv_out",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "c_qa_rew",
+      "source_element": "srv_qa",
+      "source_port": "flow_out",
+      "target_element": "conv_rework",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 2
+    },
+    {
+      "id": "c_rew_bench",
+      "source_element": "conv_rework",
+      "source_port": "flow_out",
+      "target_element": "srv_rework",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "c_rew_return",
+      "source_element": "srv_rework",
+      "source_port": "flow_out",
+      "target_element": "q_qa",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 4
+    },
+    {
+      "id": "c_src1",
+      "source_element": "src_vip",
+      "source_port": "flow_out",
+      "target_element": "q_vip",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "c_src2",
+      "source_element": "src_ecom",
+      "source_port": "flow_out",
+      "target_element": "q_ecom",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "c_src3",
+      "source_element": "src_bulk",
+      "source_port": "flow_out",
+      "target_element": "q_bulk",
+      "target_port": "flow_in",
+      "link_type": "flow",
+      "enabled": true,
+      "ordering": 1
+    },
+    {
+      "id": "sig_1",
+      "source_element": "q_vip",
+      "source_port": "length",
+      "target_element": "chart_hub",
+      "target_port": "P1",
+      "link_type": "signal",
+      "enabled": true,
+      "ordering": 1,
+      "visual": {
+        "waypoints": [
+          [
+            6.5,
+            17.5
+          ],
+          [
+            57.8,
+            17.5
+          ],
+          [
+            57.8,
+            7.2
+          ]
+        ]
+      }
+    },
+    {
+      "id": "sig_2",
+      "source_element": "srv_induct",
+      "source_port": "utilization",
+      "target_element": "chart_hub",
+      "target_port": "P2",
+      "link_type": "signal",
+      "enabled": true,
+      "ordering": 1,
+      "visual": {
+        "waypoints": [
+          [
+            16.0,
+            17.8
+          ],
+          [
+            58.1,
+            17.8
+          ],
+          [
+            58.1,
+            8.2
+          ]
+        ]
+      }
+    },
+    {
+      "id": "sig_3",
+      "source_element": "q_ecom",
+      "source_port": "wait_time",
+      "target_element": "chart_hub",
+      "target_port": "P3",
+      "link_type": "signal",
+      "enabled": true,
+      "ordering": 1,
+      "visual": {
+        "waypoints": [
+          [
+            6.5,
+            18.1
+          ],
+          [
+            58.4,
+            18.1
+          ],
+          [
+            58.4,
+            9.2
+          ]
+        ]
+      }
+    },
+    {
+      "id": "sig_4",
+      "source_element": "srv_qa",
+      "source_port": "utilization",
+      "target_element": "chart_hub",
+      "target_port": "P4",
+      "link_type": "signal",
+      "enabled": true,
+      "ordering": 1,
+      "visual": {
+        "waypoints": [
+          [
+            43.0,
+            18.4
+          ],
+          [
+            58.7,
+            18.4
+          ],
+          [
+            58.7,
+            10.2
+          ]
+        ]
+      }
+    }
+  ],
+  "subgraphs": [],
+  "overlays": [],
+  "validation_metadata": {
+    "diagnostic_count": 0,
+    "diagnostics": [],
+    "is_valid": true,
+    "last_validated_at": "2026-09-30T21:26:54Z",
+    "validator_version": "1.0.0"
+  },
+  "optimization": {
+    "constraints": [],
+    "decision_variables": [],
+    "objective": {
+      "description": "Minimize average waiting time",
+      "primary_metric": "expected_wait_time_wq",
+      "secondary_metric": "total_servers",
+      "secondary_sense": "minimize",
+      "sense": "minimize"
+    },
+    "problem_class": "parameter",
+    "problem_id": "custom_optim",
+    "solver": {
+      "algorithm": "eca",
+      "base_seed": 12345,
+      "max_evaluations": 60,
+      "population_size": 10,
+      "replications_per_eval": 3,
+      "sim_horizon": 500.0,
+      "top_k": 5,
+      "use_crn": true,
+      "warmup_time": 50.0
+    },
+    "title": "Custom Simulation Optimization"
+  }
+}
