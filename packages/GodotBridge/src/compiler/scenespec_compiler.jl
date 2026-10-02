@@ -164,7 +164,8 @@ function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationRe
             cmode = Symbol(lowercase(strip(string(get(props, "conveyor_mode", "free_flow")))))
             pitch = max(0.01, Float64(get(props, "accumulation_pitch", get(props, "pitch", 0.5))))
             idx_iv = max(0.01, Float64(get(props, "index_interval", 1.0)))
-            ir.nodes[elem_id] = IRConveyorNode(elem_id, len, spd, transit_tau, cap, r_rule, r_weights, cmode, pitch, idx_iv)
+            gap = max(0.0, Float64(get(props, "accumulation_gap", 0.0)))
+            ir.nodes[elem_id] = IRConveyorNode(elem_id, len, spd, transit_tau, cap, r_rule, r_weights, cmode, pitch, idx_iv, gap)
 
         elseif kind == "sink" || endswith(kind, "/sink")
             rec_soj = Bool(get(props, "record_sojourn", true))
@@ -181,7 +182,7 @@ function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationRe
             transit = Float64(get(props, "transit_delay", 1.0))
             ir.nodes[elem_id] = IRHybridGateNode(elem_id, cap, transit)
 
-        elseif kind in ["scope_2d", "digital_meter", "histogram_sink", "state_space_3d", "xy_scatter"] || any(k -> endswith(kind, "/" * k), ["scope_2d", "digital_meter", "histogram_sink", "state_space_3d", "xy_scatter"])
+        elseif kind in ["chart_station", "scope_2d", "digital_meter", "histogram_sink", "state_space_3d", "xy_scatter"] || any(k -> endswith(kind, "/" * k), ["chart_station", "scope_2d", "digital_meter", "histogram_sink", "state_space_3d", "xy_scatter"])
             # Telemetry scope / instrumentation sink (client-side visualization)
             continue
         else
@@ -366,6 +367,13 @@ function compile_scenespec(raw_spec; time_unit::String="seconds")::CompilationRe
         SimDES.schedule!(fel, SimCore.EntityArrival(ent_id, zid, t_arr, seeded_prio, true), t_arr)
     end
 
+    # First breakdown of every machine with a failure model; later ones are chained by the repair handler.
+    for (zid, cfg) in des_artifacts.zone_configs
+        if cfg.failures isa SimDES.BernoulliFailure
+            t_fail = rand(init_rng, Exponential(1.0 / cfg.failures.α))
+            SimDES.schedule!(fel, SimCore.ResourceFailure(zid, 1.0f0, t_fail), t_fail)
+        end
+    end
     return CompilationResult(true, world, fel, des_artifacts.zone_configs, des_artifacts.source_map, all_diagnostics, ir)
 end
 

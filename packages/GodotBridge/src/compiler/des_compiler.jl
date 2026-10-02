@@ -448,7 +448,7 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
             cfg = ZoneConfig(
                 id = zid,
                 num_servers = max(1, srv_node.num_servers),
-                capacity = max(1, srv_node.num_servers * 5),
+                capacity = max(1, srv_node.num_servers),
                 service_dist = srv_dist,
                 arrival = arrival,
                 routing = routing,
@@ -484,7 +484,9 @@ function compile_des_graph(ir::ExecutionGraphIR)::DESCompilationArtifacts
                 conveyor_pitch = conv_node.conveyor_pitch,
                 conveyor_index_interval = conv_node.conveyor_index_interval,
                 path_length = max(0.1, conv_node.length),
-                nominal_speed = max(0.01, conv_node.speed)
+                nominal_speed = max(0.01, conv_node.speed),
+                is_conveyor = true,
+                conveyor_gap = conv_node.conveyor_gap
             )
             zone_configs[zid] = cfg
             push!(compiled_zones, zid)

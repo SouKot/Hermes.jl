@@ -89,6 +89,8 @@ include("runtime/zone_hooks.jl")
 include("runtime/simulation_instance.jl")
 include("runtime/runtime_manager.jl")
 include("runtime/telemetry_adapter.jl")
+include("lab/conveyor_lab_runner.jl")
+include("lab/conveyor_lab_scenarios.jl")
 include("validation/analytical_benchmarks.jl")
 using .AnalyticalBenchmarks
 include("reporting/run_report.jl")
@@ -96,6 +98,8 @@ using .Reporting
 include("server/live_simulation_server.jl")
 
 # Re-export key protocol items
+export LabScenario, LabCheck, conveyor_lab_scenarios, run_conveyor_lab, export_conveyor_lab_specs
+export run_lab_trace, lab_evaluate
 export Message, MessageEnvelope, MessagePayload
 export HelloPayload, SnapshotPayload, DeltaPayload, CommandPayload
 export SceneSpecPayload, AckPayload, ErrorPayload

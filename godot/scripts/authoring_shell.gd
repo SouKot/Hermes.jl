@@ -22,6 +22,7 @@ const SceneCodec := preload("res://scripts/scenespec_codec.gd")
 const PlotStudio := preload("res://scripts/authoring_plot_studio.gd")
 const AuthoringOutliner := preload("res://scripts/authoring_outliner.gd")
 const ExamplesCatalog := preload("res://scripts/authoring_examples_catalog.gd")
+const CONVEYOR_LAB_ID_BASE := 1000
 const OptimSetup := preload("res://scripts/authoring_optim_setup.gd")
 const OptimFeedback := preload("res://scripts/authoring_optim_feedback.gd")
 const OSWindowHost := preload("res://scripts/authoring_os_window_host.gd")
@@ -583,6 +584,16 @@ func _build_header() -> Control:
 	opt_sub.id_pressed.connect(_on_example_menu_id_pressed)
 	ex_popup.add_child(opt_sub)
 	ex_popup.add_submenu_item("Optimization Problems", "OptimizationExamplesMenu", 300)
+
+	var lab_items: Array = ExamplesCatalog.list_conveyor_lab()
+	if not lab_items.is_empty():
+		var lab_sub := PopupMenu.new()
+		lab_sub.name = "ConveyorLabExamplesMenu"
+		for i in range(lab_items.size()):
+			lab_sub.add_item(str(lab_items[i].get("title", lab_items[i].get("id", "?"))), CONVEYOR_LAB_ID_BASE + i)
+		lab_sub.id_pressed.connect(_on_example_menu_id_pressed)
+		ex_popup.add_child(lab_sub)
+		ex_popup.add_submenu_item("Conveyor Physics Lab (charts + checks)", "ConveyorLabExamplesMenu", 400)
 
 	row1.add_child(_examples_menu)
 
@@ -1723,6 +1734,11 @@ func _on_example_menu_id_pressed(id: int) -> void:
 	}
 	if ex_map.has(id):
 		load_example_model(ex_map[id])
+	elif id >= CONVEYOR_LAB_ID_BASE and id < CONVEYOR_LAB_ID_BASE + 100:
+		var lab_items: Array = ExamplesCatalog.list_conveyor_lab()
+		var idx: int = id - CONVEYOR_LAB_ID_BASE
+		if idx < lab_items.size():
+			load_example_model(str(lab_items[idx].get("id", "")))
 
 func load_example_model(example_id: String) -> bool:
 	if doc_store == null:

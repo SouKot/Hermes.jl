@@ -1,0 +1,636 @@
+{
+  "scene": {
+    "name": "Conveyor Lab 7: Machine Breakdown and Repair",
+    "id": "conv_lab_server_failure",
+    "description": "A machine with random breakdowns (MTBF 40 s, MTTR 15 s) sits behind an 8 m free-flow belt. While the machine is down the belt must stop, the lead product waits, and when it is repaired flow resumes with no product lost.",
+    "author": "Antigravity SimViz"
+  },
+  "connections": [
+    {
+      "target_port": "flow_in",
+      "enabled": true,
+      "id": "c_src",
+      "target_element": "belt",
+      "source_port": "flow_out",
+      "link_type": "flow",
+      "ordering": 1,
+      "source_element": "src"
+    },
+    {
+      "target_port": "flow_in",
+      "enabled": true,
+      "id": "c_belt",
+      "target_element": "mc",
+      "source_port": "flow_out",
+      "link_type": "flow",
+      "ordering": 1,
+      "source_element": "belt"
+    },
+    {
+      "target_port": "flow_in",
+      "enabled": true,
+      "id": "c_mc",
+      "target_element": "snk",
+      "source_port": "flow_out",
+      "link_type": "flow",
+      "ordering": 1,
+      "source_element": "mc"
+    }
+  ],
+  "elements": [
+    {
+      "name": "Source",
+      "input_ports": [],
+      "properties": {
+        "interarrival_time": {
+          "type": "deterministic",
+          "value": 1.5
+        }
+      },
+      "level_id": "level_0",
+      "library_version": "1.0.0",
+      "editor": {
+        "graph_position": [
+          0.0,
+          0.0
+        ],
+        "collapsed": false,
+        "notes": "",
+        "color": "#f39c12"
+      },
+      "library": "SimElements/DES",
+      "transform": {
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "kind": "source",
+      "id": "src",
+      "metric_ports": [],
+      "geometry": {
+        "shape": "box",
+        "dimensions": [
+          2.5,
+          2.0,
+          1.2
+        ]
+      },
+      "output_ports": [
+        {
+          "kind": "flow",
+          "name": "Flow Out",
+          "id": "flow_out",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        }
+      ]
+    },
+    {
+      "name": "Belt (free_flow)",
+      "input_ports": [
+        {
+          "kind": "flow",
+          "name": "Flow In",
+          "id": "flow_in",
+          "required": false,
+          "direction": "input",
+          "data_type": "entity",
+          "cardinality": "many"
+        },
+        {
+          "kind": "signal",
+          "name": "Speed Signal",
+          "id": "speed_signal",
+          "required": false,
+          "direction": "input",
+          "data_type": "entity",
+          "cardinality": "one"
+        }
+      ],
+      "properties": {
+        "index_interval": 1.0,
+        "length": 8.0,
+        "speed": 1.0,
+        "conveyor_mode": "free_flow",
+        "accumulation_pitch": 0.5,
+        "capacity": 12,
+        "accumulation_gap": 0.0
+      },
+      "level_id": "level_0",
+      "library_version": "1.0.0",
+      "editor": {
+        "graph_position": [
+          60.0,
+          0.0
+        ],
+        "collapsed": false,
+        "notes": "",
+        "color": "#2ecc71"
+      },
+      "library": "SimElements/DES",
+      "transform": {
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "position": [
+          3.0,
+          0.0,
+          0.0
+        ]
+      },
+      "kind": "conveyor",
+      "id": "belt",
+      "metric_ports": [
+        {
+          "kind": "metric",
+          "name": "Occupancy",
+          "id": "occupancy",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        },
+        {
+          "kind": "metric",
+          "name": "Speed",
+          "id": "speed",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        },
+        {
+          "kind": "metric",
+          "name": "In-Transit Count",
+          "id": "in_transit",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        }
+      ],
+      "geometry": {
+        "shape": "box",
+        "dimensions": [
+          8.0,
+          1.2,
+          0.8
+        ]
+      },
+      "output_ports": [
+        {
+          "kind": "flow",
+          "name": "Flow Out",
+          "id": "flow_out",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        }
+      ]
+    },
+    {
+      "name": "Machine",
+      "input_ports": [
+        {
+          "kind": "flow",
+          "name": "Flow In",
+          "id": "flow_in",
+          "required": false,
+          "direction": "input",
+          "data_type": "entity",
+          "cardinality": "many"
+        },
+        {
+          "kind": "signal",
+          "name": "Pause Signal",
+          "id": "pause_signal",
+          "required": false,
+          "direction": "input",
+          "data_type": "entity",
+          "cardinality": "one"
+        }
+      ],
+      "properties": {
+        "service_time": {
+          "type": "deterministic",
+          "value": 3.0
+        },
+        "servers": 1,
+        "failure_model": "mtbf_mttr",
+        "mttr": 15.0,
+        "mtbf": 40.0
+      },
+      "level_id": "level_0",
+      "library_version": "1.0.0",
+      "editor": {
+        "graph_position": [
+          240.0,
+          0.0
+        ],
+        "collapsed": false,
+        "notes": "",
+        "color": "#e67e22"
+      },
+      "library": "SimElements/DES",
+      "transform": {
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "position": [
+          12.0,
+          0.0,
+          0.0
+        ]
+      },
+      "kind": "server",
+      "id": "mc",
+      "metric_ports": [
+        {
+          "kind": "metric",
+          "name": "Utilization",
+          "id": "utilization",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        },
+        {
+          "kind": "metric",
+          "name": "Busy Channels",
+          "id": "busy",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        },
+        {
+          "kind": "metric",
+          "name": "Throughput",
+          "id": "throughput",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        }
+      ],
+      "geometry": {
+        "shape": "box",
+        "dimensions": [
+          3.0,
+          2.2,
+          1.8
+        ]
+      },
+      "output_ports": [
+        {
+          "kind": "flow",
+          "name": "Flow Out",
+          "id": "flow_out",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        }
+      ]
+    },
+    {
+      "name": "Sink",
+      "input_ports": [
+        {
+          "kind": "flow",
+          "name": "Flow In",
+          "id": "flow_in",
+          "required": false,
+          "direction": "input",
+          "data_type": "entity",
+          "cardinality": "many"
+        }
+      ],
+      "properties": {},
+      "level_id": "level_0",
+      "library_version": "1.0.0",
+      "editor": {
+        "graph_position": [
+          330.0,
+          0.0
+        ],
+        "collapsed": false,
+        "notes": "",
+        "color": "#e74c3c"
+      },
+      "library": "SimElements/DES",
+      "transform": {
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "position": [
+          16.5,
+          0.0,
+          0.0
+        ]
+      },
+      "kind": "sink",
+      "id": "snk",
+      "metric_ports": [],
+      "geometry": {
+        "shape": "box",
+        "dimensions": [
+          2.5,
+          2.0,
+          1.2
+        ]
+      },
+      "output_ports": []
+    },
+    {
+      "name": "Machine failure",
+      "input_ports": [
+        {
+          "kind": "signal",
+          "name": "Port 1 (Subplot 1)",
+          "id": "P1",
+          "required": false,
+          "direction": "input",
+          "data_type": "entity",
+          "cardinality": "many"
+        },
+        {
+          "kind": "signal",
+          "name": "Port 2 (Subplot 2)",
+          "id": "P2",
+          "required": false,
+          "direction": "input",
+          "data_type": "entity",
+          "cardinality": "many"
+        },
+        {
+          "kind": "signal",
+          "name": "Port 3 (Subplot 3)",
+          "id": "P3",
+          "required": false,
+          "direction": "input",
+          "data_type": "entity",
+          "cardinality": "many"
+        },
+        {
+          "kind": "signal",
+          "name": "Port 4 (Subplot 4)",
+          "id": "P4",
+          "required": false,
+          "direction": "input",
+          "data_type": "entity",
+          "cardinality": "many"
+        }
+      ],
+      "properties": {
+        "subplots": [
+          {
+            "y_max": 100.0,
+            "autoscale": true,
+            "port_id": "P1",
+            "mode": "overlay",
+            "y_min": 0.0,
+            "y_label": "count",
+            "type": "time_series",
+            "title": "Machine channels busy and total served",
+            "id": "sp_1",
+            "signals": [
+              {
+                "y_metric": "busy_servers",
+                "x_metric": "__time__",
+                "label": "busy",
+                "entity_id": "mc"
+              },
+              {
+                "y_metric": "num_servers",
+                "x_metric": "__time__",
+                "label": "servers up",
+                "entity_id": "mc"
+              }
+            ],
+            "grid": {
+              "col": 0,
+              "row_span": 1,
+              "col_span": 1,
+              "row": 0
+            }
+          },
+          {
+            "y_max": 100.0,
+            "autoscale": true,
+            "port_id": "P2",
+            "mode": "overlay",
+            "y_min": 0.0,
+            "y_label": "state",
+            "type": "time_series",
+            "title": "Belt: lead product held at outlet (0/1)",
+            "id": "sp_2",
+            "signals": [
+              {
+                "y_metric": "blocked_at_outlet",
+                "x_metric": "__time__",
+                "label": "outlet blocked",
+                "entity_id": "belt"
+              }
+            ],
+            "grid": {
+              "col": 1,
+              "row_span": 1,
+              "col_span": 1,
+              "row": 0
+            }
+          },
+          {
+            "y_max": 100.0,
+            "autoscale": true,
+            "port_id": "P3",
+            "mode": "overlay",
+            "y_min": 0.0,
+            "y_label": "count",
+            "type": "time_series",
+            "title": "Products on belt and waiting at source",
+            "id": "sp_3",
+            "signals": [
+              {
+                "y_metric": "in_transit",
+                "x_metric": "__time__",
+                "label": "on belt",
+                "entity_id": "belt"
+              },
+              {
+                "y_metric": "stalled_products",
+                "x_metric": "__time__",
+                "label": "source stalled",
+                "entity_id": "src"
+              }
+            ],
+            "grid": {
+              "col": 0,
+              "row_span": 1,
+              "col_span": 1,
+              "row": 1
+            }
+          },
+          {
+            "y_max": 100.0,
+            "autoscale": true,
+            "port_id": "P4",
+            "mode": "overlay",
+            "y_min": 0.0,
+            "y_label": "products",
+            "type": "time_series",
+            "title": "Products delivered",
+            "id": "sp_4",
+            "signals": [
+              {
+                "y_metric": "total_served",
+                "x_metric": "__time__",
+                "label": "served",
+                "entity_id": "mc"
+              }
+            ],
+            "grid": {
+              "col": 1,
+              "row_span": 1,
+              "col_span": 1,
+              "row": 1
+            }
+          }
+        ],
+        "grid_columns": 2,
+        "title": "Machine failure",
+        "grid_rows": 2,
+        "time_window": 120.0
+      },
+      "level_id": "level_0",
+      "library_version": "1.0.0",
+      "editor": {
+        "graph_position": [
+          280.0,
+          200.0
+        ],
+        "collapsed": false,
+        "notes": "",
+        "color": "#1f6feb"
+      },
+      "library": "SimElements/DES",
+      "transform": {
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "position": [
+          14.0,
+          10.0,
+          0.8
+        ]
+      },
+      "kind": "chart_station",
+      "id": "chart_lab",
+      "metric_ports": [],
+      "geometry": {
+        "shape": "box",
+        "dimensions": [
+          10.0,
+          6.0,
+          1.2
+        ]
+      },
+      "output_ports": []
+    }
+  ],
+  "validation_metadata": {
+    "is_valid": true,
+    "diagnostic_count": 0,
+    "validator_version": "1.0.0",
+    "diagnostics": []
+  },
+  "simulation": {
+    "time_unit": "seconds",
+    "max_duration": 500.0,
+    "warmup_time": 0.0,
+    "mode": "des_only"
+  },
+  "subgraphs": [],
+  "abm_config": {
+    "enabled": false,
+    "parameters": {},
+    "pedestrian_profiles": [],
+    "model_name": "SFM"
+  },
+  "spatial": {
+    "levels": [
+      {
+        "visible": true,
+        "default_height": 4.5,
+        "name": "Ground Floor",
+        "id": "level_0",
+        "elevation": 0.0
+      }
+    ],
+    "bounds": [
+      -50.0,
+      -50.0,
+      0.0,
+      50.0,
+      50.0,
+      10.0
+    ]
+  },
+  "overlays": [],
+  "product": {
+    "height": 0.45,
+    "name": "Entity",
+    "depth": 0.45,
+    "width": 0.45,
+    "mesh_type": "box",
+    "color": [
+      0.25,
+      0.75,
+      0.95
+    ]
+  },
+  "spec_version": "1.0.0"
+}

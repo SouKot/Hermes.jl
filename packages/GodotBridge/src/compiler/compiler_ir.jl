@@ -83,11 +83,14 @@ struct IRConveyorNode <: AbstractIRNode
     conveyor_mode::Symbol
     conveyor_pitch::Float64
     conveyor_index_interval::Float64
+    conveyor_gap::Float64
 end
 IRConveyorNode(id::String, length::Float64, speed::Float64, transit_delay::Float64, capacity::Int) =
-    IRConveyorNode(id, length, speed, transit_delay, capacity, :fixed, Dict{String, Float64}(), :free_flow, 0.5, 1.0)
+    IRConveyorNode(id, length, speed, transit_delay, capacity, :fixed, Dict{String, Float64}(), :free_flow, 0.5, 1.0, 0.0)
 IRConveyorNode(id::String, length::Float64, speed::Float64, transit_delay::Float64, capacity::Int, routing_rule::Symbol, routing_weights::Dict{String, Float64}) =
-    IRConveyorNode(id, length, speed, transit_delay, capacity, routing_rule, routing_weights, :free_flow, 0.5, 1.0)
+    IRConveyorNode(id, length, speed, transit_delay, capacity, routing_rule, routing_weights, :free_flow, 0.5, 1.0, 0.0)
+IRConveyorNode(id::String, length::Float64, speed::Float64, transit_delay::Float64, capacity::Int, routing_rule::Symbol, routing_weights::Dict{String, Float64}, conveyor_mode::Symbol, conveyor_pitch::Float64, conveyor_index_interval::Float64) =
+    IRConveyorNode(id, length, speed, transit_delay, capacity, routing_rule, routing_weights, conveyor_mode, conveyor_pitch, conveyor_index_interval, 0.0)
 
 """
     IRSinkNode <: AbstractIRNode

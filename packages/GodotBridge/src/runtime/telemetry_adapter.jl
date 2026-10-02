@@ -70,6 +70,32 @@ function _compute_queue_slot_position(ir::ExecutionGraphIR, world, zid, elem_id:
     return (pos_x, pos_y, pos_z)
 end
 
+# Per-belt physics read-outs: ranked product positions, spacing and whether the belt is held at the outlet.
+function _add_conveyor_physics_metrics!(metrics::Dict{String, Any}, world, zid::Int, belt_length::Float64, t::Float64)
+    dists = Float64[]
+    moving = 0
+    held = false
+    for (_, k) in world.entity_kinematics
+        k.zone_id == zid || continue
+        d = SimCore.kinematics_distance(k, t)
+        push!(dists, d)
+        k.current_speed > 0.0 && (moving += 1)
+        held |= (k.exit_event_id == 0 && d >= k.path_length - 1e-6)
+    end
+    sort!(dists; rev=true)
+    n = length(dists)
+    metrics["moving_count"] = moving
+    metrics["stopped_count"] = n - moving
+    metrics["min_spacing_m"] = n >= 2 ? minimum(dists[i] - dists[i + 1] for i in 1:n-1) : belt_length
+    for r in 1:4
+        metrics["pos_$r"] = r <= n ? round(dists[r], digits=3) : 0.0
+    end
+    metrics["blocked_at_outlet"] = held ? 1 : 0
+    metrics["feeder_wait"] = length(SimCore.get_zone_attribute(world, zid, "_feeder_wait", []))
+    metrics["state"] = n == 0 ? "EMPTY" : held ? "BLOCKED" : moving > 0 ? "RUNNING" : "STOPPED"
+    return nothing
+end
+
 """
     build_snapshot(instance::SimulationInstance; scene_id::String="active_scene", step_count::UInt64=UInt64(0)) -> DirectSnapshotPayload
 
@@ -147,10 +173,12 @@ function build_snapshot(
                         util_pct = clamp(round((busy_t / uptime) * 100.0, digits=1), 0.0, 100.0)
                         metrics["utilization_pct"] = util_pct
                         metrics["utilization"] = util_pct
+                        metrics["idle_pct"] = round(100.0 - util_pct, digits=1)
                         metrics["instant_util_pct"] = n_srv > 0 ? round((Float64(zstate.busy_servers) / Float64(n_srv)) * 100.0, digits=1) : 0.0
                         metrics["total_served"] = zs !== nothing ? zs.total_departures : 0
                         metrics["service_mean"] = (zs !== nothing && zs.sojourn_time_samples > 0) ? round(zs.sojourn_time_sum / zs.sojourn_time_samples, digits=2) : 0.0
-                        metrics["badge"] = "[ $(Int(round(util_pct)))% $(srv_state) ]"
+                        metrics["badge"] = "[ util $(Int(round(util_pct)))% | $(srv_state) ]"
+                        metrics["blocked_after_service"] = length(SimCore.get_zone_attribute(world, zid, "_parked", UInt64[]))
                         if zs !== nothing && !isempty(zs.recent_service_samples)
                             metrics["recent_service_samples"] = copy(zs.recent_service_samples)
                             empty!(zs.recent_service_samples)
@@ -166,7 +194,8 @@ function build_snapshot(
                         metrics["length"] = conv_len
                         metrics["transit_delay"] = node isa IRConveyorNode ? node.transit_delay : (conv_len / max(0.01, conv_spd))
                         metrics["total_transited"] = zs !== nothing ? zs.total_departures : 0
-                        metrics["badge"] = "[ $(zstate.busy_servers) transit ]"
+                        _add_conveyor_physics_metrics!(metrics, world, zid, conv_len, curr_t)
+                        metrics["badge"] = "[ $(zstate.busy_servers) $(metrics["state"]) ]"
                     elseif map_rec.role_in_zone == :sink_drain
                         occ = UInt32(0)
                         dep_count = world.stats.total_departures
@@ -181,6 +210,11 @@ function build_snapshot(
                             rate_sec = curr_t > 0.0 ? round(Float64(arr_count) / curr_t, digits=2) : 0.0
                             metrics["total_arrivals"] = arr_count
                             metrics["rate_per_sec"] = rate_sec
+                            stalled = 0
+                            for (dst, _, _, _) in get(ir.downstream_conns, elem_id, Tuple{String, String, String, String}[])
+                                stalled += length(SimCore.get_zone_attribute(world, get(ir.element_to_zone, dst, 0), "_feeder_wait", []))
+                            end
+                            metrics["stalled_products"] = stalled
                             metrics["badge"] = "[ $(arr_count) in ]"
                         else
                             occ = UInt32(zstate.queue_length + zstate.busy_servers)
@@ -253,6 +287,13 @@ function build_snapshot(
                     transit_tau = (conv_node isa IRConveyorNode) ? conv_node.transit_delay : 2.0
                     elapsed = agent.service_start_time < Inf ? max(0.0, curr_t - agent.service_start_time) : 0.0
                     prog_val = clamp(elapsed / max(0.001, transit_tau), 0.0, 1.0)
+                    # Real belt state: products that are held or stopped must not be drawn at the outlet.
+                    kin = get(world.entity_kinematics, ent_id, nothing)
+                    run_scale = 1.0
+                    if kin !== nothing && kin.zone_id == zid
+                        prog_val = SimCore.kinematics_progress(kin, curr_t)
+                        run_scale = kin.nominal_speed > 0.0 ? kin.current_speed / kin.nominal_speed : 0.0
+                    end
 
                     if haskey(ir.conveyor_curves, elem_id)
                         baked = ir.conveyor_curves[elem_id]
@@ -261,6 +302,7 @@ function build_snapshot(
                         pos_y = pt[2]
                         pos_z = pt[3]
                         spd = (conv_node isa IRConveyorNode) ? conv_node.speed : 1.5
+                        spd *= run_scale
                         vel_x = tan_vec[1] * spd
                         vel_y = tan_vec[2] * spd
                         vel_z = tan_vec[3] * spd
@@ -312,8 +354,8 @@ function build_snapshot(
                         pos_x = start_x + prog_val * (end_x - start_x)
                         pos_y = start_y + prog_val * (end_y - start_y)
                         pos_z = base_pos[3]
-                        vel_x = (end_x - start_x) / max(0.001, transit_tau)
-                        vel_y = (end_y - start_y) / max(0.001, transit_tau)
+                        vel_x = (end_x - start_x) / max(0.001, transit_tau) * run_scale
+                        vel_y = (end_y - start_y) / max(0.001, transit_tau) * run_scale
                     end
                 elseif first_rec.role_in_zone == :queue_buffer
                     pos_x, pos_y, pos_z = _compute_queue_slot_position(ir, world, zid, elem_id, ent_id)

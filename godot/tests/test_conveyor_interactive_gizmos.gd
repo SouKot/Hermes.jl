@@ -33,6 +33,13 @@ func _find_labeled_spin(root_node: Node, label: String) -> SpinBox:
 				return spin
 	return null
 
+func _latest_spline_conversion_dialog(root_node: Node) -> ConfirmationDialog:
+	var dialogs := root_node.find_children("*", "ConfirmationDialog", true, false)
+	for index in range(dialogs.size() - 1, -1, -1):
+		if dialogs[index].title == "Convert to Editable Spline?":
+			return dialogs[index]
+	return null
+
 func _init() -> void:
 	print("============================================================")
 	print("  SimViz General Conveyor & Interactive Gizmo Test Suite")
@@ -78,6 +85,43 @@ func _init() -> void:
 	store.add_element(conv_anchored)
 	var anchored_curve := ConveyorCurve3D.sample_world_curve(conv_anchored, store)
 	_assert((anchored_curve["outlet_pos"] as Vector3).distance_to(Vector3(70.0, 0.0, 0.8)) < 0.01, "Explicit S-curve outlet remains anchored")
+	var conv_default_elbow := cat.create_element_instance("conveyor", "conv_default_elbow", Vector2(30.0, 20.0))
+	store.add_element(conv_default_elbow)
+	insp.set_conveyor_shape_preset("conv_default_elbow", "l_bend")
+	var elbow_initial := ConveyorCurve3D.sample_world_curve(conv_default_elbow, store, 64)
+	var elbow_after_cached_pose := ConveyorCurve3D.sample_world_curve(conv_default_elbow, store, 64)
+	var elbow_points: PackedVector3Array = elbow_after_cached_pose["points"]
+	var elbow_min_y := elbow_points[0].y
+	var elbow_max_y := elbow_points[0].y
+	for point in elbow_points:
+		elbow_min_y = minf(elbow_min_y, point.y)
+		elbow_max_y = maxf(elbow_max_y, point.y)
+	_assert(elbow_max_y - elbow_min_y > 4.0 and elbow_after_cached_pose["total_length"] > elbow_initial["total_length"] - 0.1, "Fresh 90-degree L-bend stays bent after its derived corner is cached")
+	_assert(not Canvas2D._is_valid_belt_triangle(Vector2.ZERO, Vector2.ZERO, Vector2.RIGHT), "Zero-area belt triangles are skipped before rendering")
+	_assert(Canvas2D._is_valid_belt_triangle(Vector2.ZERO, Vector2.RIGHT, Vector2.UP), "Finite belt triangles remain drawable")
+	var elbow_before_conversion := ConveyorCurve3D.sample_world_curve(conv_default_elbow, store, 64)
+	insp._request_custom_spline_conversion(conv_default_elbow, func(): pass)
+	var cancel_conversion := _latest_spline_conversion_dialog(insp)
+	_assert(cancel_conversion != null, "Preset-to-spline change asks whether to keep the conversion")
+	if cancel_conversion != null:
+		cancel_conversion.canceled.emit()
+	_assert(str(conv_default_elbow.geometry["shape_preset"]) == "l_bend", "Cancel restores the previous preset")
+	insp._request_custom_spline_conversion(conv_default_elbow)
+	var accept_conversion := _latest_spline_conversion_dialog(insp)
+	if accept_conversion != null:
+		accept_conversion.confirmed.emit()
+	_assert(str(conv_default_elbow.geometry["shape_preset"]) == "custom_spline", "Confirm keeps the control-point spline conversion")
+	var elbow_after_conversion := ConveyorCurve3D.sample_world_curve(conv_default_elbow, store, 64)
+	var conversion_deviation := 0.0
+	for index in range((elbow_before_conversion["points"] as PackedVector3Array).size()):
+		conversion_deviation = maxf(conversion_deviation, elbow_before_conversion["points"][index].distance_to(elbow_after_conversion["points"][index]))
+	_assert(conversion_deviation < 0.01, "Keeping conversion preserves the user's edited conveyor shape")
+	insp.refresh()
+	var custom_labels := insp.find_children("*", "Label", true, false)
+	var shows_spline_controls := false
+	for label in custom_labels:
+		shows_spline_controls = shows_spline_controls or str(label.text).begins_with("Spline Vertices:")
+	_assert(shows_spline_controls, "Confirmed conversion immediately refreshes the inspector to spline controls")
 
 	# ─────────────────────────────────────────────────────────────────────────
 	# Test 2: Asymmetric L-Bend with Unequal Legs & Arbitrary Angles (Issue 3)
@@ -125,7 +169,8 @@ func _init() -> void:
 	store.add_connection(conn_locked)
 	store.select("conv_locked", "element")
 	insp.refresh()
-	var locked_preset: OptionButton = insp.find_child("ConveyorPresetDropdown", true, false)
+	var locked_presets := insp.find_children("ConveyorPresetDropdown", "OptionButton", true, false)
+	var locked_preset: OptionButton = locked_presets.back() if not locked_presets.is_empty() else null
 	_assert(locked_preset != null and locked_preset.disabled, "Docked inspector disables preset changes on connected conveyors")
 	var locked_before := ConveyorCurve3D.sample_world_curve(conv_locked, store)
 	var accepted := ConveyorCurve3D.update_shape_parameter(conv_locked, "bend_angle_deg", 45.0, store)
@@ -156,6 +201,34 @@ func _init() -> void:
 	ConveyorCurve3D.update_shape_parameter(conv_serp, "pass_length", 12.0, store)
 	var serp_long := ConveyorCurve3D.sample_world_curve(conv_serp, store, 64)
 	_assert(float(serp_long["total_length"]) > float(serp_short["total_length"]) + 10.0, "Serpentine pass length changes the generated path")
+	ConveyorCurve3D.update_shape_parameter(conv_serp, "infeed_length", 2.0, store)
+	ConveyorCurve3D.update_shape_parameter(conv_serp, "outfeed_length", 3.0, store)
+	var serp_with_leads := ConveyorCurve3D.sample_world_curve(conv_serp, store, 48)
+	_assert(serp_with_leads["control_points"].size() == 10, "Terminal lead spans preserve the serpentine bend count")
+	var serp_endpoint: Vector3 = serp_with_leads["outlet_pos"]
+	_assert(Vector2(serp_endpoint.x, serp_endpoint.y).distance_to(Vector2(17, 4)) < 0.01, "Infeed and outfeed lead lengths independently extend the conveyor ends")
+	conv_serp.geometry["shape_params"]["infeed_length"] = 0.0
+	conv_serp.geometry["shape_params"]["outfeed_length"] = 0.0
+	canvas.rebuild_blocks()
+	canvas.enter_conveyor_geometry_mode("conv_serp")
+	var serp_handles := canvas._serpentine_end_geometry(conv_serp)
+	var guard_drag := InputEventMouseButton.new()
+	guard_drag.button_index = MOUSE_BUTTON_LEFT
+	guard_drag.pressed = true
+	guard_drag.position = canvas.pan_offset + (serp_handles["in_join"] as Vector2) * 20.0
+	canvas._gui_input(guard_drag)
+	var beyond_guard := InputEventMouseMotion.new()
+	beyond_guard.position = canvas.pan_offset + ((serp_handles["inlet"] as Vector2) + (serp_handles["in_direction"] as Vector2) * (float(serp_handles["max_length"]) + 2.0)) * 20.0
+	canvas._gui_input(beyond_guard)
+	_assert(absf(float(conv_serp.geometry["shape_params"]["infeed_length"]) - float(serp_handles["max_length"])) < 0.1, "Dragging beyond the infeed guard clamps the end-run length")
+	_assert(canvas._conveyor_geometry_warning.contains("guard rail"), "Dragging beyond an end-run guard shows a warning")
+	var release_guard := InputEventMouseButton.new()
+	release_guard.button_index = MOUSE_BUTTON_LEFT
+	canvas._gui_input(release_guard)
+	canvas.exit_conveyor_geometry_mode()
+	conv_serp.geometry["shape_params"]["infeed_length"] = 0.0
+	conv_serp.geometry["shape_params"]["outfeed_length"] = 0.0
+	ConveyorCurve3D.sample_world_curve(conv_serp, store)
 	store.select("conv_serp", "element")
 	insp.refresh()
 	var dock_bends := _find_labeled_spin(insp, "Bends")
@@ -198,6 +271,36 @@ func _init() -> void:
 		if remove_key_button != null:
 			remove_key_button.pressed.emit()
 			_assert(conv_serp.geometry["width_profile"].is_empty(), "Removing local key restores uniform width")
+	var floating_elbow := cat.create_element_instance("conveyor", "floating_elbow", Vector2(75, 30))
+	floating_elbow.geometry["shape_preset"] = "l_bend"
+	store.add_element(floating_elbow)
+	var floating_elbow_before := ConveyorCurve3D.sample_world_curve(floating_elbow, store, 64)
+	floating.open_for_element("floating_elbow")
+	floating._switch_tab(1)
+	var floating_dropdowns := floating.find_children("FloatingConveyorPresetDropdown", "OptionButton", true, false)
+	var floating_dropdown: OptionButton = floating_dropdowns.back() if not floating_dropdowns.is_empty() else null
+	_assert(floating_dropdown != null, "Floating preset selector is available for conversion")
+	if floating_dropdown != null:
+		var custom_idx: int = ConveyorCurve3D.PRESET_IDS.find("custom_spline")
+		floating_dropdown.select(custom_idx)
+		floating_dropdown.item_selected.emit(custom_idx)
+		var cancel_dialog := _latest_spline_conversion_dialog(floating)
+		_assert(cancel_dialog != null, "Floating preset conversion asks whether to keep the spline")
+		if cancel_dialog != null:
+			cancel_dialog.canceled.emit()
+		_assert(str(floating_elbow.geometry["shape_preset"]) == "l_bend", "Floating cancel restores the previous preset")
+		floating_dropdown.select(custom_idx)
+		floating_dropdown.item_selected.emit(custom_idx)
+		var keep_dialog := _latest_spline_conversion_dialog(floating)
+		if keep_dialog != null:
+			keep_dialog.confirmed.emit()
+		floating.refresh()
+		_assert(str(floating_elbow.geometry["shape_preset"]) == "custom_spline", "Floating confirmation keeps spline conversion")
+		var floating_elbow_after := ConveyorCurve3D.sample_world_curve(floating_elbow, store, 64)
+		var floating_conversion_error := 0.0
+		for index in range((floating_elbow_before["points"] as PackedVector3Array).size()):
+			floating_conversion_error = maxf(floating_conversion_error, floating_elbow_before["points"][index].distance_to(floating_elbow_after["points"][index]))
+		_assert(floating_conversion_error < 0.01, "Floating confirmation preserves the conveyor shape")
 	floating.free()
 
 	var conv_helix := cat.create_element_instance("conveyor", "conv_helix", Vector2(0.0, 0.0))
@@ -284,6 +387,10 @@ func _init() -> void:
 
 	# Test gizmo hit testing
 	store.select("conv_spl", "element")
+	var first_point_pos: Array = cpts_arr[0]["pos"]
+	var normal_view_point := canvas.pan_offset + Vector2(float(first_point_pos[0]), float(first_point_pos[1])) * 20.0
+	_assert(canvas._hit_test_conveyor_gizmo(normal_view_point).is_empty(), "Spline edit handles are hidden in normal view")
+	canvas.enter_conveyor_geometry_mode("conv_spl")
 	var first_cp: Array = cpts_arr[0]["pos"]
 	var v0_canvas: Vector2 = canvas.pan_offset + Vector2(float(first_cp[0]), float(first_cp[1])) * (20.0 * canvas.zoom_level)
 	var hit_g := canvas._hit_test_conveyor_gizmo(v0_canvas)
@@ -344,7 +451,22 @@ func _init() -> void:
 	turn_mouse.pressed = true
 	turn_mouse.position = canvas.pan_offset + Vector2(turn_end.x, turn_end.y) * 20.0
 	canvas._gui_input(turn_mouse)
-	_assert(str(conv_turn.geometry.get("shape_preset", "")) == "custom_spline", "Dragging a U-turn end promotes the preset to freeform")
+	var endpoint_conversion := _latest_spline_conversion_dialog(canvas)
+	_assert(endpoint_conversion != null and str(conv_turn.geometry.get("shape_preset", "")) == "u_turn", "Unsupported U-turn endpoint edit warns before changing the preset")
+	if endpoint_conversion != null:
+		endpoint_conversion.canceled.emit()
+	_assert(str(conv_turn.geometry.get("shape_preset", "")) == "u_turn", "Cancel keeps the U-turn preset unchanged")
+	canvas._gui_input(turn_mouse)
+	endpoint_conversion = _latest_spline_conversion_dialog(canvas)
+	var endpoint_before_conversion := ConveyorCurve3D.sample_world_curve(conv_turn, store, 36)
+	if endpoint_conversion != null:
+		endpoint_conversion.confirmed.emit()
+	_assert(str(conv_turn.geometry.get("shape_preset", "")) == "custom_spline", "Confirm converts the U-turn to editable control points")
+	var endpoint_after_conversion := ConveyorCurve3D.sample_world_curve(conv_turn, store, 36)
+	_assert((endpoint_before_conversion["outlet_pos"] as Vector3).distance_to(endpoint_after_conversion["outlet_pos"]) < 0.01, "Endpoint conversion preserves the current outlet before dragging")
+	canvas.rebuild_blocks()
+	canvas.enter_conveyor_geometry_mode("conv_turn")
+	canvas._gui_input(turn_mouse)
 	var turn_drag := InputEventMouseMotion.new()
 	turn_drag.position = turn_mouse.position + Vector2(40, 0)
 	canvas._gui_input(turn_drag)
@@ -369,6 +491,9 @@ func _init() -> void:
 	# ─────────────────────────────────────────────────────────────────────────
 	print("\n[5] Testing Conveyor Width Rail Handles & Live Dragging...")
 	store.select("conv_s", "element")
+	var normal_view_mid := canvas.pan_offset + canvas._conveyor_pivot(conv_s) * 20.0
+	_assert(canvas._hit_test_conveyor_gizmo(normal_view_mid).is_empty(), "Curved geometry handles are hidden in normal view")
+	canvas.enter_conveyor_geometry_mode("conv_s")
 	var s_poly := ConveyorCurve3D.sample_2d_polyline(conv_s, store, 36)
 	var mid_pt := s_poly[s_poly.size() / 2]
 	var w_init: float = float(conv_s.geometry["dimensions"][1])

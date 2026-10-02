@@ -405,7 +405,7 @@ func _render_single_element(elem_id: String) -> void:
 		_container.add_child(HSeparator.new())
 
 
-	if elem.kind in ["queue", "server"]:
+	if elem.kind in ["queue", "server", "conveyor"]:
 		if _rule_panel == null:
 			_rule_panel = RulePanel.new()
 			_rule_panel.rule_changed.connect(_on_rule_changed)
@@ -1615,6 +1615,32 @@ func set_conveyor_shape_preset(elem_id: String, preset_id: String) -> void:
 	doc_store.document_modified.emit()
 	call_deferred("refresh")
 
+func _request_custom_spline_conversion(elem: SceneTypes.SceneElement, on_cancel: Callable = Callable()) -> void:
+	if elem == null or elem.kind != "conveyor" or str(elem.geometry.get("shape_preset", "")) == "custom_spline":
+		return
+	var confirm := ConfirmationDialog.new()
+	confirm.title = "Convert to Editable Spline?"
+	confirm.dialog_text = "This conveyor will become a control-point spline. Keep the current shape as editable control points?"
+	confirm.ok_button_text = "Keep Editable Spline"
+	confirm.cancel_button_text = "Restore Previous Shape"
+	add_child(confirm)
+	confirm.confirmed.connect(func():
+		doc_store._record_undo()
+		ConveyorCurve3D.convert_element_to_custom_spline(elem, doc_store)
+		doc_store.is_dirty = true
+		doc_store.validate()
+		doc_store.document_modified.emit()
+		confirm.queue_free()
+		call_deferred("refresh")
+	)
+	confirm.canceled.connect(func():
+		confirm.queue_free()
+		if on_cancel.is_valid():
+			on_cancel.call()
+	)
+	if is_inside_tree():
+		confirm.popup_centered()
+
 func _build_conveyor_shape_section(elem: SceneTypes.SceneElement) -> void:
 	var sec_lbl := Label.new()
 	sec_lbl.text = "CONVEYOR SHAPE & CURVE GEOMETRY"
@@ -1663,6 +1689,9 @@ func _build_conveyor_shape_section(elem: SceneTypes.SceneElement) -> void:
 	opt_preset.item_selected.connect(func(idx: int):
 		if idx >= 0 and idx < ConveyorCurve3D.PRESET_IDS.size():
 			var target_preset: String = ConveyorCurve3D.PRESET_IDS[idx]
+			if target_preset == "custom_spline" and cur_preset != "custom_spline":
+				_request_custom_spline_conversion(elem, func(): opt_preset.select(sel_idx))
+				return
 			if cur_preset == "custom_spline" and target_preset != cur_preset:
 				var confirm := ConfirmationDialog.new()
 				confirm.title = "Reset Conveyor Geometry"
@@ -1960,6 +1989,17 @@ func _build_conveyor_shape_section(elem: SceneTypes.SceneElement) -> void:
 				doc_store.is_dirty = true
 				doc_store.document_modified.emit()
 			)
+			var end_run_limit: float = maxf(3.0, float(sp.get("pass_length", cur_l)))
+			_create_dock_mini_spin(param_row, "Infeed Lead (m)", float(sp.get("infeed_length", 0.0)), 0.0, end_run_limit, 0.1, func(v):
+				ConveyorCurve3D.update_shape_parameter(elem, "infeed_length", v, doc_store)
+				doc_store.is_dirty = true
+				doc_store.document_modified.emit()
+			)
+			_create_dock_mini_spin(param_row, "Outfeed Lead (m)", float(sp.get("outfeed_length", 0.0)), 0.0, end_run_limit, 0.1, func(v):
+				ConveyorCurve3D.update_shape_parameter(elem, "outfeed_length", v, doc_store)
+				doc_store.is_dirty = true
+				doc_store.document_modified.emit()
+			)
 		elif cur_preset == "spiral_helix":
 			_create_dock_mini_spin(param_row, "Turns", float(sp.get("helix_turns", 1.5)), 0.25, 6.0, 0.25, func(v):
 				ConveyorCurve3D.update_shape_parameter(elem, "helix_turns", v, doc_store)
@@ -2004,12 +2044,7 @@ func _build_conveyor_shape_section(elem: SceneTypes.SceneElement) -> void:
 		btn_convert.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		btn_convert.add_theme_font_size_override("font_size", 10)
 		btn_convert.pressed.connect(func():
-			doc_store._record_undo()
-			ConveyorCurve3D.convert_element_to_custom_spline(elem, doc_store)
-			doc_store.is_dirty = true
-			doc_store.validate()
-			doc_store.document_modified.emit()
-			call_deferred("refresh")
+			_request_custom_spline_conversion(elem)
 		)
 		_container.add_child(btn_convert)
 

@@ -621,6 +621,38 @@ func _conveyor_pivot(elem: SceneTypes.SceneElement) -> Vector2:
 	var midpoint: Vector3 = baked.get("midpoint", elem.transform.position)
 	return Vector2(midpoint.x, midpoint.y)
 
+func _request_geometry_edit_spline_conversion(elem_id: String) -> void:
+	if doc_store == null:
+		return
+	var elem := doc_store.get_element(elem_id)
+	if elem == null or elem.kind != "conveyor" or str(elem.geometry.get("shape_preset", "")) == "custom_spline":
+		return
+	var confirm := ConfirmationDialog.new()
+	confirm.title = "Convert to Editable Spline?"
+	confirm.dialog_text = "This endpoint edit is not available for the current preset. Convert the current shape to control points? The belt shape will be preserved."
+	confirm.ok_button_text = "Keep Shape as Spline"
+	confirm.cancel_button_text = "Restore Previous Shape"
+	add_child(confirm)
+	confirm.confirmed.connect(func():
+		var current := doc_store.get_element(elem_id)
+		if current != null:
+			doc_store._record_undo()
+			ConveyorCurve3D.convert_element_to_custom_spline(current, doc_store)
+			doc_store.is_dirty = true
+			doc_store.validate()
+			doc_store.document_modified.emit()
+			_conveyor_geometry_warning = "Shape preserved as spline; drag the endpoint again to continue"
+		confirm.queue_free()
+		_redraw_all()
+	)
+	confirm.canceled.connect(func():
+		confirm.queue_free()
+		_conveyor_geometry_warning = "Preset unchanged"
+		_redraw_all()
+	)
+	if is_inside_tree():
+		confirm.popup_centered()
+
 func _finish_conveyor_geometry_edit(elem_id: String) -> bool:
 	if doc_store == null:
 		return false
@@ -1269,8 +1301,38 @@ func _conveyor_width_key_frame(elem: SceneTypes.SceneElement, fraction: float) -
 	var direction := (points[min(index + 1, points.size() - 1)] - points[max(index - 1, 0)]).normalized()
 	return {"center": points[index], "normal": Vector2(-direction.y, direction.x)}
 
+func _serpentine_end_geometry(elem: SceneTypes.SceneElement) -> Dictionary:
+	var params: Dictionary = elem.geometry.get("shape_params", {}) if elem.geometry.get("shape_params") is Dictionary else {}
+	var baked := ConveyorCurve3D.sample_world_curve(elem, doc_store, 48)
+	var inlet: Vector3 = baked["inlet_pos"]
+	var direction: Vector3 = (baked["inlet_tan"] as Vector3).normalized()
+	var passes: int = clampi(int(round(float(params.get("passes", 3)))), 2, 12)
+	var spacing: float = maxf(1.2, float(params.get("pass_spacing", params.get("pitch", 2.0))))
+	var pass_length: float = maxf(3.0, float(params.get("pass_length", 8.0)))
+	var infeed_length: float = clampf(float(params.get("infeed_length", 0.0)), 0.0, pass_length)
+	var outfeed_length: float = clampf(float(params.get("outfeed_length", 0.0)), 0.0, pass_length)
+	var lateral := Vector3(-direction.y, direction.x, 0.0)
+	var core_start := inlet + direction * infeed_length
+	var last_start := core_start + lateral * float(passes - 1) * spacing
+	var last_forward: bool = (passes % 2) == 1
+	var core_end := last_start + direction * pass_length if last_forward else last_start
+	var end_direction := direction if last_forward else -direction
+	return {
+		"inlet": Vector2(inlet.x, inlet.y),
+		"in_direction": Vector2(direction.x, direction.y).normalized(),
+		"in_join": Vector2(core_start.x, core_start.y),
+		"out_core": Vector2(core_end.x, core_end.y),
+		"out_direction": Vector2(end_direction.x, end_direction.y).normalized(),
+		"out_endpoint": Vector2((core_end + end_direction * outfeed_length).x, (core_end + end_direction * outfeed_length).y),
+		"infeed_length": infeed_length,
+		"outfeed_length": outfeed_length,
+		"max_length": pass_length
+	}
+
 func _hit_test_conveyor_gizmo(canvas_mouse: Vector2) -> Dictionary:
 	if doc_store == null or doc_store.active_document == null:
+		return {}
+	if _conveyor_geom_mode_elem_id.is_empty():
 		return {}
 	var sel_id := doc_store.selected_id
 	if sel_id.is_empty():
@@ -1285,6 +1347,14 @@ func _hit_test_conveyor_gizmo(canvas_mouse: Vector2) -> Dictionary:
 		var ring_px := pan_offset + _conveyor_pivot(elem) * m_scale + Vector2(0, -48)
 		if canvas_mouse.distance_to(ring_px) <= hit_tol:
 			return {"type": "rotate", "elem_id": elem.id, "index": 0, "pos": ring_px}
+		if str(elem.geometry.get("shape_preset", "")) == "serpentine":
+			var ends := _serpentine_end_geometry(elem)
+			var in_join_px: Vector2 = pan_offset + (ends["in_join"] as Vector2) * m_scale
+			var out_end_px: Vector2 = pan_offset + (ends["out_endpoint"] as Vector2) * m_scale
+			if canvas_mouse.distance_to(in_join_px) <= hit_tol:
+				return {"type": "serpentine_infeed", "elem_id": elem.id, "index": 0, "pos": in_join_px}
+			if canvas_mouse.distance_to(out_end_px) <= hit_tol:
+				return {"type": "serpentine_outfeed", "elem_id": elem.id, "index": 0, "pos": out_end_px}
 		var width_keys = elem.geometry.get("width_profile", [])
 		if width_keys is Array:
 			for index in range(width_keys.size()):
@@ -1462,7 +1532,7 @@ func _gui_input(event: InputEvent) -> void:
 								return
 					else:
 						var endpoint_locks := ConveyorCurve3D.connected_endpoint_locks(geid, doc_store)
-						if (gtype == "inlet" and endpoint_locks["inlet"]) or (gtype == "outlet" and endpoint_locks["outlet"]):
+						if (gtype == "inlet" and endpoint_locks["inlet"]) or (gtype in ["outlet", "serpentine_outfeed"] and endpoint_locks["outlet"]):
 							_conveyor_geometry_warning = "Connected endpoint is locked; disconnect flow to move it"
 							_redraw_all()
 							accept_event()
@@ -1474,13 +1544,13 @@ func _gui_input(event: InputEvent) -> void:
 							return
 						_conveyor_drag_locks = endpoint_locks
 						_conveyor_drag_before = ConveyorCurve3D.sample_world_curve(doc_store.get_element(geid), doc_store) if endpoint_locks["inlet"] or endpoint_locks["outlet"] else {}
-						doc_store._record_undo()
 						if not _conveyor_geom_mode_elem_id.is_empty() and gtype in ["inlet", "outlet"]:
 							var endpoint_elem := doc_store.get_element(geid)
 							if endpoint_elem != null and _is_curved_or_joined_conveyor_elem(endpoint_elem) and str(endpoint_elem.geometry.get("shape_preset", "")) != "custom_spline":
-								ConveyorCurve3D.convert_element_to_custom_spline(endpoint_elem, doc_store)
-								doc_store.is_dirty = true
-								doc_store.document_modified.emit()
+								_request_geometry_edit_spline_conversion(geid)
+								accept_event()
+								return
+						doc_store._record_undo()
 						_conveyor_active_gizmo_type = gtype
 						_conveyor_active_gizmo_elem_id = geid
 						_conveyor_active_gizmo_idx = gidx
@@ -1711,6 +1781,21 @@ func _gui_input(event: InputEvent) -> void:
 					elem.geometry["shape_params"] = sp
 
 				match _conveyor_active_gizmo_type:
+					"serpentine_infeed", "serpentine_outfeed":
+						var ends := _serpentine_end_geometry(elem)
+						var max_length: float = float(ends["max_length"])
+						var requested: float
+						if _conveyor_active_gizmo_type == "serpentine_infeed":
+							requested = (Vector2(wx, wy) - (ends["inlet"] as Vector2)).dot(ends["in_direction"] as Vector2)
+						else:
+							requested = (Vector2(wx, wy) - (ends["out_core"] as Vector2)).dot(ends["out_direction"] as Vector2)
+						if requested < 0.0 or requested > max_length:
+							_conveyor_geometry_warning = "End-run guard rail: length limited to 0-%.1f m" % max_length
+						else:
+							_conveyor_geometry_warning = ""
+						var clamped_length: float = clampf(snapped(requested, 0.05), 0.0, max_length)
+						sp["infeed_length" if _conveyor_active_gizmo_type == "serpentine_infeed" else "outfeed_length"] = clamped_length
+						ConveyorCurve3D.sample_world_curve(elem, doc_store)
 					"inlet":
 						if not _is_curved_or_joined_conveyor_elem(elem):
 							var m := _get_straight_conveyor_metrics(elem)
@@ -2028,7 +2113,8 @@ func _draw_conveyor_tracks() -> void:
 
 		var bed_col := Color("#172736") if (is_sel or is_in_geom_mode) else Color("#121b26")
 		for i in range(n_pts - 1):
-			draw_colored_polygon(PackedVector2Array([left_px[i], left_px[i + 1], right_px[i + 1], right_px[i]]), bed_col)
+			_draw_safe_belt_triangle(left_px[i], left_px[i + 1], right_px[i + 1], bed_col)
+			_draw_safe_belt_triangle(left_px[i], right_px[i + 1], right_px[i], bed_col)
 
 		var roller_step: float = maxf(10.0, 14.0 * zoom_level)
 		var accum_px: float = 0.0
@@ -2082,7 +2168,7 @@ func _draw_conveyor_tracks() -> void:
 				draw_rect(Rect2(endpoint.x - sq, endpoint.y - sq, sq * 2.0, sq * 2.0), Color.WHITE if is_out_ep else Color("#2ecc71"), true)
 
 		# Interactive On-Canvas Handles & Spline Gizmos for Selected Conveyor
-		if is_in_geom_mode or (_conveyor_geom_mode_elem_id.is_empty() and is_sel):
+		if is_in_geom_mode:
 			_draw_conveyor_gizmos(elem, pts_px, tangents, belt_w_px)
 
 	# If in Geometry Mode for a straight conveyor, draw its geometry handles too!
@@ -2151,6 +2237,34 @@ func _draw_conveyor_gizmos(elem: SceneTypes.SceneElement, pts_px: PackedVector2A
 	# 2. Outlet Gizmo Handle (Red circle with outer ring)
 	draw_circle(p_out_px, 7.5, Color("#e74c3c"))
 	draw_arc(p_out_px, 9.5, 0.0, TAU, 16, Color.WHITE, 1.5)
+
+	if preset == "serpentine" and _conveyor_geom_mode_elem_id == elem.id:
+		var ends := _serpentine_end_geometry(elem)
+		var in_start: Vector2 = ends["inlet"]
+		var in_dir: Vector2 = ends["in_direction"]
+		var in_limit: Vector2 = in_start + in_dir * float(ends["max_length"])
+		var out_start: Vector2 = ends["out_core"]
+		var out_dir: Vector2 = ends["out_direction"]
+		var out_limit: Vector2 = out_start + out_dir * float(ends["max_length"])
+		var in_start_px := pan_offset + in_start * m_scale
+		var in_limit_px := pan_offset + in_limit * m_scale
+		var in_join_px := pan_offset + (ends["in_join"] as Vector2) * m_scale
+		var out_start_px := pan_offset + out_start * m_scale
+		var out_limit_px := pan_offset + out_limit * m_scale
+		var out_end_px := pan_offset + (ends["out_endpoint"] as Vector2) * m_scale
+		var cap_normal_in := Vector2(-in_dir.y, in_dir.x) * maxf(6.0, _belt_w_px * 0.5)
+		var cap_normal_out := Vector2(-out_dir.y, out_dir.x) * maxf(6.0, _belt_w_px * 0.5)
+		draw_dashed_line(in_start_px, in_limit_px, Color("#f39c12", 0.7), 1.5, 5.0)
+		draw_line(in_limit_px - cap_normal_in, in_limit_px + cap_normal_in, Color("#e74c3c"), 2.0)
+		draw_dashed_line(out_start_px, out_limit_px, Color("#f39c12", 0.7), 1.5, 5.0)
+		draw_line(out_limit_px - cap_normal_out, out_limit_px + cap_normal_out, Color("#e74c3c"), 2.0)
+		draw_circle(in_join_px, 7.0, Color("#f39c12"))
+		draw_arc(in_join_px, 9.0, 0.0, TAU, 16, Color.WHITE, 1.3)
+		draw_circle(out_end_px, 7.0, Color("#f39c12"))
+		draw_arc(out_end_px, 9.0, 0.0, TAU, 16, Color.WHITE, 1.3)
+		var font := ThemeDB.fallback_font
+		draw_string(font, in_join_px + Vector2(8, -8), "Infeed %.1f / %.1f m" % [ends["infeed_length"], ends["max_length"]], HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color("#f39c12"))
+		draw_string(font, out_end_px + Vector2(8, 12), "Outfeed %.1f / %.1f m" % [ends["outfeed_length"], ends["max_length"]], HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color("#f39c12"))
 
 	# 3. L-Bend Corner Apex Handle (Amber diamond with dashed guide lines)
 	if preset == "l_bend":
@@ -2282,6 +2396,14 @@ func _draw_conveyor_geometry_banner() -> void:
 	draw_string(font, Vector2(btn_rect.position.x, btn_rect.position.y + 15.0), "Done (Esc)", HORIZONTAL_ALIGNMENT_CENTER, int(btn_w), 10, Color(0.05, 0.1, 0.05, 1.0))
 	if not _conveyor_geometry_warning.is_empty():
 		draw_string(font, Vector2(bar_x + 8.0, bar_y + bar_h + 17.0), _conveyor_geometry_warning, HORIZONTAL_ALIGNMENT_LEFT, int(bar_w), 11, Color("#f39c12"))
+
+func _draw_safe_belt_triangle(a: Vector2, b: Vector2, c: Vector2, color: Color) -> void:
+	if not _is_valid_belt_triangle(a, b, c):
+		return
+	draw_colored_polygon(PackedVector2Array([a, b, c]), color)
+
+static func _is_valid_belt_triangle(a: Vector2, b: Vector2, c: Vector2) -> bool:
+	return a.is_finite() and b.is_finite() and c.is_finite() and absf((b - a).cross(c - a)) >= 0.01
 
 func _hit_test_conveyor_track(canvas_mouse: Vector2) -> String:
 	if doc_store == null or doc_store.active_document == null:

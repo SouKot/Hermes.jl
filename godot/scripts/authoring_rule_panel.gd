@@ -90,7 +90,7 @@ func configure(element_id: String, kind: String, props: Dictionary) -> void:
 
 	# Show/hide rows based on element kind
 	_discipline_row.visible = (kind == "queue")
-	_routing_row.visible = (kind in ["server", "connection"])
+	_routing_row.visible = (kind in ["server", "connection", "conveyor"])
 
 	# Set current values from props
 	if kind == "queue":
@@ -106,8 +106,10 @@ func configure(element_id: String, kind: String, props: Dictionary) -> void:
 	else:
 		_custom_disc_box.visible = false
 
-	if kind in ["server", "connection"]:
+	if kind in ["server", "connection", "conveyor"]:
 		var routing: String = str(props.get("routing_rule", "fixed")).to_lower()
+		var aliases := {"probabilistic": "prob", "rr": "round_robin", "sq": "shortest_queue"}
+		routing = str(aliases.get(routing, routing))
 		var idx := ROUTING_VALUES.find(routing)
 		_routing_option.selected = max(0, idx)
 

@@ -74,6 +74,10 @@ using JSON
         @test length(CONVEYOR_SHAPE_PRESETS[:serpentine](inlet, outlet, Dict("passes" => 12, "pass_spacing" => 2.0, "pass_length" => 8.0))) == 35
         legacy_serp = CONVEYOR_SHAPE_PRESETS[:serpentine](inlet, outlet, Dict("passes" => 3, "pitch" => 2.4, "pass_length" => 8.0))
         @test isapprox(legacy_serp[end].pos[2] - inlet.pos[2], 4.8; atol=1e-6)
+        serp_leads = CONVEYOR_SHAPE_PRESETS[:serpentine](inlet, outlet, Dict("passes" => 3, "pass_spacing" => 2.0, "pass_length" => 8.0, "infeed_length" => 2.0, "outfeed_length" => 3.0))
+        @test length(serp_leads) == 10
+        @test maximum(abs(serp_leads[1].pos[i] - (0.0, 0.0, 0.0)[i]) for i in 1:3) < 1e-6
+        @test isapprox(serp_leads[end].pos[1], 13.0; atol=1e-6)
         turn_base = CONVEYOR_SHAPE_PRESETS[:u_turn](inlet, outlet, Dict("leg_length" => 6.0, "bend_radius" => 2.0))
         turn_short_return = CONVEYOR_SHAPE_PRESETS[:u_turn](inlet, outlet, Dict("leg_length" => 6.0, "return_leg_length" => 3.0, "bend_radius" => 2.0))
         @test isapprox(turn_short_return[end].pos[1] - turn_base[end].pos[1], 3.0; atol=1e-6)

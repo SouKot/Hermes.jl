@@ -55,6 +55,20 @@ func _init() -> void:
 		print("  FAIL  [shell.load_example_model] loaded_ok=", loaded_ok, " has_menu=", has_menu, " cmds_count=", emitted_cmds.size())
 		failed += 1
 
+	emitted_cmds.clear()
+	var lab_ok: bool = shell.load_example_model("conv_lab_chain_backpressure")
+	var lab_menu: bool = shell._examples_menu.get_popup().find_children("ConveyorLabExamplesMenu", "PopupMenu", true, false).size() == 1
+	var lab_charts: int = 0
+	for el in ExamplesCatalog.get_example_scenespec("conv_lab_chain_backpressure").get("elements", []):
+		if str(el.get("kind", "")) == "chart_station":
+			lab_charts += 1
+	if lab_ok and lab_menu and lab_charts == 1 and emitted_cmds.size() == 1:
+		print("  PASS  [conveyor lab] menu entry present, scene loads through the shell, chart station included")
+		passed += 1
+	else:
+		print("  FAIL  [conveyor lab] lab_ok=", lab_ok, " menu=", lab_menu, " charts=", lab_charts)
+		failed += 1
+
 	shell.queue_free()
 	print("\n=== Results: ", passed, " passed, ", failed, " failed ===")
 	quit(failed)

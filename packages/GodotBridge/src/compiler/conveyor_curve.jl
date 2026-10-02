@@ -495,27 +495,36 @@ function generate_preset_serpentine(inlet::Pose3D, outlet::Pose3D, params::Abstr
     pitch  = max(1.2, Float64(get(params, "pass_spacing", get(params, "pitch", 2.0))))
     R      = 0.5 * pitch
     span   = max(3.0, Float64(get(params, "pass_length", _v3_dist(inlet.pos, outlet.pos))))
+    infeed_length = clamp(Float64(get(params, "infeed_length", 0.0)), 0.0, span)
+    outfeed_length = clamp(Float64(get(params, "outfeed_length", 0.0)), 0.0, span)
     dir    = _v3_normalize((inlet.tangent[1], inlet.tangent[2], 0.0), (1.0, 0.0, 0.0))
     perp   = (-dir[2], dir[1], 0.0)
     k90    = R * _bezier_arc_kappa(0.5 * π)
+    core_origin = _v3_add(inlet.pos, _v3_scale(dir, infeed_length))
 
     cpts = SplineControlPoint3D[]
+    if infeed_length > 0.001
+        push!(cpts, SplineControlPoint3D(inlet.pos, (0.0, 0.0, 0.0), _v3_scale(dir, infeed_length / 3.0), inlet.up))
+    end
     for p in 1:passes
         fwd = isodd(p)
         y_off = Float64(p - 1) * pitch
-        base_start = _v3_add(inlet.pos, _v3_scale(perp, y_off))
+        base_start = _v3_add(core_origin, _v3_scale(perp, y_off))
         base_end   = _v3_add(base_start, _v3_scale(dir, span))
         s_pt = fwd ? base_start : base_end
         e_pt = fwd ? base_end   : base_start
         t_dir = fwd ? dir : _v3_scale(dir, -1.0)
 
-        in_h_start = (p == 1) ? (0.0, 0.0, 0.0) : _v3_scale(t_dir, -k90)
-        out_h_end  = (p == passes) ? (0.0, 0.0, 0.0) : _v3_scale(t_dir, k90)
+        in_h_start = p == 1 && infeed_length > 0.001 ? _v3_scale(dir, -infeed_length / 3.0) : (p == 1 ? (0.0, 0.0, 0.0) : _v3_scale(t_dir, -k90))
+        out_h_end = p == passes && outfeed_length > 0.001 ? _v3_scale(t_dir, outfeed_length / 3.0) : (p == passes ? (0.0, 0.0, 0.0) : _v3_scale(t_dir, k90))
         push!(cpts, SplineControlPoint3D(s_pt, in_h_start, (0.0, 0.0, 0.0), inlet.up))
         push!(cpts, SplineControlPoint3D(e_pt, (0.0, 0.0, 0.0), out_h_end, inlet.up))
         if p < passes
             apex = _v3_add(_v3_add(e_pt, _v3_scale(t_dir, R)), _v3_scale(perp, R))
             push!(cpts, SplineControlPoint3D(apex, _v3_scale(perp, -k90), _v3_scale(perp, k90), inlet.up))
+        elseif outfeed_length > 0.001
+            tail = _v3_add(e_pt, _v3_scale(t_dir, outfeed_length))
+            push!(cpts, SplineControlPoint3D(tail, _v3_scale(t_dir, -outfeed_length / 3.0), (0.0, 0.0, 0.0), outlet.up))
         end
     end
     return cpts
@@ -763,7 +772,7 @@ function bake_all_conveyor_curves!(ir::ExecutionGraphIR, flat_spec::TypedSceneSp
                 sp[string(k)] = v
             end
         end
-        for k in ("bend_radius", "sweep_angle_deg", "passes", "pass_spacing", "pass_length", "helix_radius", "helix_turns", "elevation_gain", "corner_pos", "control_points", "tangent_scale", "leg_length", "return_leg_length", "auto_join", "lateral_offset")
+        for k in ("bend_radius", "sweep_angle_deg", "passes", "pass_spacing", "pass_length", "infeed_length", "outfeed_length", "helix_radius", "helix_turns", "elevation_gain", "corner_pos", "control_points", "tangent_scale", "leg_length", "return_leg_length", "auto_join", "lateral_offset")
             if haskey(sp, k)
                 continue
             elseif haskey(ext, k)

@@ -1,0 +1,696 @@
+{
+  "scene": {
+    "name": "Conveyor Lab 9: Two Sources Share One Inlet",
+    "id": "conv_lab_merge_inlet_spacing",
+    "description": "Two sources each offer 1 product/s to a belt whose 0.8 m product footprint at 1 m/s allows only 1.25 products/s through the inlet. The sources must wait their turn: spacing never drops below 0.8 m and throughput equals speed / pitch.",
+    "author": "Antigravity SimViz"
+  },
+  "connections": [
+    {
+      "target_port": "flow_in",
+      "enabled": true,
+      "id": "c1",
+      "target_element": "belt",
+      "source_port": "flow_out",
+      "link_type": "flow",
+      "ordering": 1,
+      "source_element": "src1"
+    },
+    {
+      "target_port": "flow_in",
+      "enabled": true,
+      "id": "c2",
+      "target_element": "belt",
+      "source_port": "flow_out",
+      "link_type": "flow",
+      "ordering": 1,
+      "source_element": "src2"
+    },
+    {
+      "target_port": "flow_in",
+      "enabled": true,
+      "id": "c3",
+      "target_element": "mc",
+      "source_port": "flow_out",
+      "link_type": "flow",
+      "ordering": 1,
+      "source_element": "belt"
+    },
+    {
+      "target_port": "flow_in",
+      "enabled": true,
+      "id": "c4",
+      "target_element": "snk",
+      "source_port": "flow_out",
+      "link_type": "flow",
+      "ordering": 1,
+      "source_element": "mc"
+    }
+  ],
+  "elements": [
+    {
+      "name": "Source 1",
+      "input_ports": [],
+      "properties": {
+        "interarrival_time": {
+          "type": "deterministic",
+          "value": 1.0
+        }
+      },
+      "level_id": "level_0",
+      "library_version": "1.0.0",
+      "editor": {
+        "graph_position": [
+          0.0,
+          60.0
+        ],
+        "collapsed": false,
+        "notes": "",
+        "color": "#f39c12"
+      },
+      "library": "SimElements/DES",
+      "transform": {
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "position": [
+          0.0,
+          3.0,
+          0.0
+        ]
+      },
+      "kind": "source",
+      "id": "src1",
+      "metric_ports": [],
+      "geometry": {
+        "shape": "box",
+        "dimensions": [
+          2.5,
+          2.0,
+          1.2
+        ]
+      },
+      "output_ports": [
+        {
+          "kind": "flow",
+          "name": "Flow Out",
+          "id": "flow_out",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        }
+      ]
+    },
+    {
+      "name": "Source 2",
+      "input_ports": [],
+      "properties": {
+        "interarrival_time": {
+          "type": "deterministic",
+          "value": 1.0
+        }
+      },
+      "level_id": "level_0",
+      "library_version": "1.0.0",
+      "editor": {
+        "graph_position": [
+          0.0,
+          -60.0
+        ],
+        "collapsed": false,
+        "notes": "",
+        "color": "#f39c12"
+      },
+      "library": "SimElements/DES",
+      "transform": {
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "position": [
+          0.0,
+          -3.0,
+          0.0
+        ]
+      },
+      "kind": "source",
+      "id": "src2",
+      "metric_ports": [],
+      "geometry": {
+        "shape": "box",
+        "dimensions": [
+          2.5,
+          2.0,
+          1.2
+        ]
+      },
+      "output_ports": [
+        {
+          "kind": "flow",
+          "name": "Flow Out",
+          "id": "flow_out",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        }
+      ]
+    },
+    {
+      "name": "Merge Belt (pitch 0.8)",
+      "input_ports": [
+        {
+          "kind": "flow",
+          "name": "Flow In",
+          "id": "flow_in",
+          "required": false,
+          "direction": "input",
+          "data_type": "entity",
+          "cardinality": "many"
+        },
+        {
+          "kind": "signal",
+          "name": "Speed Signal",
+          "id": "speed_signal",
+          "required": false,
+          "direction": "input",
+          "data_type": "entity",
+          "cardinality": "one"
+        }
+      ],
+      "properties": {
+        "length": 10.0,
+        "speed": 1.0,
+        "conveyor_mode": "free_flow",
+        "accumulation_pitch": 0.8,
+        "capacity": 40
+      },
+      "level_id": "level_0",
+      "library_version": "1.0.0",
+      "editor": {
+        "graph_position": [
+          60.0,
+          0.0
+        ],
+        "collapsed": false,
+        "notes": "",
+        "color": "#2ecc71"
+      },
+      "library": "SimElements/DES",
+      "transform": {
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "position": [
+          3.0,
+          0.0,
+          0.0
+        ]
+      },
+      "kind": "conveyor",
+      "id": "belt",
+      "metric_ports": [
+        {
+          "kind": "metric",
+          "name": "Occupancy",
+          "id": "occupancy",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        },
+        {
+          "kind": "metric",
+          "name": "Speed",
+          "id": "speed",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        },
+        {
+          "kind": "metric",
+          "name": "In-Transit Count",
+          "id": "in_transit",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        }
+      ],
+      "geometry": {
+        "shape": "box",
+        "dimensions": [
+          10.0,
+          1.2,
+          0.8
+        ]
+      },
+      "output_ports": [
+        {
+          "kind": "flow",
+          "name": "Flow Out",
+          "id": "flow_out",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        }
+      ]
+    },
+    {
+      "name": "Fast Machine",
+      "input_ports": [
+        {
+          "kind": "flow",
+          "name": "Flow In",
+          "id": "flow_in",
+          "required": false,
+          "direction": "input",
+          "data_type": "entity",
+          "cardinality": "many"
+        },
+        {
+          "kind": "signal",
+          "name": "Pause Signal",
+          "id": "pause_signal",
+          "required": false,
+          "direction": "input",
+          "data_type": "entity",
+          "cardinality": "one"
+        }
+      ],
+      "properties": {
+        "service_time": {
+          "type": "deterministic",
+          "value": 0.1
+        },
+        "servers": 1
+      },
+      "level_id": "level_0",
+      "library_version": "1.0.0",
+      "editor": {
+        "graph_position": [
+          280.0,
+          0.0
+        ],
+        "collapsed": false,
+        "notes": "",
+        "color": "#e67e22"
+      },
+      "library": "SimElements/DES",
+      "transform": {
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "position": [
+          14.0,
+          0.0,
+          0.0
+        ]
+      },
+      "kind": "server",
+      "id": "mc",
+      "metric_ports": [
+        {
+          "kind": "metric",
+          "name": "Utilization",
+          "id": "utilization",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        },
+        {
+          "kind": "metric",
+          "name": "Busy Channels",
+          "id": "busy",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        },
+        {
+          "kind": "metric",
+          "name": "Throughput",
+          "id": "throughput",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        }
+      ],
+      "geometry": {
+        "shape": "box",
+        "dimensions": [
+          3.0,
+          2.2,
+          1.8
+        ]
+      },
+      "output_ports": [
+        {
+          "kind": "flow",
+          "name": "Flow Out",
+          "id": "flow_out",
+          "required": false,
+          "direction": "output",
+          "data_type": "entity",
+          "cardinality": "many"
+        }
+      ]
+    },
+    {
+      "name": "Sink",
+      "input_ports": [
+        {
+          "kind": "flow",
+          "name": "Flow In",
+          "id": "flow_in",
+          "required": false,
+          "direction": "input",
+          "data_type": "entity",
+          "cardinality": "many"
+        }
+      ],
+      "properties": {},
+      "level_id": "level_0",
+      "library_version": "1.0.0",
+      "editor": {
+        "graph_position": [
+          370.0,
+          0.0
+        ],
+        "collapsed": false,
+        "notes": "",
+        "color": "#e74c3c"
+      },
+      "library": "SimElements/DES",
+      "transform": {
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "position": [
+          18.5,
+          0.0,
+          0.0
+        ]
+      },
+      "kind": "sink",
+      "id": "snk",
+      "metric_ports": [],
+      "geometry": {
+        "shape": "box",
+        "dimensions": [
+          2.5,
+          2.0,
+          1.2
+        ]
+      },
+      "output_ports": []
+    },
+    {
+      "name": "Merge inlet spacing",
+      "input_ports": [
+        {
+          "kind": "signal",
+          "name": "Port 1 (Subplot 1)",
+          "id": "P1",
+          "required": false,
+          "direction": "input",
+          "data_type": "entity",
+          "cardinality": "many"
+        },
+        {
+          "kind": "signal",
+          "name": "Port 2 (Subplot 2)",
+          "id": "P2",
+          "required": false,
+          "direction": "input",
+          "data_type": "entity",
+          "cardinality": "many"
+        },
+        {
+          "kind": "signal",
+          "name": "Port 3 (Subplot 3)",
+          "id": "P3",
+          "required": false,
+          "direction": "input",
+          "data_type": "entity",
+          "cardinality": "many"
+        },
+        {
+          "kind": "signal",
+          "name": "Port 4 (Subplot 4)",
+          "id": "P4",
+          "required": false,
+          "direction": "input",
+          "data_type": "entity",
+          "cardinality": "many"
+        }
+      ],
+      "properties": {
+        "subplots": [
+          {
+            "y_max": 100.0,
+            "autoscale": true,
+            "port_id": "P1",
+            "mode": "overlay",
+            "y_min": 0.0,
+            "y_label": "products",
+            "type": "time_series",
+            "title": "Products delivered (slope = throughput)",
+            "id": "sp_1",
+            "signals": [
+              {
+                "y_metric": "total_served",
+                "x_metric": "__time__",
+                "label": "served",
+                "entity_id": "mc"
+              }
+            ],
+            "grid": {
+              "col": 0,
+              "row_span": 1,
+              "col_span": 1,
+              "row": 0
+            }
+          },
+          {
+            "y_max": 100.0,
+            "autoscale": true,
+            "port_id": "P2",
+            "mode": "overlay",
+            "y_min": 0.0,
+            "y_label": "metres",
+            "type": "time_series",
+            "title": "Smallest distance between neighbouring products",
+            "id": "sp_2",
+            "signals": [
+              {
+                "y_metric": "min_spacing_m",
+                "x_metric": "__time__",
+                "label": "min spacing",
+                "entity_id": "belt"
+              }
+            ],
+            "grid": {
+              "col": 1,
+              "row_span": 1,
+              "col_span": 1,
+              "row": 0
+            }
+          },
+          {
+            "y_max": 100.0,
+            "autoscale": true,
+            "port_id": "P3",
+            "mode": "overlay",
+            "y_min": 0.0,
+            "y_label": "count",
+            "type": "time_series",
+            "title": "Sources waiting for room at the inlet",
+            "id": "sp_3",
+            "signals": [
+              {
+                "y_metric": "stalled_products",
+                "x_metric": "__time__",
+                "label": "source 1",
+                "entity_id": "src1"
+              },
+              {
+                "y_metric": "stalled_products",
+                "x_metric": "__time__",
+                "label": "source 2",
+                "entity_id": "src2"
+              }
+            ],
+            "grid": {
+              "col": 0,
+              "row_span": 1,
+              "col_span": 1,
+              "row": 1
+            }
+          },
+          {
+            "y_max": 100.0,
+            "autoscale": true,
+            "port_id": "P4",
+            "mode": "overlay",
+            "y_min": 0.0,
+            "y_label": "count",
+            "type": "time_series",
+            "title": "Products on the belt",
+            "id": "sp_4",
+            "signals": [
+              {
+                "y_metric": "in_transit",
+                "x_metric": "__time__",
+                "label": "on belt",
+                "entity_id": "belt"
+              }
+            ],
+            "grid": {
+              "col": 1,
+              "row_span": 1,
+              "col_span": 1,
+              "row": 1
+            }
+          }
+        ],
+        "grid_columns": 2,
+        "title": "Merge inlet spacing",
+        "grid_rows": 2,
+        "time_window": 120.0
+      },
+      "level_id": "level_0",
+      "library_version": "1.0.0",
+      "editor": {
+        "graph_position": [
+          280.0,
+          160.0
+        ],
+        "collapsed": false,
+        "notes": "",
+        "color": "#1f6feb"
+      },
+      "library": "SimElements/DES",
+      "transform": {
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "position": [
+          14.0,
+          8.0,
+          0.8
+        ]
+      },
+      "kind": "chart_station",
+      "id": "chart_lab",
+      "metric_ports": [],
+      "geometry": {
+        "shape": "box",
+        "dimensions": [
+          10.0,
+          6.0,
+          1.2
+        ]
+      },
+      "output_ports": []
+    }
+  ],
+  "validation_metadata": {
+    "is_valid": true,
+    "diagnostic_count": 0,
+    "validator_version": "1.0.0",
+    "diagnostics": []
+  },
+  "simulation": {
+    "time_unit": "seconds",
+    "max_duration": 200.0,
+    "warmup_time": 0.0,
+    "mode": "des_only"
+  },
+  "subgraphs": [],
+  "abm_config": {
+    "enabled": false,
+    "parameters": {},
+    "pedestrian_profiles": [],
+    "model_name": "SFM"
+  },
+  "spatial": {
+    "levels": [
+      {
+        "visible": true,
+        "default_height": 4.5,
+        "name": "Ground Floor",
+        "id": "level_0",
+        "elevation": 0.0
+      }
+    ],
+    "bounds": [
+      -50.0,
+      -50.0,
+      0.0,
+      50.0,
+      50.0,
+      10.0
+    ]
+  },
+  "overlays": [],
+  "product": {
+    "height": 0.45,
+    "name": "Entity",
+    "depth": 0.45,
+    "width": 0.45,
+    "mesh_type": "box",
+    "color": [
+      0.25,
+      0.75,
+      0.95
+    ]
+  },
+  "spec_version": "1.0.0"
+}

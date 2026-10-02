@@ -73,7 +73,7 @@ using Random
                     "servers" => 1, "service_time" => Dict("type" => "triangular", "min" => 1.0, "mode" => 1.5, "max" => 2.0)
                 )),
                 Dict("id" => "conv1", "kind" => "conveyor", "properties" => Dict(
-                    "length" => 10.0, "speed" => 2.0, "capacity" => 6
+                    "length" => 10.0, "speed" => 2.0, "capacity" => 6, "accumulation_gap" => 0.25
                 )),
                 Dict("id" => "snk1", "kind" => "sink", "properties" => Dict())
             ],
@@ -94,11 +94,15 @@ using Random
         @test res.source_map.by_element["q1"].zone_ids[1] == fused_zid
         @test res.source_map.by_element["q1"].is_fused_station == true
         @test res.source_map.by_element["srv1"].is_fused_station == true
+        @test res.zone_configs[fused_zid].capacity == 11
 
         conv_zid = res.source_map.by_element["conv1"].zone_ids[1]
         conv_cfg = res.zone_configs[conv_zid]
         # Conveyor latency tau = 10.0 / 2.0 = 5.0 seconds
         @test conv_cfg.service_dist.dist.value == 5.0
+        @test conv_cfg.is_conveyor
+        @test conv_cfg.capacity == 6
+        @test conv_cfg.conveyor_gap == 0.25
         @test conv_cfg.routing isa ExitSystem
     end
 

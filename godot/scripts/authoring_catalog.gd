@@ -119,7 +119,8 @@ func _register_defaults() -> void:
 	conv.property_schemas = [
 		{"key": "conveyor_mode", "display_name": "Conveyor Mode", "type": "enum", "default_value": "free_flow", "enum_options": [{"value": "free_flow", "label": "Free-Flow (Continuous Speed)"}, {"value": "accumulating", "label": "Zero-Pressure Accumulating"}, {"value": "indexing", "label": "Step / Indexing Pulse"}], "runtime_editable": true, "group": "Kinematics", "description": "Physical transport mode: continuous free-flow, zero-pressure accumulation, or periodic indexing pulses."},
 		{"key": "speed", "display_name": "Conveyor Velocity", "type": "float", "default_value": 1.5, "unit": "m/s", "range": [0.1, 10.0, 0.1], "runtime_editable": true, "group": "Kinematics", "description": "Linear surface speed of the transport bed."},
-		{"key": "accumulation_pitch", "display_name": "Pitch / Step Distance", "type": "float", "default_value": 0.5, "unit": "m", "range": [0.1, 5.0, 0.05], "runtime_editable": true, "group": "Kinematics", "description": "Minimum center-to-center spacing (accumulating) or step distance per pulse (indexing)."},
+		{"key": "accumulation_pitch", "display_name": "Pitch / Step Distance", "type": "float", "default_value": 0.5, "unit": "m", "range": [0.1, 5.0, 0.05], "runtime_editable": true, "group": "Kinematics", "description": "Product footprint along the belt: minimum spacing in free-flow, and the base of the slot spacing (pitch + gap) in accumulating and indexing modes."},
+		{"key": "accumulation_gap", "display_name": "Product Gap", "type": "float", "default_value": 0.0, "unit": "m", "range": [0.0, 5.0, 0.05], "runtime_editable": true, "group": "Kinematics", "description": "Clear distance kept between consecutive products when accumulating or indexing (0 = products touch). Slot spacing = pitch + gap."},
 		{"key": "index_interval", "display_name": "Indexing Pulse Interval", "type": "float", "default_value": 1.0, "unit": "s", "range": [0.1, 60.0, 0.1], "runtime_editable": true, "group": "Kinematics", "description": "Time interval between step pulses in indexing conveyor mode."},
 		{"key": "capacity", "display_name": "Bed Item Capacity", "type": "int", "default_value": 10, "unit": "items", "range": [1, 500, 1], "runtime_editable": false, "group": "Capacity & Buffers", "description": "Maximum item accumulation on the belt before upstream blockage."},
 		{"key": "reversible", "display_name": "Reversible Flow", "type": "bool", "default_value": false, "unit": "", "range": [], "runtime_editable": true, "group": "Kinematics", "description": "Allow reverse direction conveying via control signals."},
@@ -129,6 +130,7 @@ func _register_defaults() -> void:
 		"conveyor_mode": "free_flow",
 		"speed": 1.5,
 		"accumulation_pitch": 0.5,
+		"accumulation_gap": 0.0,
 		"index_interval": 1.0,
 		"capacity": 10,
 		"reversible": false,

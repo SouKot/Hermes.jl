@@ -307,6 +307,32 @@ func _switch_tab(idx: int) -> void:
 
 	refresh()
 
+func _request_custom_spline_conversion(elem: SceneTypes.SceneElement, on_cancel: Callable = Callable()) -> void:
+	if elem == null or elem.kind != "conveyor" or str(elem.geometry.get("shape_preset", "")) == "custom_spline":
+		return
+	var confirm := ConfirmationDialog.new()
+	confirm.title = "Convert to Editable Spline?"
+	confirm.dialog_text = "This conveyor will become a control-point spline. Keep the current shape as editable control points?"
+	confirm.ok_button_text = "Keep Editable Spline"
+	confirm.cancel_button_text = "Restore Previous Shape"
+	add_child(confirm)
+	confirm.confirmed.connect(func():
+		doc_store._record_undo()
+		ConveyorCurve3D.convert_element_to_custom_spline(elem, doc_store)
+		doc_store.is_dirty = true
+		doc_store.validate()
+		doc_store.document_modified.emit()
+		confirm.queue_free()
+		call_deferred("refresh")
+	)
+	confirm.canceled.connect(func():
+		confirm.queue_free()
+		if on_cancel.is_valid():
+			on_cancel.call()
+	)
+	if is_inside_tree():
+		confirm.popup_centered()
+
 func refresh() -> void:
 	if not visible or current_elem_id.is_empty() or doc_store == null:
 		return
@@ -737,6 +763,9 @@ func _render_spatial_tab(elem: SceneTypes.SceneElement) -> void:
 				var pid: String = ConveyorCurve3D.PRESET_IDS[idx]
 				if pid == str(elem.geometry.get("shape_preset", "straight")):
 					return
+				if pid == "custom_spline" and cur_preset != "custom_spline":
+					_request_custom_spline_conversion(elem, func(): opt_preset.select(sel_idx))
+					return
 				if cur_preset == "custom_spline" and not reset_confirmed[0]:
 					var confirm := ConfirmationDialog.new()
 					confirm.title = "Reset Conveyor Geometry"
@@ -1061,6 +1090,17 @@ func _render_spatial_tab(elem: SceneTypes.SceneElement) -> void:
 					doc_store.is_dirty = true
 					doc_store.document_modified.emit()
 				)
+				var end_run_limit: float = maxf(3.0, float(sp.get("pass_length", float(cur_dims[0]))))
+				_create_coord_spin(param_row, "Infeed Lead (m)", float(sp.get("infeed_length", 0.0)), 0.0, end_run_limit, 0.1, func(v):
+					ConveyorCurve3D.update_shape_parameter(elem, "infeed_length", v, doc_store)
+					doc_store.is_dirty = true
+					doc_store.document_modified.emit()
+				)
+				_create_coord_spin(param_row, "Outfeed Lead (m)", float(sp.get("outfeed_length", 0.0)), 0.0, end_run_limit, 0.1, func(v):
+					ConveyorCurve3D.update_shape_parameter(elem, "outfeed_length", v, doc_store)
+					doc_store.is_dirty = true
+					doc_store.document_modified.emit()
+				)
 			elif cur_preset == "spiral_helix":
 				_create_coord_spin(param_row, "Turns", float(sp.get("helix_turns", 1.5)), 0.25, 6.0, 0.25, func(v):
 					ConveyorCurve3D.update_shape_parameter(elem, "helix_turns", v, doc_store)
@@ -1105,12 +1145,7 @@ func _render_spatial_tab(elem: SceneTypes.SceneElement) -> void:
 			btn_convert.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			btn_convert.add_theme_font_size_override("font_size", 10)
 			btn_convert.pressed.connect(func():
-				doc_store._record_undo()
-				ConveyorCurve3D.convert_element_to_custom_spline(elem, doc_store)
-				doc_store.is_dirty = true
-				doc_store.validate()
-				doc_store.document_modified.emit()
-				call_deferred("refresh")
+				_request_custom_spline_conversion(elem)
 			)
 			_pages_container.add_child(btn_convert)
 
@@ -1634,7 +1669,11 @@ const SIMVIZ_RECIPES := [
 	{"label": "Throttle Conveyor by Downstream Fill Ratio", "code": "dn = connected_entity(:out_flow, 1)\nif isvalid(dn) && fill_ratio(dn) > 0.7\n    set_speed!(0.5)\nelse\n    set_speed!(2.0)\nend"},
 	{"label": "Batch Update Speed of All Conveyors (O(N))", "code": "set_speed!(entities_of_kind(:conveyor), 2.5)"},
 	{"label": "Check Container / Subgraph Utilization", "code": "if has_container() && utilization(container_entity()) > 0.8\n    set_color!(item(), :orange)\nend"},
-	{"label": "Schedule Periodic Custom Event (:heartbeat)", "code": "schedule_every!(5.0, :heartbeat)"}
+	{"label": "Schedule Periodic Custom Event (:heartbeat)", "code": "schedule_every!(5.0, :heartbeat)"},
+	{"label": "Routing: Round-Robin over Open Outputs (on_exit)", "code": "outs = connected_entities(:out_flow)\nn = length(outs)\nlast = attr(self(), :rr_last, 0)\nfor i in 1:n\n    k = mod1(last + i, n)\n    if free_capacity(outs[k]) > 0\n        route_to!(outs[k])\n        set_attr!(self(), :rr_last, k)\n        break\n    end\nend"},
+	{"label": "Routing: Shortest Queue among Open Outputs (on_exit)", "code": "open = filter(e -> free_capacity(e) > 0, connected_entities(:out_flow))\nif !isempty(open)\n    route_to_shortest!(open)\nend"},
+	{"label": "Routing: Random over Open Outputs (on_exit)", "code": "open = filter(e -> free_capacity(e) > 0, connected_entities(:out_flow))\nif !isempty(open)\n    route_to!(rand_choice(open))\nend"},
+	{"label": "Routing: First Open Output, in port order (on_exit)", "code": "for c in connected_entities(:out_flow)\n    if free_capacity(c) > 0\n        route_to!(c)\n        break\n    end\nend"}
 ]
 
 func _render_hooks_tab(elem: SceneTypes.SceneElement) -> void:

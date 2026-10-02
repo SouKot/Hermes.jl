@@ -1,0 +1,62 @@
+[
+  {
+    "title": "1. Free-flow stop-and-go",
+    "id": "conv_lab_free_flow_stop_go",
+    "description": "A free-flow belt (10 m, 1 m/s) feeds a machine that needs 4 s per product while the source delivers one per second. The whole belt must halt the moment its lead product cannot enter the machine and restart together when the machine frees. Expect flat position traces while blocked, no overlap, source stalls, and 0.25 products/s throughput.",
+    "category": "conveyor"
+  },
+  {
+    "title": "2. Gap sets throughput",
+    "id": "conv_lab_gap_throughput",
+    "description": "Four fully-fed belts at 1 m/s with 0.5 m product pitch and a fast machine. An accumulating belt can discharge at most speed / (pitch + gap): 2.0, 1.0 and 0.5 per second for gaps 0, 0.5 and 1.5 m. The free-flow belt ignores the gap and runs at speed / pitch = 2.0.",
+    "category": "conveyor"
+  },
+  {
+    "title": "3. Accumulation packing",
+    "id": "conv_lab_accumulation_packing",
+    "description": "Three 8 m accumulating belts feed a machine that never frees. Products must stop one slot (pitch 0.5 + gap) apart behind the lead product: spacing 0.5, 0.75 and 1.5 m, and the belt holds floor(8 / spacing) + 1 products.",
+    "category": "conveyor"
+  },
+  {
+    "title": "4. Mode comparison",
+    "id": "conv_lab_mode_comparison",
+    "description": "Identical source (1/s) and machine (4 s) behind a free-flow, an accumulating and an indexing belt. Steady throughput is set by the machine (0.25/s) in every mode; the modes differ in how many products wait, whether they keep moving, and how the line is held.",
+    "category": "conveyor"
+  },
+  {
+    "title": "5. Diverter to open paths",
+    "id": "conv_lab_diverter_open_paths",
+    "description": "A belt delivers 0.5 products/s to a slow machine A (8 s) and a fast machine B (2 s), through probabilistic 50/50, round-robin and shortest-queue routing. A product is never pushed into a busy machine: A can only take 1/8 per second, so B absorbs the rest and nothing is lost.",
+    "category": "conveyor"
+  },
+  {
+    "title": "6. Chain backpressure",
+    "id": "conv_lab_chain_backpressure",
+    "description": "Free-flow, accumulating and indexing belts in series ahead of a 10 s machine. The jam must propagate upstream one belt at a time: belt 3 blocks first, then belt 2, then belt 1, and finally the source stalls. No product is lost or overlaps at any hand-off.",
+    "category": "conveyor"
+  },
+  {
+    "title": "7. Machine breakdown",
+    "id": "conv_lab_server_failure",
+    "description": "A machine with random breakdowns (MTBF 40 s, MTTR 15 s) sits behind an 8 m free-flow belt. While the machine is down the belt must stop, the lead product waits, and when it is repaired flow resumes with no product lost.",
+    "category": "conveyor"
+  },
+  {
+    "title": "8. Blocking after service",
+    "id": "conv_lab_blocking_after_service",
+    "description": "A fast press (0.5 s) feeds a short 3-product belt in front of a slow machine (4 s). When the belt is full the press must keep its finished product in its slot (blocking after service) instead of dropping it; the belt never exceeds its capacity and throughput is set by machine B.",
+    "category": "conveyor"
+  },
+  {
+    "title": "9. Merge at the inlet",
+    "id": "conv_lab_merge_inlet_spacing",
+    "description": "Two sources each offer 1 product/s to a belt whose 0.8 m product footprint at 1 m/s allows only 1.25 products/s through the inlet. The sources must wait their turn: spacing never drops below 0.8 m and throughput equals speed / pitch.",
+    "category": "conveyor"
+  },
+  {
+    "title": "10. Indexing steps and hold",
+    "id": "conv_lab_indexing_hold",
+    "description": "Indexing beds advance every product by one slot (0.5 pitch + 0.5 gap = 1 m) each 1.5 s pulse. Positions must always be whole slots. With a free machine, throughput is one product per pulse (0.667/s); with a blocked machine the lead stops at the outlet and the whole bed stops pulsing, so nothing moves until the machine frees.",
+    "category": "conveyor"
+  }
+]

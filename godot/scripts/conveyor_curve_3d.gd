@@ -200,6 +200,12 @@ static func _gen_l_bend(inlet_pos: Vector3, inlet_tan: Vector3, outlet_pos: Vect
 		var cp: Array = params["corner_pos"]
 		corner = Vector3(float(cp[0]), float(cp[1]), float(cp[2]))
 		has_corner = true
+		if not bool(params.get("preserve_endpoints", false)):
+			var cached_angle: float = deg_to_rad(absf(float(params.get("bend_angle_deg", 90.0))))
+			var cached_sign: float = -1.0 if str(params.get("turn_direction", "right")).to_lower() == "right" else 1.0
+			var cached_turn := Vector3(t_in.x * cos(cached_angle * cached_sign) - t_in.y * sin(cached_angle * cached_sign), t_in.x * sin(cached_angle * cached_sign) + t_in.y * cos(cached_angle * cached_sign), 0.0).normalized()
+			outlet_pos = corner + cached_turn * maxf(0.5, float(params.get("leg2_length", 5.0)))
+			t_out = cached_turn
 	elif params.has("leg1_length") or params.has("leg2_length") or params.has("bend_angle_deg") or params.has("turn_direction"):
 		var l1: float = maxf(0.5, float(params.get("leg1_length", 5.0)))
 		var l2: float = maxf(0.5, float(params.get("leg2_length", 5.0)))
@@ -365,26 +371,33 @@ static func _gen_serpentine(inlet_pos: Vector3, inlet_tan: Vector3, outlet_pos: 
 	var pitch: float = maxf(1.2, float(params.get("pass_spacing", params.get("pitch", 2.0))))
 	var R: float = 0.5 * pitch
 	var span: float = maxf(3.0, float(params.get("pass_length", inlet_pos.distance_to(outlet_pos))))
+	var infeed_length: float = clampf(float(params.get("infeed_length", 0.0)), 0.0, span)
+	var outfeed_length: float = clampf(float(params.get("outfeed_length", 0.0)), 0.0, span)
 	var dir := _norm3(Vector3(inlet_tan.x, inlet_tan.y, 0.0))
 	var perp := Vector3(-dir.y, dir.x, 0.0)
 	var k90: float = R * _bezier_arc_kappa(0.5 * PI)
+	var core_origin := inlet_pos + dir * infeed_length
 
 	var cpts: Array = []
+	if infeed_length > 0.001:
+		cpts.append({"pos": inlet_pos, "in_handle": Vector3.ZERO, "out_handle": dir * (infeed_length / 3.0)})
 	for p in range(1, passes + 1):
 		var fwd: bool = (p % 2) == 1
 		var y_off: float = float(p - 1) * pitch
-		var base_start := inlet_pos + perp * y_off
+		var base_start := core_origin + perp * y_off
 		var base_end := base_start + dir * span
 		var s_pt := base_start if fwd else base_end
 		var e_pt := base_end if fwd else base_start
 		var t_dir := dir if fwd else (-dir)
-		var in_h_start := Vector3.ZERO if p == 1 else (-t_dir * k90)
-		var out_h_end := Vector3.ZERO if p == passes else (t_dir * k90)
+		var in_h_start := (-dir * (infeed_length / 3.0)) if p == 1 and infeed_length > 0.001 else (Vector3.ZERO if p == 1 else (-t_dir * k90))
+		var out_h_end := (t_dir * (outfeed_length / 3.0)) if p == passes and outfeed_length > 0.001 else (Vector3.ZERO if p == passes else (t_dir * k90))
 		cpts.append({"pos": s_pt, "in_handle": in_h_start, "out_handle": Vector3.ZERO})
 		cpts.append({"pos": e_pt, "in_handle": Vector3.ZERO, "out_handle": out_h_end})
 		if p < passes:
 			var apex := e_pt + t_dir * R + perp * R
 			cpts.append({"pos": apex, "in_handle": -perp * k90, "out_handle": perp * k90})
+		elif outfeed_length > 0.001:
+			cpts.append({"pos": e_pt + t_dir * outfeed_length, "in_handle": -t_dir * (outfeed_length / 3.0), "out_handle": Vector3.ZERO})
 	return cpts
 
 static func _gen_spiral_helix(inlet_pos: Vector3, inlet_tan: Vector3, outlet_pos: Vector3, _outlet_tan: Vector3, params: Dictionary) -> Array:
@@ -729,7 +742,7 @@ static func sample_world_curve(elem_or_dict, doc_or_spec = null, num_samples: in
 	var s_params: Dictionary = {}
 	if geom.get("shape_params") is Dictionary:
 		s_params = (geom["shape_params"] as Dictionary).duplicate(true)
-	for k in ["bend_radius", "bend_angle_deg", "sweep_angle_deg", "passes", "pass_spacing", "pass_length", "helix_radius", "helix_turns", "elevation_gain", "corner_pos", "control_points", "tangent_scale", "leg_length", "return_leg_length", "leg1_length", "leg2_length", "turn_direction", "forward_span", "auto_join", "lateral_offset"]:
+	for k in ["bend_radius", "bend_angle_deg", "sweep_angle_deg", "passes", "pass_spacing", "pass_length", "infeed_length", "outfeed_length", "helix_radius", "helix_turns", "elevation_gain", "corner_pos", "control_points", "tangent_scale", "leg_length", "return_leg_length", "leg1_length", "leg2_length", "turn_direction", "forward_span", "auto_join", "lateral_offset"]:
 		if s_params.has(k):
 			continue
 		if geom.has(k):

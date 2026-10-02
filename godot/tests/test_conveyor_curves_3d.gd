@@ -84,6 +84,10 @@ func _init() -> void:
 	var first_arc_middle: Vector3 = ConveyorCurve3D.eval_cubic_bezier(serp_controls[1]["pos"], serp_controls[1]["pos"] + serp_controls[1]["out_handle"], serp_controls[2]["pos"] + serp_controls[2]["in_handle"], serp_controls[2]["pos"], 0.5)["pos"]
 	_assert(first_arc_middle.distance_to(Vector3(8.707107, 0.292893, 0.0)) < 0.01, "Serpentine turnaround follows a circular quarter arc")
 	_assert(serp_controls.size() == 8, "Three serpentine runs produce two smooth hairpin bends")
+	var serp_leads := ConveyorCurve3D.generate_control_points("serpentine", Vector3.ZERO, Vector3.RIGHT, Vector3(8, 4, 0), Vector3.RIGHT, {"passes": 3, "pass_spacing": 2.0, "pass_length": 8.0, "infeed_length": 2.0, "outfeed_length": 3.0})
+	_assert(serp_leads.size() == serp_controls.size() + 2, "End leads add straight spans without changing the serpentine bend count")
+	_assert((serp_leads[0]["pos"] as Vector3).distance_to(Vector3.ZERO) < 0.01 and (serp_leads[1]["pos"] as Vector3).distance_to(Vector3(2, 0, 0)) < 0.01, "Infeed lead extends from the fixed inlet to the switchback core")
+	_assert((serp_leads[-1]["pos"] as Vector3).distance_to(Vector3(13, 4, 0)) < 0.01, "Outfeed lead extends from the final run along its flow direction")
 	var smooth_serp := cat.create_element_instance("conveyor", "smooth_serp", Vector2.ZERO)
 	smooth_serp.geometry["shape_preset"] = "serpentine"
 	smooth_serp.geometry["shape_params"] = serp_params
